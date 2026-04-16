@@ -26,5 +26,14 @@ target_include_directories(gmd_headers
 
 gmd_apply_default_warnings(gmd_headers)
 
+add_library(gmd_core STATIC
+    src/force/classical_force_provider.cpp
+    src/ml/ml_force_provider.cpp
+    src/ml/model_runtime_adapter.cpp
+)
+target_link_libraries(gmd_core PUBLIC gmd_headers)
+
+gmd_apply_default_warnings(gmd_core)
+
 add_executable(gmd app/gmd_main.cpp)
-target_link_libraries(gmd PRIVATE gmd_headers)
+target_link_libraries(gmd PRIVATE gmd_core)

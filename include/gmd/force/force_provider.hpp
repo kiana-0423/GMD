@@ -2,7 +2,9 @@
 
 #include <array>
 #include <cstdint>
+#include <span>
 #include <string_view>
+#include <vector>
 
 namespace gmd {
 
@@ -10,18 +12,23 @@ struct Box;
 class RuntimeContext;
 class System;
 
+using Coordinate3D = std::array<double, 3>;
+using Force3D = std::array<double, 3>;
+
 // Immutable inputs supplied to a force evaluation at a given simulation step.
 struct ForceRequest {
     const System* system = nullptr;
     const Box* box = nullptr;
     std::uint64_t step = 0;
     double time = 0.0;
+    std::span<const Coordinate3D> coordinates;
 };
 
 // Aggregate outputs produced by a force evaluation.
 struct ForceResult {
     bool success = false;
     double potential_energy = 0.0;
+    std::vector<Force3D> forces;
     std::array<double, 9> virial = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
     bool virial_valid = false;
 };
