@@ -2,6 +2,25 @@
 
 GMD is a molecular dynamics software project built around a C++ core and CUDA backends, with optional Python bindings for workflow orchestration and machine learning integration.
 
+## Table of Contents
+
+- [Project Goal](#project-goal)
+- [Requirements](#requirements)
+- [Building](#building)
+- [Quick Start](#quick-start)
+- [Architecture Principles](#architecture-principles)
+- [Project Structure](#project-structure)
+  - [Folder Descriptions](#folder-descriptions)
+- [Module Design](#module-design)
+- [CUDA Kernel Groups](#cuda-kernel-groups)
+- [Main Code Paths](#main-code-paths-required-in-this-project)
+- [Suggested Milestones](#suggested-milestones)
+- [Development Workflow](#development-workflow)
+- [Contributing](#contributing)
+- [Project Status](#project-status)
+- [License](#license)
+- [Support and Contact](#support-and-contact)
+
 ## Project Goal
 
 GMD aims to provide a stable and extensible molecular dynamics backend with the following priorities:
@@ -11,6 +30,109 @@ GMD aims to provide a stable and extensible molecular dynamics backend with the 
 - Clear separation between simulation control, force evaluation, and model runtime
 - Support for both classical force fields and machine learning force fields
 - Python as an optional outer interface rather than a runtime dependency
+
+## Requirements
+
+- **C++ Compiler**: GCC 11+, Clang 14+, or MSVC 2019+ (C++20 standard required)
+- **CMake**: Version 3.24 or higher
+- **CUDA Toolkit** (optional): Version 11.0+ for GPU acceleration
+  - NVIDIA GPU with compute capability 7.0+ recommended for optimal performance
+- **Python** (optional): Python 3.8+ for Python bindings (requires `pybind11`)
+
+## Building
+
+### Basic Build (CPU only)
+
+```bash
+cd /path/to/GMD
+mkdir build && cd build
+cmake .. -DCMAKE_BUILD_TYPE=Release
+cmake --build . --parallel $(nproc)
+```
+
+The compiled executable will be at `build/gmd`.
+
+### Build with CUDA Support
+
+```bash
+cd /path/to/GMD
+mkdir build && cd build
+cmake .. -DCMAKE_BUILD_TYPE=Release -DGMD_ENABLE_CUDA=ON
+cmake --build . --parallel $(nproc)
+```
+
+### Build with Python Bindings
+
+```bash
+cd /path/to/GMD
+mkdir build && cd build
+cmake .. -DCMAKE_BUILD_TYPE=Release -DGMD_BUILD_PYTHON=ON
+cmake --build . --parallel $(nproc)
+```
+
+### Build with Both CUDA and Python
+
+```bash
+cd /path/to/GMD
+mkdir build && cd build
+cmake .. -DCMAKE_BUILD_TYPE=Release -DGMD_ENABLE_CUDA=ON -DGMD_BUILD_PYTHON=ON
+cmake --build . --parallel $(nproc)
+```
+
+### Build Options
+
+- `-DCMAKE_BUILD_TYPE=Release|Debug`: Set optimization level (Release is recommended for simulations)
+- `-DGMD_ENABLE_CUDA=ON|OFF`: Enable/disable CUDA support (default: OFF)
+- `-DGMD_BUILD_PYTHON=ON|OFF`: Enable/disable Python bindings (default: OFF)
+- `-DCMAKE_CUDA_ARCHITECTURES=80;86`: Specify GPU compute capability (default: auto-detect)
+
+## Quick Start
+
+### Running a Simple Example
+
+After building, you can run one of the included examples:
+
+```bash
+cd build
+./gmd ../examples/lj_fluid/config.txt
+```
+
+Available examples:
+- `examples/lj_fluid/`: Lennard-Jones fluid simulation
+- `examples/water_box/`: Water system with classical force field
+- `examples/mlff_demo/`: Machine learning force field demonstration
+
+### Configuration Files
+
+Configuration files are located in `configs/examples/` and `configs/testcases/`. Create a new configuration file or modify existing ones to customize your simulation:
+
+```text
+[Simulation]
+timesteps = 1000
+dt = 0.001
+
+[System]
+initial_config = path/to/structure.gro
+
+[ForceField]
+type = classical  # or ml_model
+```
+
+### Testing
+
+Run the test suite to verify installation:
+
+```bash
+cd build
+ctest --parallel $(nproc)
+```
+
+Run specific test categories:
+```bash
+ctest -R unit       # Unit tests only
+ctest -R integration # Integration tests only
+ctest -R performance # Performance benchmarks
+```
 
 ## Architecture Principles
 
@@ -37,73 +159,191 @@ ForceProvider Interface
 CUDA Kernels / ML Runtime Adapter
 ```
 
-## Recommended Project Layout
+## Project Structure
 
-The following structure is a practical starting point for a C++-first implementation:
+The following structure organizes the GMD project across multiple layers:
 
 ```text
 GMD/
-├── CMakeLists.txt
-├── README.md
-├── cmake/
-│   ├── Dependencies.cmake
-│   ├── CompilerOptions.cmake
-│   └── CUDAOptions.cmake
-├── docs/
-│   ├── architecture/
-│   ├── algorithms/
-│   └── design-notes/
-├── include/
-│   └── gmd/
-│       ├── core/
-│       ├── system/
-│       ├── force/
-│       ├── neighbor/
-│       ├── integrator/
-│       ├── runtime/
-│       ├── io/
-│       ├── ml/
-│       ├── cuda/
-│       └── utils/
-├── src/
-│   ├── core/
-│   ├── system/
-│   ├── force/
-│   ├── neighbor/
-│   ├── integrator/
-│   ├── runtime/
-│   ├── io/
-│   ├── ml/
-│   ├── cuda/
-│   └── utils/
-├── kernels/
-│   ├── neighbor/
-│   ├── pair/
-│   ├── bonded/
-│   ├── integrate/
-│   ├── reduce/
-│   └── features/
-├── app/
-│   └── gmd_main.cpp
-├── configs/
-│   ├── examples/
-│   └── testcases/
-├── examples/
-│   ├── lj_fluid/
-│   ├── water_box/
-│   └── mlff_demo/
-├── tests/
-│   ├── unit/
-│   ├── integration/
-│   ├── regression/
-│   └── performance/
-├── benchmarks/
-│   ├── single_gpu/
-│   └── ml_inference/
-├── third_party/
-└── python/
-    └── gmd/
+├── CMakeLists.txt              # Main build configuration
+├── README.md                   # This file
+├── LICENSE                     # License information
+├── .git/                       # Version control
+├── .gitignore                  # Git ignore rules
+│
+├── cmake/                      # CMake configuration modules
+│   ├── Dependencies.cmake      # External dependency configuration
+│   ├── CompilerOptions.cmake   # Compiler flags and standards
+│   └── CUDAOptions.cmake       # CUDA toolchain configuration
+│
+├── docs/                       # Technical documentation
+│   ├── architecture/           # System architecture diagrams and explanations
+│   ├── algorithms/             # Algorithm descriptions and implementations
+│   └── design-notes/           # Design decisions and rationale
+│
+├── include/gmd/                # Public header files (interfaces)
+│   ├── core/                   # Simulation control interface
+│   ├── system/                 # System state and topology interface
+│   ├── force/                  # Force field backend abstraction
+│   ├── neighbor/               # Neighbor list construction interface
+│   ├── integrator/             # Time integration interface
+│   ├── runtime/                # Runtime context and resource management
+│   ├── io/                     # I/O and configuration interface
+│   ├── ml/                     # Machine learning force field interface
+│   ├── cuda/                   # CUDA kernel dispatch interface
+│   └── utils/                  # Utility functions and helpers
+│
+├── src/                        # Implementation files
+│   ├── core/                   # Simulation lifecycle and step control
+│   ├── system/                 # System state and topology implementation
+│   ├── force/                  # Classical force field implementation
+│   ├── neighbor/               # Neighbor list construction and maintenance
+│   ├── integrator/             # Time integration algorithms
+│   ├── runtime/                # CUDA context and resource management
+│   ├── io/                     # Configuration loading, trajectory output, checkpoints
+│   ├── ml/                     # ML force provider and model adapters
+│   ├── cuda/                   # CUDA kernel wrappers and utilities
+│   └── utils/                  # Error handling, profiling, math utilities
+│
+├── kernels/                    # CUDA kernel implementations
+│   ├── neighbor/               # Cell list and neighbor list kernels
+│   ├── pair/                   # Pairwise interaction kernels (LJ, Coulomb, etc.)
+│   ├── bonded/                 # Bond, angle, and dihedral kernels
+│   ├── integrate/              # Velocity and position update kernels
+│   ├── reduce/                 # Energy, temperature, virial reduction kernels
+│   └── features/               # ML feature extraction kernels
+│
+├── app/                        # Main application
+│   └── gmd_main.cpp            # Command-line entry point
+│
+├── configs/                    # Configuration templates and examples
+│   ├── examples/               # Example configuration files
+│   └── testcases/              # Test case configurations
+│
+├── examples/                   # Sample simulation projects
+│   ├── lj_fluid/               # Lennard-Jones fluid in periodic box
+│   ├── water_box/              # Water system example with classical FF
+│   └── mlff_demo/              # Machine learning force field demonstration
+│
+├── tests/                      # Test suite
+│   ├── unit/                   # Unit tests for individual modules
+│   ├── integration/            # Integration tests for module interactions
+│   ├── regression/             # Regression tests for correctness validation
+│   └── performance/            # Performance benchmarks
+│
+├── benchmarks/                 # Performance measurement tools
+│   ├── single_gpu/             # Single GPU performance tests
+│   └── ml_inference/           # ML model inference performance tests
+│
+├── third_party/                # External libraries and dependencies
+│   └── (various)               # Third-party library integrations
+│
+├── python/                     # Python bindings and interface
+│   └── gmd/                    # Python package for GMD
+│
+└── build/                      # Build output directory (generated)
+    ├── CMakeFiles/             # CMake generated files
+    ├── gmd                     # Compiled executable
+    ├── CMakeLists.txt          # Generated
+    └── Makefile                # Generated build rules
 ```
+
+## Folder Descriptions
+
+### Root Level Files
+
+- **CMakeLists.txt**: Main build configuration file that defines compilation targets, dependencies, and build options
+- **README.md**: Project overview, architecture principles, and development guidelines
+- **LICENSE**: Project licensing information
+
+### `cmake/` - Build System Configuration
+
+Modular CMake configuration files for managing dependencies and compiler settings:
+
+- **Dependencies.cmake**: Configures external libraries (CUDA, PyTorch, ONNX, etc.)
+- **CompilerOptions.cmake**: Sets C++ standard, optimization flags, and compiler warnings
+- **CUDAOptions.cmake**: CUDA toolkit version, compute capability targets, and GPU memory settings
+
+### `docs/` - Technical Documentation
+
+- **architecture/**: System design, component interactions, and module dependencies
+- **algorithms/**: Detailed descriptions of numerical algorithms (integration, neighbor lists, force calculation)
+- **design-notes/**: Rationale behind design decisions and alternative approaches considered
+
+### `include/gmd/` - Public API Headers
+
+Interface definitions for all modules. Organized by domain:
+
+- **core/**: `Simulation`, `StepController` - main simulation loop control
+- **system/**: `System`, `ParticleData`, `Box` - system state and metadata
+- **force/**: `ForceProvider`, `ClassicalForceProvider` - unified force field abstraction
+- **neighbor/**: `NeighborBuilder`, `NeighborList` - spatial search and list management
+- **integrator/**: `Integrator`, `VelocityVerletIntegrator` - time stepping algorithms
+- **runtime/**: `RuntimeContext`, `CudaContext` - execution resource management
+- **io/**: `ConfigLoader`, `TrajectoryWriter` - input/output and file handling
+- **ml/**: `MLForceProvider`, `ModelRuntimeAdapter` - ML model integration
+- **cuda/**: `KernelDispatch` - CUDA kernel launching interface
+- **utils/**: `Status`, `Profiler`, `Timer` - shared utilities
+
+### `src/` - Implementation Files
+
+Parallel structure to `include/` containing the concrete implementations of all public interfaces.
+
+### `kernels/` - CUDA Kernel Code
+
+High-performance device code organized by functionality:
+
+- **neighbor/**: Cell list construction, neighbor list generation
+- **pair/**: Lennard-Jones, Coulomb, and other pairwise forces
+- **bonded/**: Bond stretches, angle bending, dihedral rotations
+- **integrate/**: Velocity Verlet position/velocity updates
+- **reduce/**: Parallel reductions for energy, temperature, virial calculations
+- **features/**: ML input feature extraction from atomic positions and neighbors
+
+### `app/` - Application Entry Points
+
+- **gmd_main.cpp**: Command-line interface and main execution entry point
+
+### `configs/` - Configuration Data
+
+- **examples/**: Template configuration files showing all available options
+- **testcases/**: Pre-configured test scenarios for regression testing
+
+### `examples/` - Sample Projects
+
+Runnable example simulations demonstrating different features:
+
+- **lj_fluid/**: Basic Lennard-Jones fluid system in periodic boundary conditions
+- **water_box/**: Water molecules with classical force field parameters
+- **mlff_demo/**: Integration of machine learning force field models
+
+### `tests/` - Testing Framework
+
+- **unit/**: Tests for individual module functionality in isolation
+- **integration/**: Tests for interactions between multiple modules
+- **regression/**: Golden-reference tests to catch unintended behavioral changes
+- **performance/**: Timing and throughput benchmarks
+
+### `benchmarks/` - Performance Analysis
+
+- **single_gpu/**: Execution time and memory benchmarks on single GPU
+- **ml_inference/**: ML model inference throughput and latency measurements
+
+### `third_party/` - External Dependencies
+
+Integrated external libraries like CUDA headers, JSON parsers, linear algebra libraries, etc.
+
+### `python/` - Python Bindings
+
+Python package providing high-level interface to C++ simulation engine:
+
+- Workflow orchestration
+- Post-processing and analysis
+- Interactive parameter exploration
+
+### `build/` - Build Artifacts (Generated)
+
+Contains all compiled objects, executables, and intermediate build files. Typically ignored in version control.
 
 ## Module Design
 
@@ -475,3 +715,84 @@ The first stable version of GMD should support:
 - one pluggable force backend interface
 
 This keeps the first version narrow enough to implement, while preserving the correct architecture for later ML force field integration.
+
+## Development Workflow
+
+### Code Organization Principles
+
+1. **Header-Implementation Separation**: All public interfaces reside in `include/gmd/` with implementations in `src/`
+2. **Module Independence**: Each module should have minimal coupling with others through well-defined interfaces
+3. **CUDA Separation**: Device code is isolated in `kernels/` with C++ wrappers in `src/cuda/`
+4. **Test Proximity**: Tests live alongside code with clear naming conventions
+
+### Coding Standards
+
+- C++20 standard required
+- Use `const` correctness and modern C++ idioms
+- Prefer `std::span` and `std::vector` over raw pointers
+- Document public APIs with inline comments
+- Use CUDA error checking with custom assertions
+
+### Adding New Features
+
+1. Define the interface in `include/gmd/{module}/`
+2. Implement core logic in `src/{module}/`
+3. Add CUDA kernels to `kernels/` if GPU acceleration needed
+4. Write tests in `tests/{unit|integration}/`
+5. Update `CMakeLists.txt` with new source files
+6. Document design choices in `docs/design-notes/`
+
+## Contributing
+
+We welcome contributions! Please follow these guidelines:
+
+1. Fork the repository and create a feature branch
+2. Ensure your code follows the coding standards above
+3. Write tests for new functionality
+4. Run the full test suite before submitting a pull request
+5. Update documentation as needed
+6. Include a clear commit message describing your changes
+
+For major changes, please open an issue first to discuss the proposed changes.
+
+## Project Status
+
+**Current Version**: 0.1.0 (Early Development)
+
+This project is actively under development. The current focus is on:
+
+- Establishing core simulation engine architecture
+- Implementing fundamental MD algorithms (Verlet lists, force computation)
+- Setting up CUDA integration framework
+- Creating baseline test suite
+
+See [Suggested Milestones](#suggested-milestones) above for development roadmap.
+
+## License
+
+This project is licensed under the terms specified in the [LICENSE](LICENSE) file.
+
+## Citation
+
+If you use GMD in your research, please cite:
+
+```bibtex
+@software{gmd2024,
+  title={GMD: Molecular Dynamics with CUDA and Machine Learning},
+  author={Contributors},
+  year={2024},
+  url={https://github.com/kiana-0423/GMD}
+}
+```
+
+## Support and Contact
+
+For questions, bug reports, or feature requests, please:
+
+- Open an issue on GitHub
+- Check existing documentation in `docs/`
+- Review design notes in `docs/design-notes/`
+
+## Acknowledgments
+
+GMD builds upon established molecular dynamics methodologies and benefits from the broader open-source scientific computing community.
