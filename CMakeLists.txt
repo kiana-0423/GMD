@@ -27,9 +27,15 @@ target_include_directories(gmd_headers
 gmd_apply_default_warnings(gmd_headers)
 
 add_library(gmd_core STATIC
+    src/boundary/minimum_image.cpp
+    src/boundary/periodic_boundary.cpp
+    src/core/simulation.cpp
     src/force/classical_force_provider.cpp
+    src/integrator/velocity_verlet_integrator.cpp
+    src/io/config_loader.cpp
     src/ml/ml_force_provider.cpp
     src/ml/model_runtime_adapter.cpp
+    src/system/initializer.cpp
 )
 target_link_libraries(gmd_core PUBLIC gmd_headers)
 

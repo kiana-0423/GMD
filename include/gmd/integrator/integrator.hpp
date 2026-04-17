@@ -5,7 +5,7 @@
 
 namespace gmd {
 
-struct ForceResult;
+class ForceProvider;
 class RuntimeContext;
 class System;
 
@@ -24,9 +24,9 @@ public:
 
     // Initializes scheme-specific state before the first time step.
     virtual void initialize(System& system, RuntimeContext& runtime) = 0;
-    // Updates positions and velocities using the latest force evaluation.
+    // Updates positions and velocities using the configured force backend.
     virtual void step(System& system,
-                      const ForceResult& force,
+                      ForceProvider& force_provider,
                       const IntegratorStepContext& ctx,
                       RuntimeContext& runtime) = 0;
 };

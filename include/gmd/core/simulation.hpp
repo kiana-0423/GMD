@@ -3,6 +3,8 @@
 #include <cstdint>
 #include <memory>
 
+#include "gmd/system/initializer.hpp"
+
 namespace gmd {
 
 class ForceProvider;
@@ -27,6 +29,11 @@ public:
     void set_force_provider(std::shared_ptr<ForceProvider> provider) noexcept;
     void set_neighbor_builder(std::shared_ptr<NeighborBuilder> builder) noexcept;
     void set_integrator(std::shared_ptr<Integrator> integrator) noexcept;
+    void set_velocity_initializer(std::shared_ptr<VelocityInitializer> initializer) noexcept;
+    void set_velocity_init_mode(VelocityInitMode mode) noexcept;
+    void set_remove_center_of_mass_velocity(bool enabled) noexcept;
+    void set_initial_temperature(double temperature) noexcept;
+    void set_time_step(double time_step) noexcept;
 
     // Returns true when the simulation has the minimum components required to step.
     bool ready() const noexcept;

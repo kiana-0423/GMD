@@ -14,7 +14,7 @@ public:
 
     void initialize(System& system, RuntimeContext& runtime) override;
     void step(System& system,
-              const ForceResult& force,
+              ForceProvider& force_provider,
               const IntegratorStepContext& ctx,
               RuntimeContext& runtime) override;
 
