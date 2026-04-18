@@ -1,0 +1,5 @@
+velocity 300.0
+time_step 2.0
+run 1000
+velocity_init random
+remove_com_velocity true

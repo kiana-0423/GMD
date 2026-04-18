@@ -31,10 +31,16 @@ add_library(gmd_core STATIC
     src/boundary/periodic_boundary.cpp
     src/core/simulation.cpp
     src/force/classical_force_provider.cpp
+    src/integrator/thermostat.cpp
+    src/integrator/velocity_rescaling_thermostat.cpp
+    src/integrator/nose_hoover_thermostat.cpp
+    src/integrator/berendsen_barostat.cpp
     src/integrator/velocity_verlet_integrator.cpp
     src/io/config_loader.cpp
+    src/io/trajectory_writer.cpp
     src/ml/ml_force_provider.cpp
     src/ml/model_runtime_adapter.cpp
+    src/neighbor/verlet_neighbor_builder.cpp
     src/system/initializer.cpp
 )
 target_link_libraries(gmd_core PUBLIC gmd_headers)

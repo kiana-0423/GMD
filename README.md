@@ -10,7 +10,7 @@ GMD is a molecular dynamics software project built around a C++ core and CUDA ba
 - [Quick Start](#quick-start)
 - [Architecture Principles](#architecture-principles)
 - [Project Structure](#project-structure)
-  - [Folder Descriptions](#folder-descriptions)
+- [Folder Descriptions](#folder-descriptions)
 - [Module Design](#module-design)
 - [CUDA Kernel Groups](#cuda-kernel-groups)
 - [Main Code Paths](#main-code-paths-required-in-this-project)
