@@ -1,6 +1,7 @@
 #include "gmd/neighbor/verlet_neighbor_builder.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 
@@ -138,7 +139,12 @@ void VerletNeighborBuilder::rebuild(System& system,
         const int cy = coord_to_cell(yi, cell_size_[1], num_cells_[1]);
         const int cz = coord_to_cell(zi, cell_size_[2], num_cells_[2]);
 
-        // Visit all 27 neighbouring cells (including own cell).
+        // Visit all (up to 27) distinct neighbouring cells including own cell.
+        // When num_cells_[d] < 3, PBC wrapping can map multiple (ddx,ddy,ddz)
+        // offsets to the same cell index; we deduplicate before walking so that
+        // each pair (i,j) is added at most once.
+        std::array<int, 27> cell_ids{};
+        int n_unique = 0;
         for (int ddz = -1; ddz <= 1; ++ddz) {
             for (int ddy = -1; ddy <= 1; ++ddy) {
                 for (int ddx = -1; ddx <= 1; ++ddx) {
@@ -146,27 +152,36 @@ void VerletNeighborBuilder::rebuild(System& system,
                     int nx = (cx + ddx + num_cells_[0]) % num_cells_[0];
                     int ny = (cy + ddy + num_cells_[1]) % num_cells_[1];
                     int nz = (cz + ddz + num_cells_[2]) % num_cells_[2];
-                    int ncidx = cell_index(nx, ny, nz);
+                    const int ncidx = cell_index(nx, ny, nz);
+                    // Linear scan over at most 27 elements — no overhead.
+                    bool already = false;
+                    for (int k = 0; k < n_unique; ++k) {
+                        if (cell_ids[k] == ncidx) { already = true; break; }
+                    }
+                    if (!already) cell_ids[n_unique++] = ncidx;
+                }
+            }
+        }
 
-                    // Walk the linked list of the neighbouring cell.
-                    int j = head_[ncidx];
-                    while (j != -1) {
-                        if (static_cast<std::size_t>(j) > i) {
-                            // Half-pair: only store (i, j) with j > i.
-                            std::array<double, 3> dr = {
-                                coords[i][0] - coords[j][0],
-                                coords[i][1] - coords[j][1],
-                                coords[i][2] - coords[j][2]
-                            };
-                            apply_minimum_image(dr, box);
-                            const double r2 = dr[0]*dr[0] + dr[1]*dr[1] + dr[2]*dr[2];
-                            if (r2 < r_list_sq) {
-                                tmp[i].push_back(j);
-                            }
-                        }
-                        j = next_[j];
+        for (int ci = 0; ci < n_unique; ++ci) {
+            const int ncidx = cell_ids[ci];
+            // Walk the linked list of the neighbouring cell.
+            int j = head_[ncidx];
+            while (j != -1) {
+                if (static_cast<std::size_t>(j) > i) {
+                    // Half-pair: only store (i, j) with j > i.
+                    std::array<double, 3> dr = {
+                        coords[i][0] - coords[j][0],
+                        coords[i][1] - coords[j][1],
+                        coords[i][2] - coords[j][2]
+                    };
+                    apply_minimum_image(dr, box);
+                    const double r2 = dr[0]*dr[0] + dr[1]*dr[1] + dr[2]*dr[2];
+                    if (r2 < r_list_sq) {
+                        tmp[i].push_back(j);
                     }
                 }
+                j = next_[j];
             }
         }
         nl.counts[i] = static_cast<int>(tmp[i].size());

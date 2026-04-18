@@ -28,7 +28,7 @@ Implemented:
 
 - periodic boundary conditions and minimum-image convention
 - cell-list Verlet neighbor lists with skin-distance rebuild check
-- shifted Lennard-Jones pair interactions (multi-element, Lorentz-Berthelot mixing, explicit pair overrides)
+- shifted Lennard-Jones pair interactions (multi-element, Lorentz-Berthelot mixing, explicit pair overrides that take priority over mixing rules)
 - **harmonic bonds** (`V = k(r − r₀)²`)
 - **harmonic angles** (`V = k(θ − θ₀)²`)
 - **periodic proper dihedrals** (`V = k[1 + cos(nφ − δ)]`)
@@ -40,7 +40,7 @@ Implemented:
 - long-range Coulomb via Ewald and PME
 - extended XYZ trajectory output and energy logging
 - inline `run.in` LJ force-field definitions
-- external `.ff` files (LJ and molecular)
+- external `.ff` files (LJ and molecular; molecular runs default to bonded-only)
 - external `.top` topology files
 
 Not yet implemented:
@@ -106,7 +106,9 @@ bash run_ethane_demo.sh
 
 The script compiles all sources with `c++` (no CMake required), copies the input files into `build_demo/`, runs the simulation, and prints a per-step energy table.
 
-The main CLI also supports molecular runs directly:
+The main CLI also supports molecular runs directly. By default, external
+molecular FF runs use **bonded-only** mode because 1-2/1-3 non-bonded
+exclusions are not implemented yet:
 
 ```bash
 ./build/gmd \
@@ -115,6 +117,15 @@ The main CLI also supports molecular runs directly:
   examples/ethane_demo/ethane.ff \
   examples/ethane_demo/ethane.top
 ```
+
+To explicitly enable molecular LJ anyway, add this to `run.in`:
+
+```ini
+molecular_nonbonded lj_unsafe
+```
+
+That opt-in path is intended only for diagnostics and smoke testing until
+exclusion lists are implemented.
 
 Expected output (truncated):
 
@@ -129,23 +140,31 @@ Expected output (truncated):
   Angles        : 12
   Dihedrals     : 9
 
-=== Initial state ===
-  Bonded PE  =   0.276 kcal/mol
-  LJ PE      = ...
-  Total PE   = ...
+=== Building force providers ===
+  BondedForceProvider ready
+  LJ non-bonded: disabled (no 1-2/1-3 exclusions implemented)
+
+=== Initial state (bonded only) ===
+  Bond PE     = 0.011972 eV  (0.276080 kcal/mol)
 
 === Running MD  (500 steps) ===
 Step    Time(fs)    PE(kcal/mol)    KE(kcal/mol)    E_tot(kcal/mol)  T(K)
-------------------------------------------------------------------------
-0       0.000       ...
-10      10.000      ...
+------------------------------------------------------------------------------
+0       0.000       0.276           6.260           6.536           300.000
+10      10.000      1.603           5.057           6.660           242.346
 ...
-500     500.000     4039.238        ...
+500     500.000     4.119           3.478           7.597           166.691
 
 === Done ===
   Frames written : 11
-  Final PE       : 175.155249 eV  (4039.238 kcal/mol)
+  Final PE       : 0.178612 eV  (4.118959 kcal/mol)
 ```
+
+> **Note:** The ethane demo runs bonded interactions only (bonds + angles +
+> dihedrals). LJ is intentionally disabled because GMD does not yet implement
+> 1-2/1-3 non-bonded exclusion lists; including LJ would put bonded C-H atoms
+> (at 1.09 Å) deep inside the repulsive wall (σ_CH = 3.0 Å), which is
+> unphysical. When exclusions are added this restriction will be lifted.
 
 ---
 
@@ -183,6 +202,7 @@ Core directives:
 | `velocity_init random\|input` | randomize or read from xyz |
 | `velocity_seed <s>` | RNG seed |
 | `remove_com_velocity true\|false` | remove center-of-mass drift |
+| `molecular_nonbonded none\|lj_unsafe` | external molecular FF mode; default `none` |
 
 Inline LJ force field:
 
@@ -297,14 +317,15 @@ for (auto& ap : mff.angle_types)    bonded->add_angle_type(ap);
 for (auto& dp : mff.dihedral_types) bonded->add_dihedral_type(dp);
 for (auto& ip : mff.improper_types) bonded->add_improper_type(ip);
 
-auto lj = std::make_shared<gmd::ClassicalForceProvider>(mff.lj);
+// CLI default for molecular FFs: bonded-only (LJ excluded — no 1-2/1-3 exclusions yet).
+simulation.set_force_provider(bonded);
+// Total PE = bond + angle + dihedral + improper
 
-auto composite = std::make_shared<gmd::CompositeForceProvider>();
-composite->add(lj);      // non-bonded LJ
-composite->add(bonded);  // bonds + angles + dihedrals + impropers
-
-simulation.set_force_provider(composite);
-// Total PE = LJ + bond + angle + dihedral + improper
+// Explicit unsafe opt-in for diagnostics before exclusions are available:
+// auto lj = std::make_shared<gmd::ClassicalForceProvider>(mff.lj);
+// auto composite = std::make_shared<gmd::CompositeForceProvider>();
+// composite->add(lj); composite->add(bonded);
+// simulation.set_force_provider(composite);
 ```
 
 ---
@@ -336,9 +357,19 @@ cd build
 ctest --output-on-failure
 ```
 
-Currently runs the bundled smoke/integration test based on
-`tests/smoke_lj.xyz` and `tests/smoke_lj.run`. The rest of `tests/` is still
-reserved for future unit and regression cases.
+Currently runs a small set of bundled smoke/integration tests covering inline
+LJ, Ewald electrostatics, Monte Carlo barostat, and the molecular FF/topology
+path. The rest of `tests/` is still reserved for future unit and regression
+cases.
+
+Current smoke tests registered with CTest:
+
+| Test name | Exercises |
+|---|---|
+| `gmd_smoke_inline_lj` | inline LJ force field, NVT |
+| `gmd_smoke_ewald` | Ewald electrostatics, NVT |
+| `gmd_smoke_mc_barostat` | MC barostat NPT, Nosé-Hoover |
+| `gmd_smoke_molecular` | molecular FF (`.ff` + `.top`), bonded forces, explicit unsafe LJ opt-in / pair override path |
 
 ---
 
@@ -401,12 +432,12 @@ ForceProvider (interface)                                      │  ForceProvide
 
 ## Known Limitations
 
-- No 1-2 / 1-3 nonbonded exclusion lists — adjacent bonded atoms still interact via LJ
+- No 1-2 / 1-3 nonbonded exclusion lists — molecular CLI therefore defaults to bonded-only, and `molecular_nonbonded lj_unsafe` remains explicitly unsafe
 - No SHAKE / RATTLE bond constraints
 - No GPU execution (CUDA option present but CPU-only)
 - No working ML inference backend
 - No checkpoint / restart
-- Berendsen barostat requires virial from every active force term; current Ewald / PME providers still disable it
+- Berendsen barostat requires virial from every active force term; current `Ewald` and `PME` paths provide it via a coordinate-virial approximation
 - Limited automated test coverage
 
 ---

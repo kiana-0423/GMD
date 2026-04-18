@@ -5,8 +5,7 @@
 //  1. load_molecular_ff()  — reads ethane.ff (mass, LJ, bond/angle/dihedral params)
 //  2. load_topology()      — reads ethane.top (bond/angle/dihedral connectivity)
 //  3. BondedForceProvider  — computes intramolecular bonded energy & forces
-//  4. ClassicalForceProvider (LJ non-bonded)
-//  5. CompositeForceProvider — sums both; total energy printed every step
+//     (LJ non-bonded disabled: no 1-2/1-3 exclusion lists yet)
 //
 // Build (from project root):
 //   see run_ethane_demo.sh
@@ -22,13 +21,10 @@
 
 #include "gmd/core/simulation.hpp"
 #include "gmd/force/bonded_force_provider.hpp"
-#include "gmd/force/classical_force_provider.hpp"
-#include "gmd/force/composite_force_provider.hpp"
 #include "gmd/integrator/nose_hoover_thermostat.hpp"
 #include "gmd/integrator/velocity_verlet_integrator.hpp"
 #include "gmd/io/config_loader.hpp"
 #include "gmd/io/trajectory_writer.hpp"
-#include "gmd/neighbor/verlet_neighbor_builder.hpp"
 #include "gmd/runtime/runtime_context.hpp"
 #include "gmd/system/initializer.hpp"
 #include "gmd/system/system.hpp"
@@ -150,22 +146,17 @@ int main(int argc, char** argv)
 
         std::cout << "  BondedForceProvider ready\n";
 
-        // 5. Build LJ (non-bonded) provider ---------------------------------
-        auto lj = std::make_shared<gmd::ClassicalForceProvider>(mff.lj);
-        std::cout << "  ClassicalForceProvider (LJ) ready  cutoff=" << mff.lj.cutoff << " Å\n";
+        // NOTE: LJ (non-bonded) is intentionally excluded from this demo.
+        // Without 1-2 / 1-3 exclusion lists, atoms connected by bonds would
+        // interact via LJ at distances far inside the repulsive wall (e.g.,
+        // C-H at 1.09 Å vs σ_CH = 3.0 Å), producing unphysical energies.
+        // This demo focuses purely on intramolecular bonded terms.
+        std::cout << "  LJ non-bonded: disabled (no 1-2/1-3 exclusions implemented)\n";
 
-        // 6. Composite = LJ + bonded ----------------------------------------
-        auto composite = std::make_shared<gmd::CompositeForceProvider>();
-        composite->add(lj);
-        composite->add(bonded);
-        std::cout << "  CompositeForceProvider: LJ + bonded\n";
+        // 5. Use bonded as the sole force provider (no composite needed) ---
+        // No neighbor list is required for bonded interactions.
 
-        // 7. Neighbor builder -----------------------------------------------
-        constexpr double r_skin = 2.0;
-        auto neighbor_builder =
-            std::make_shared<gmd::VerletNeighborBuilder>(mff.lj.cutoff, r_skin);
-
-        // 8. Integrator + Nosé-Hoover thermostat ----------------------------
+        // 6. Integrator + Nosé-Hoover thermostat ----------------------------
         auto integrator =
             std::make_shared<gmd::VelocityVerletIntegrator>(run_config.time_step);
         integrator->set_target_temperature(run_config.temperature);
@@ -174,10 +165,9 @@ int main(int argc, char** argv)
             std::make_shared<gmd::NoseHooverThermostat>(run_config.thermostat_tau);
         integrator->set_thermostat(thermostat);
 
-        // 9. Assemble simulation --------------------------------------------
+        // 7. Assemble simulation (no neighbor builder needed) ---------------
         gmd::Simulation simulation(&system);
-        simulation.set_force_provider(composite);
-        simulation.set_neighbor_builder(neighbor_builder);
+        simulation.set_force_provider(bonded);
         simulation.set_integrator(integrator);
         simulation.set_time_step(run_config.time_step);
         simulation.set_initial_temperature(run_config.temperature);
@@ -186,13 +176,13 @@ int main(int argc, char** argv)
         simulation.set_remove_center_of_mass_velocity(
             run_config.remove_center_of_mass_velocity);
 
-        // 10. Trajectory writer --------------------------------------------
+        // 8. Trajectory writer ---------------------------------------------
         gmd::TrajectoryWriter writer;
         writer.open(out_stem);
         std::cout << "\n  Output trajectory : " << out_stem << ".xyz\n"
                   << "  Output energy log : " << out_stem << ".log\n";
 
-        // 11. Initialize (t=0 force evaluation) ----------------------------
+        // 9. Initialize (t=0 force evaluation) ----------------------------
         gmd::RuntimeContext runtime;
         simulation.initialize(runtime);
 
@@ -201,32 +191,25 @@ int main(int argc, char** argv)
 
         writer.write_frame(system, 0, 0.0, dof);
 
-        // 12. Print t=0 state ----------------------------------------------
-        banner("Initial state");
+        // 10. Print t=0 state ----------------------------------------------
+        banner("Initial state (bonded only)");
 
-        // Compute initial bonded energies separately for diagnostics
         {
             gmd::ForceResult bonded_result;
             gmd::ForceRequest req{&system, &system.box(), 0, 0.0,
                                   system.coordinates(), nullptr};
             bonded->compute(req, bonded_result, runtime);
 
-            gmd::ForceResult lj_result;
-            lj->compute(req, lj_result, runtime);
-
             std::cout << std::fixed << std::setprecision(6)
-                      << "  Bonded PE  = " << bonded_result.potential_energy
+                      << "  Bond PE     = ";
+            // Re-decompose: run each sub-provider individually for diagnostics.
+            // (BondedForceProvider computes all terms together, so just show total.)
+            std::cout << bonded_result.potential_energy
                       << " eV  ("
-                      << bonded_result.potential_energy * eV_to_kcal << " kcal/mol)\n"
-                      << "  LJ PE      = " << lj_result.potential_energy
-                      << " eV  ("
-                      << lj_result.potential_energy * eV_to_kcal << " kcal/mol)\n"
-                      << "  Total PE   = " << system.potential_energy()
-                      << " eV  ("
-                      << system.potential_energy() * eV_to_kcal << " kcal/mol)\n";
+                      << bonded_result.potential_energy * eV_to_kcal << " kcal/mol)\n";
         }
 
-        // 13. Run MD --------------------------------------------------------
+        // 11. Run MD --------------------------------------------------------
         banner("Running MD  (" + std::to_string(run_config.num_steps) + " steps)");
 
         std::cout << std::left
@@ -241,7 +224,6 @@ int main(int argc, char** argv)
 
         auto print_row = [&](std::uint64_t s) {
             const double pe   = system.potential_energy();
-            // Kinetic energy via VelocityInitializer helper
             const double ke   = vel_init->kinetic_energy(system);
             const double etot = pe + ke;
             const double temp = dof > 0

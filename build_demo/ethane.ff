@@ -1,0 +1,90 @@
+# =============================================================================
+# GMD Molecular Force Field: ethane (OPLS-AA subset)
+# =============================================================================
+#
+# Directive reference
+# -------------------
+# force_field  molecular          (required, must be the first non-comment line)
+#
+# lj_cutoff  <Å>                  LJ truncation radius
+#
+# type <N>  <elem>                Atom type definition.
+#   mass    <amu>                 Atomic mass.  May be omitted for common elements
+#   epsilon <kcal/mol>            LJ well depth    (converted to eV internally)
+#   sigma   <Å>                   LJ zero-crossing (Å)
+#   charge  <e>                   Partial charge in units of the elementary charge
+#
+# pair <type_i> <type_j>          Explicit cross-pair override.
+#   epsilon <kcal/mol>            Overrides Lorentz-Berthelot mixing for this pair.
+#   sigma   <Å>
+#
+# bond_type <N>                   Harmonic bond V = k (r - r0)²
+#   k  <kcal/mol/Å²>              Force constant  (converted to eV/Å² internally)
+#   r0 <Å>                        Equilibrium length
+#
+# angle_type <N>                  Harmonic angle V = k (θ - θ0)²
+#   k      <kcal/mol/rad²>        Force constant  (converted to eV/rad² internally)
+#   theta0 <deg>                  Equilibrium angle in degrees (converted to rad)
+#
+# dihedral_type <N>               Periodic dihedral V = k [1 + cos(n φ - δ)]
+#   k     <kcal/mol>              Barrier height  (converted to eV internally)
+#   n     <integer>               Periodicity / multiplicity
+#   delta <deg>                   Phase shift in degrees (converted to rad)
+#
+# improper_type <N>               Harmonic improper V = k (φ - φ0)²
+#   k    <kcal/mol/rad²>          Force constant  (converted to eV/rad² internally)
+#   phi0 <deg>                    Equilibrium angle in degrees (converted to rad)
+#
+# =============================================================================
+
+force_field  molecular
+
+# --------------------------------------------------------------------------
+# Atom types
+# --------------------------------------------------------------------------
+# OPLS-AA united description: CT = sp3 carbon, HC = hydrogen on carbon
+#   type 1: CT  (carbon in -CH3 or -CH2-)
+#   type 2: HC  (hydrogen bonded to carbon)
+# --------------------------------------------------------------------------
+
+lj_cutoff  10.0
+
+type 1  C  mass 12.011  epsilon 0.0660  sigma 3.500  charge -0.180
+type 2  H  mass  1.008  epsilon 0.0300  sigma 2.500  charge  0.060
+
+# Explicit cross-pair override for C-H (overrides Lorentz-Berthelot mixing)
+pair 1 2  epsilon 0.0447  sigma 3.000
+
+# --------------------------------------------------------------------------
+# Bond types
+# --------------------------------------------------------------------------
+# Harmonic: V = k (r - r0)²   k [kcal/mol/Å²]  r0 [Å]
+
+bond_type 1  k 310.0  r0 1.526   # C-C (CT-CT)
+bond_type 2  k 340.0  r0 1.090   # C-H (CT-HC)
+
+# --------------------------------------------------------------------------
+# Angle types
+# --------------------------------------------------------------------------
+# Harmonic: V = k (θ - θ0)²   k [kcal/mol/rad²]  theta0 [deg]
+
+angle_type 1  k 40.0  theta0 112.7   # C-C-C  (CT-CT-CT)
+angle_type 2  k 50.0  theta0 110.7   # H-C-H  (HC-CT-HC)
+angle_type 3  k 50.0  theta0 110.7   # H-C-C  (HC-CT-CT)
+
+# --------------------------------------------------------------------------
+# Dihedral types
+# --------------------------------------------------------------------------
+# Periodic: V = k [1 + cos(n φ - δ)]   k [kcal/mol]  delta [deg]
+# Multiple dihedral_type entries may be assigned to the same atom quad;
+# their energies are summed (Fourier decomposition).
+
+dihedral_type 1  k 0.150  n 3  delta 0.0   # H-C-C-H (HC-CT-CT-HC)
+
+# --------------------------------------------------------------------------
+# Improper types  (for planar / chirality constraints)
+# --------------------------------------------------------------------------
+# Harmonic: V = k (φ - φ0)²   k [kcal/mol/rad²]  phi0 [deg]
+# (Ethane has no true impropers; included for completeness / template use.)
+
+# improper_type 1  k 10.5  phi0 0.0

@@ -1,0 +1,17 @@
+velocity 300.0
+time_step 2.0
+run 50
+velocity_init random
+remove_com_velocity true
+
+force_field lj
+cutoff 8.5
+type 1 Ar epsilon 0.01032 sigma 3.405 charge 0.0
+
+thermostat nose_hoover
+thermostat_tau 100.0
+
+barostat monte_carlo
+pressure 1.0
+mc_frequency 10
+mc_volume_step 0.005

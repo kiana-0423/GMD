@@ -1,0 +1,6 @@
+bonds 1
+  1 2  bond_type 1
+
+angles 0
+dihedrals 0
+impropers 0

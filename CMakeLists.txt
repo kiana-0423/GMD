@@ -58,8 +58,16 @@ target_link_libraries(gmd PRIVATE gmd_core)
 
 if(BUILD_TESTING)
     file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/tests)
-    configure_file(tests/smoke_lj.xyz ${CMAKE_CURRENT_BINARY_DIR}/tests/smoke_xyz.in COPYONLY)
-    configure_file(tests/smoke_lj.run ${CMAKE_CURRENT_BINARY_DIR}/tests/smoke_run.in COPYONLY)
+    configure_file(tests/smoke_lj.xyz         ${CMAKE_CURRENT_BINARY_DIR}/tests/smoke_xyz.in       COPYONLY)
+    configure_file(tests/smoke_lj.run         ${CMAKE_CURRENT_BINARY_DIR}/tests/smoke_run.in       COPYONLY)
+    configure_file(tests/smoke_ewald.xyz      ${CMAKE_CURRENT_BINARY_DIR}/tests/smoke_ewald.xyz    COPYONLY)
+    configure_file(tests/smoke_ewald.run      ${CMAKE_CURRENT_BINARY_DIR}/tests/smoke_ewald.run    COPYONLY)
+    configure_file(tests/smoke_mc_barostat.xyz ${CMAKE_CURRENT_BINARY_DIR}/tests/smoke_mc_barostat.xyz COPYONLY)
+    configure_file(tests/smoke_mc_barostat.run ${CMAKE_CURRENT_BINARY_DIR}/tests/smoke_mc_barostat.run COPYONLY)
+    configure_file(tests/smoke_molecular.xyz  ${CMAKE_CURRENT_BINARY_DIR}/tests/smoke_molecular.xyz COPYONLY)
+    configure_file(tests/smoke_molecular.ff   ${CMAKE_CURRENT_BINARY_DIR}/tests/smoke_molecular.ff  COPYONLY)
+    configure_file(tests/smoke_molecular.top  ${CMAKE_CURRENT_BINARY_DIR}/tests/smoke_molecular.top COPYONLY)
+    configure_file(tests/smoke_molecular.run  ${CMAKE_CURRENT_BINARY_DIR}/tests/smoke_molecular.run COPYONLY)
 
     add_test(
         NAME gmd_smoke_inline_lj
@@ -68,4 +76,32 @@ if(BUILD_TESTING)
                 ${CMAKE_CURRENT_BINARY_DIR}/tests/smoke_run.in
     )
     set_tests_properties(gmd_smoke_inline_lj PROPERTIES LABELS "smoke;integration")
+
+    add_test(
+        NAME gmd_smoke_ewald
+        COMMAND gmd
+                ${CMAKE_CURRENT_BINARY_DIR}/tests/smoke_ewald.xyz
+                ${CMAKE_CURRENT_BINARY_DIR}/tests/smoke_ewald.run
+    )
+    set_tests_properties(gmd_smoke_ewald PROPERTIES LABELS "smoke;integration")
+
+    add_test(
+        NAME gmd_smoke_mc_barostat
+        COMMAND gmd
+                ${CMAKE_CURRENT_BINARY_DIR}/tests/smoke_mc_barostat.xyz
+                ${CMAKE_CURRENT_BINARY_DIR}/tests/smoke_mc_barostat.run
+    )
+    set_tests_properties(gmd_smoke_mc_barostat PROPERTIES LABELS "smoke;integration")
+
+    # Molecular FF smoke: run from the binary test dir so relative paths in .run resolve.
+    add_test(
+        NAME gmd_smoke_molecular
+        COMMAND gmd
+                ${CMAKE_CURRENT_BINARY_DIR}/tests/smoke_molecular.xyz
+                ${CMAKE_CURRENT_BINARY_DIR}/tests/smoke_molecular.run
+                ${CMAKE_CURRENT_BINARY_DIR}/tests/smoke_molecular.ff
+                ${CMAKE_CURRENT_BINARY_DIR}/tests/smoke_molecular.top
+        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+    )
+    set_tests_properties(gmd_smoke_molecular PROPERTIES LABELS "smoke;integration")
 endif()

@@ -207,7 +207,8 @@ void PMEForceProvider::compute(const ForceRequest& req,
     res.success = true;
     res.potential_energy = 0.0;
     res.forces.assign(n, Force3D{0.0, 0.0, 0.0});
-    res.virial_valid = false;
+    res.virial = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+    res.virial_valid = true;   // zero Coulomb → zero virial; still a valid result
 
     if (n == 0 || req.box == nullptr || req.system == nullptr) return;
 
@@ -225,6 +226,26 @@ void PMEForceProvider::compute(const ForceRequest& req,
     compute_real_space(req, res);
     compute_reciprocal_pme(req, res);
     compute_self_correction(req, res);
+
+    // Accumulate coordinate virial W_αβ = Σ_i r_iα · F_iβ.
+    // This is the same approximation used in EwaldForceProvider; it is
+    // origin-dependent after PBC wrapping, but sufficient for Berendsen NPT.
+    res.virial = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+    const std::size_t nv = std::min(req.coordinates.size(), res.forces.size());
+    for (std::size_t i = 0; i < nv; ++i) {
+        const auto& r = req.coordinates[i];
+        const auto& f = res.forces[i];
+        res.virial[0] += r[0] * f[0];
+        res.virial[1] += r[0] * f[1];
+        res.virial[2] += r[0] * f[2];
+        res.virial[3] += r[1] * f[0];
+        res.virial[4] += r[1] * f[1];
+        res.virial[5] += r[1] * f[2];
+        res.virial[6] += r[2] * f[0];
+        res.virial[7] += r[2] * f[1];
+        res.virial[8] += r[2] * f[2];
+    }
+    // virial_valid was set true at the top of compute(); no need to repeat.
 }
 
 // ---------------------------------------------------------------------------

@@ -13,6 +13,29 @@ namespace gmd {
 // Coulomb constant k_e = e² / (4π ε₀) in units of [eV · Å / e²].
 static constexpr double kEwaldCoulomb = 14.3996;
 
+namespace {
+
+void accumulate_coordinate_virial(const std::span<const Coordinate3D> coordinates,
+                                  const std::vector<Force3D>& forces,
+                                  std::array<double, 9>& virial) noexcept {
+    const std::size_t n = std::min(coordinates.size(), forces.size());
+    for (std::size_t i = 0; i < n; ++i) {
+        const auto& r = coordinates[i];
+        const auto& f = forces[i];
+        virial[0] += r[0] * f[0];
+        virial[1] += r[0] * f[1];
+        virial[2] += r[0] * f[2];
+        virial[3] += r[1] * f[0];
+        virial[4] += r[1] * f[1];
+        virial[5] += r[1] * f[2];
+        virial[6] += r[2] * f[0];
+        virial[7] += r[2] * f[1];
+        virial[8] += r[2] * f[2];
+    }
+}
+
+}  // namespace
+
 // ---------------------------------------------------------------------------
 // Construction
 // ---------------------------------------------------------------------------
@@ -68,12 +91,16 @@ void EwaldForceProvider::compute(const ForceRequest& req,
     res.success = true;
     res.potential_energy = 0.0;
     res.forces.assign(n, Force3D{0.0, 0.0, 0.0});
-    res.virial_valid = false;
+    res.virial = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+    res.virial_valid = true;
 
     if (n == 0 || req.box == nullptr || req.system == nullptr) return;
 
     const auto charges = req.system->charges();
-    if (charges.size() != n) return;
+    if (charges.size() != n) {
+        res.virial_valid = false;
+        return;
+    }
 
     // Early exit when all charges are zero.
     bool has_charges = false;
@@ -87,6 +114,7 @@ void EwaldForceProvider::compute(const ForceRequest& req,
     compute_real_space(req, res);
     compute_reciprocal(req, res);
     compute_self_correction(req, res);
+    accumulate_coordinate_virial(req.coordinates, res.forces, res.virial);
 }
 
 // ---------------------------------------------------------------------------

@@ -182,7 +182,11 @@ void ConfigLoader::load_xyz(const std::filesystem::path& xyz_path, System& syste
 
     auto coordinates = system.mutable_coordinates();
     auto masses      = system.mutable_masses();
+    auto charges     = system.mutable_charges();
     auto atom_types  = system.mutable_atom_types();
+    // Tracks which atoms received an explicit charge column in the XYZ file.
+    // These will NOT be overwritten by the FF-type default charge pass below.
+    std::vector<bool> has_explicit_charge(atom_count, false);
 
     // Local element→type map built on first-appearance order when ff is null.
     std::unordered_map<std::string, int> local_element_map;
@@ -199,15 +203,17 @@ void ConfigLoader::load_xyz(const std::filesystem::path& xyz_path, System& syste
         if (is_element_symbol(tokens[0])) {
             // ---- Element-symbol mode ----
             // Accepted column counts:
-            //   4: elem x y z            (mass from ff or built-in table)
-            //   5: elem x y z mass       (explicit mass)
-            //   7: elem x y z vx vy vz   (mass from ff or built-in table)
+            //   4: elem x y z                      (mass from ff or built-in table)
+            //   5: elem x y z mass                 (explicit mass)
+            //   6: elem x y z mass charge          (explicit mass + charge)
+            //   7: elem x y z vx vy vz             (mass from ff or built-in table)
             //   8: elem x y z vx vy vz mass
-            if (tokens.size() != 4 && tokens.size() != 5 &&
-                tokens.size() != 7 && tokens.size() != 8) {
+            //   9: elem x y z vx vy vz mass charge (explicit mass + charge)
+            if (tokens.size() != 4 && tokens.size() != 5 && tokens.size() != 6 &&
+                tokens.size() != 7 && tokens.size() != 8 && tokens.size() != 9) {
                 throw std::runtime_error(
                     "Atom line " + std::to_string(atom_index + 1)
-                    + " (element-symbol format) must have 4, 5, 7, or 8 columns, got "
+                    + " (element-symbol format) must have 4, 5, 6, 7, 8, or 9 columns, got "
                     + std::to_string(tokens.size()));
             }
 
@@ -232,16 +238,17 @@ void ConfigLoader::load_xyz(const std::filesystem::path& xyz_path, System& syste
                                        parse_double(tokens[3], "z")};
 
             auto velocities = system.mutable_velocities();
-            if (tokens.size() == 7 || tokens.size() == 8) {
+            if (tokens.size() == 7 || tokens.size() == 8 || tokens.size() == 9) {
                 velocities[atom_index] = {parse_double(tokens[4], "vx"),
                                           parse_double(tokens[5], "vy"),
                                           parse_double(tokens[6], "vz")};
             }
 
-            // Mass: explicit last column → ff type entry → built-in table.
-            if (tokens.size() == 5) {
+            // Mass: explicit column → ff type entry → built-in table.
+            // Layouts with explicit mass: 5,6 (no vel) and 8,9 (with vel).
+            if (tokens.size() == 5 || tokens.size() == 6) {
                 masses[atom_index] = parse_double(tokens[4], "mass");
-            } else if (tokens.size() == 8) {
+            } else if (tokens.size() == 8 || tokens.size() == 9) {
                 masses[atom_index] = parse_double(tokens[7], "mass");
             } else if (ff != nullptr) {
                 const int tidx = atom_types[atom_index];
@@ -261,25 +268,43 @@ void ConfigLoader::load_xyz(const std::filesystem::path& xyz_path, System& syste
                 }
                 masses[atom_index] = mit->second;
             }
+
+            // Charge: explicit last column overrides FF-type default.
+            // Layouts with explicit charge: 6 (no vel) and 9 (with vel).
+            if (tokens.size() == 6) {
+                charges[atom_index] = parse_double(tokens[5], "charge");
+                has_explicit_charge[atom_index] = true;
+            } else if (tokens.size() == 9) {
+                charges[atom_index] = parse_double(tokens[8], "charge");
+                has_explicit_charge[atom_index] = true;
+            }
         } else {
             // ---- Integer type mode (1-based, LAMMPS style) ----
             // When ff is provided mass can be omitted (4 or 7 columns).
-            // Without ff, explicit mass is required (5 or 8 columns).
+            // Without ff, explicit mass is required (5, 6, 8, or 9 columns).
+            // Column layouts:
+            //   4: type x y z                      (mass from ff)
+            //   5: type x y z mass
+            //   6: type x y z mass charge
+            //   7: type x y z vx vy vz             (mass from ff)
+            //   8: type x y z vx vy vz mass
+            //   9: type x y z vx vy vz mass charge
             const bool has_ff = (ff != nullptr);
             if (has_ff) {
-                if (tokens.size() != 4 && tokens.size() != 5 &&
-                    tokens.size() != 7 && tokens.size() != 8) {
+                if (tokens.size() != 4 && tokens.size() != 5 && tokens.size() != 6 &&
+                    tokens.size() != 7 && tokens.size() != 8 && tokens.size() != 9) {
                     throw std::runtime_error(
                         "Atom line " + std::to_string(atom_index + 1)
-                        + " must have 4, 5, 7, or 8 columns, got "
+                        + " must have 4, 5, 6, 7, 8, or 9 columns, got "
                         + std::to_string(tokens.size()));
                 }
             } else {
-                if (tokens.size() != 5 && tokens.size() != 8) {
+                if (tokens.size() != 5 && tokens.size() != 6 &&
+                    tokens.size() != 8 && tokens.size() != 9) {
                     throw std::runtime_error(
                         "Atom line " + std::to_string(atom_index + 1)
-                        + " must have 5 columns (type x y z mass) or 8 columns"
-                          " (type x y z vx vy vz mass), got "
+                        + " must have 5/6 columns (type x y z mass [charge]) or 8/9 columns"
+                          " (type x y z vx vy vz mass [charge]), got "
                         + std::to_string(tokens.size()));
                 }
             }
@@ -297,16 +322,16 @@ void ConfigLoader::load_xyz(const std::filesystem::path& xyz_path, System& syste
                                        parse_double(tokens[2], "y"),
                                        parse_double(tokens[3], "z")};
             auto velocities = system.mutable_velocities();
-            if (tokens.size() == 7 || tokens.size() == 8) {
+            if (tokens.size() == 7 || tokens.size() == 8 || tokens.size() == 9) {
                 velocities[atom_index] = {parse_double(tokens[4], "vx"),
                                           parse_double(tokens[5], "vy"),
                                           parse_double(tokens[6], "vz")};
             }
 
             // Mass: explicit column or from ff type definition.
-            if (tokens.size() == 5) {
+            if (tokens.size() == 5 || tokens.size() == 6) {
                 masses[atom_index] = parse_double(tokens[4], "mass");
-            } else if (tokens.size() == 8) {
+            } else if (tokens.size() == 8 || tokens.size() == 9) {
                 masses[atom_index] = parse_double(tokens[7], "mass");
             } else {
                 // 4 or 7 columns: mass comes from ff.
@@ -324,6 +349,15 @@ void ConfigLoader::load_xyz(const std::filesystem::path& xyz_path, System& syste
                 }
                 masses[atom_index] = m;
             }
+
+            // Charge: explicit last column overrides FF-type default.
+            if (tokens.size() == 6) {
+                charges[atom_index] = parse_double(tokens[5], "charge");
+                has_explicit_charge[atom_index] = true;
+            } else if (tokens.size() == 9) {
+                charges[atom_index] = parse_double(tokens[8], "charge");
+                has_explicit_charge[atom_index] = true;
+            }
         }
 
         if (masses[atom_index] <= 0.0) {
@@ -332,12 +366,12 @@ void ConfigLoader::load_xyz(const std::filesystem::path& xyz_path, System& syste
         }
     }
 
-    // Populate per-atom charges from the force field type definitions.
-    // Charges default to 0 when no FF is provided or a type has no charge defined.
-    auto charges = system.mutable_charges();
+    // Populate per-atom charges from FF type definitions for atoms that did NOT
+    // receive an explicit charge column in the XYZ file.
     if (ff != nullptr) {
         const auto types = system.atom_types();
         for (std::size_t i = 0; i < atom_count; ++i) {
+            if (has_explicit_charge[i]) continue;  // explicit column takes precedence
             const int tidx = types[i];
             if (tidx >= 0 && static_cast<std::size_t>(tidx) < ff->elements.size()) {
                 charges[i] = ff->elements[static_cast<std::size_t>(tidx)].charge;
@@ -397,6 +431,12 @@ RunConfig ConfigLoader::load_run(const std::filesystem::path& run_path) const {
             config.velocity_seed = parse_uint32(tokens[1], "velocity_seed");
         } else if (tokens[0] == "remove_com_velocity") {
             config.remove_center_of_mass_velocity = parse_bool(tokens[1], "remove_com_velocity");
+        } else if (tokens[0] == "molecular_nonbonded") {
+            if (tokens[1] != "none" && tokens[1] != "lj_unsafe") {
+                throw std::runtime_error(
+                    "molecular_nonbonded must be 'none' or 'lj_unsafe'");
+            }
+            config.molecular_nonbonded_mode = tokens[1];
         // ---- Inline force field directives ----
         } else if (tokens[0] == "force_field") {
             if (tokens[1] != "lj") {
@@ -516,10 +556,19 @@ RunConfig ConfigLoader::load_run(const std::filesystem::path& run_path) const {
 
 void LJForceFieldConfig::pair_params(int type_i, int type_j,
                                      double& eps_out, double& sig_out) const noexcept {
+    // Check explicit cross-pair overrides first.
+    const auto key = std::make_pair(std::min(type_i, type_j), std::max(type_i, type_j));
+    const auto it  = pair_overrides.find(key);
+    if (it != pair_overrides.end()) {
+        eps_out = it->second.epsilon;
+        sig_out = it->second.sigma;
+        return;
+    }
+    // Fall back to Lorentz-Berthelot mixing rules.
     const auto& ei = elements[static_cast<std::size_t>(type_i)];
     const auto& ej = elements[static_cast<std::size_t>(type_j)];
-    eps_out = std::sqrt(ei.epsilon * ej.epsilon);   // Lorentz-Berthelot (geometric)
-    sig_out = 0.5 * (ei.sigma + ej.sigma);           // Lorentz-Berthelot (arithmetic)
+    eps_out = std::sqrt(ei.epsilon * ej.epsilon);   // geometric mean
+    sig_out = 0.5 * (ei.sigma + ej.sigma);           // arithmetic mean
 }
 
 LJForceFieldConfig ConfigLoader::load_force_field(const std::filesystem::path& ff_path) const {
@@ -747,7 +796,7 @@ MolecularForceFieldConfig ConfigLoader::load_molecular_ff(
                 throw std::runtime_error("pair directive must specify both epsilon and sigma");
 
             const auto key = std::make_pair(std::min(ti, tj), std::max(ti, tj));
-            cfg.pair_overrides[key] = ov;
+            cfg.lj.pair_overrides[key] = ov;
 
         // ---- Bond types ----
         } else if (tokens[0] == "bond_type") {

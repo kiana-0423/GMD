@@ -112,15 +112,17 @@ int main(int argc, char** argv)
         // --- Force provider ---
         std::shared_ptr<gmd::ClassicalForceProvider> lj_provider;
         std::shared_ptr<gmd::ForceProvider> active_provider;
+        double short_range_cutoff = 0.0;
+        bool need_neighbor_builder = false;
         if (run_config.force_field.has_value()) {
             const auto& ff_config = run_config.force_field.value();
             lj_provider = std::make_shared<gmd::ClassicalForceProvider>(ff_config);
             active_provider = lj_provider;
+            short_range_cutoff = lj_provider->cutoff();
+            need_neighbor_builder = true;
             std::cout << "[gmd] Loaded inline force field from " << run_path
                       << " (" << ff_config.elements.size() << " element type(s))\n";
         } else if (molecular_ff.has_value()) {
-            lj_provider = std::make_shared<gmd::ClassicalForceProvider>(molecular_ff->lj);
-
             auto bonded_provider = std::make_shared<gmd::BondedForceProvider>(topology);
             for (const auto& bp : molecular_ff->bond_types) {
                 bonded_provider->add_bond_type(bp);
@@ -135,10 +137,8 @@ int main(int argc, char** argv)
                 bonded_provider->add_improper_type(ip);
             }
 
-            auto composite = std::make_shared<gmd::CompositeForceProvider>();
-            composite->add(lj_provider);
-            composite->add(bonded_provider);
-            active_provider = composite;
+            active_provider = bonded_provider;
+            short_range_cutoff = molecular_ff->lj.cutoff;
 
             std::cout << "[gmd] Loaded force field from " << ff_path
                       << " (" << molecular_ff->lj.elements.size() << " atom type(s), "
@@ -147,24 +147,46 @@ int main(int argc, char** argv)
                       << topology->dihedrals.size() << " dihedral(s), "
                       << topology->impropers.size() << " improper(s))\n";
             std::cout << "[gmd] Loaded topology from " << top_path << "\n";
+            if (run_config.molecular_nonbonded_mode == "lj_unsafe") {
+                lj_provider = std::make_shared<gmd::ClassicalForceProvider>(molecular_ff->lj);
+                auto composite = std::make_shared<gmd::CompositeForceProvider>();
+                composite->add(lj_provider);
+                composite->add(bonded_provider);
+                active_provider = composite;
+                short_range_cutoff = lj_provider->cutoff();
+                need_neighbor_builder = true;
+                std::cerr << "[gmd] WARNING: molecular_nonbonded=lj_unsafe enables LJ without 1-2/1-3 exclusions.\n"
+                          << "[gmd]          This is unphysical for most molecular force fields and is intended\n"
+                          << "[gmd]          only for diagnostics until exclusion lists are implemented.\n";
+            } else {
+                std::cout << "[gmd] Molecular non-bonded mode: bonded-only (default).\n"
+                          << "[gmd] Set 'molecular_nonbonded lj_unsafe' in run.in to explicitly enable LJ.\n";
+            }
         } else if (external_lj_ff.has_value()) {
             const auto& ff_config = external_lj_ff.value();
             lj_provider = std::make_shared<gmd::ClassicalForceProvider>(ff_config);
             active_provider = lj_provider;
+            short_range_cutoff = lj_provider->cutoff();
+            need_neighbor_builder = true;
             std::cout << "[gmd] Loaded force field from " << ff_path
                       << " (" << ff_config.elements.size() << " element type(s))\n";
         } else {
             lj_provider = std::make_shared<gmd::ClassicalForceProvider>();
             active_provider = lj_provider;
+            short_range_cutoff = lj_provider->cutoff();
+            need_neighbor_builder = true;
             std::cout << "[gmd] No force field supplied; using default Ar LJ parameters.\n";
         }
 
         // --- Long-range Coulomb (Ewald or PME) ---
         // If a Coulomb section is present in run.in, add it to the active provider.
-        double lj_cutoff = lj_provider->cutoff();
-
         if (run_config.coulomb.has_value()) {
             const auto& cc = *run_config.coulomb;
+            const double coulomb_cutoff =
+                cc.real_cutoff > 0.0 ? cc.real_cutoff
+                                     : (short_range_cutoff > 0.0 ? short_range_cutoff : 8.5);
+            short_range_cutoff = std::max(short_range_cutoff, coulomb_cutoff);
+            need_neighbor_builder = true;
             auto composite = std::dynamic_pointer_cast<gmd::CompositeForceProvider>(active_provider);
             if (!composite) {
                 composite = std::make_shared<gmd::CompositeForceProvider>();
@@ -190,10 +212,13 @@ int main(int argc, char** argv)
             }
         }
 
-        // --- Neighbor builder (r_cut from LJ force provider, r_skin = 2.0 Å) ---
-        constexpr double r_skin = 2.0;
-        auto neighbor_builder = std::make_shared<gmd::VerletNeighborBuilder>(
-            lj_cutoff, r_skin);
+        // --- Neighbor builder (uses the largest active short-range cutoff, r_skin = 2.0 Å) ---
+        std::shared_ptr<gmd::VerletNeighborBuilder> neighbor_builder;
+        if (need_neighbor_builder) {
+            constexpr double r_skin = 2.0;
+            neighbor_builder = std::make_shared<gmd::VerletNeighborBuilder>(
+                short_range_cutoff, r_skin);
+        }
 
         // --- Integrator ---
         auto integrator = std::make_shared<gmd::VelocityVerletIntegrator>(run_config.time_step);
@@ -218,11 +243,6 @@ int main(int argc, char** argv)
             integrator->set_target_pressure(run_config.target_pressure);
             std::cout << "[gmd] Barostat: Berendsen  P=" << run_config.target_pressure
                       << " bar  tau=" << run_config.barostat_tau << " fs\n";
-            if (run_config.coulomb.has_value()) {
-                std::cout << "[gmd] Warning: Berendsen barostat requires virial from all active force terms; "
-                          << "with Coulomb enabled it may be inactive. "
-                          << "Consider 'barostat monte_carlo' instead.\n";
-            }
         } else if (run_config.barostat_type == "monte_carlo") {
             auto bstat = std::make_shared<gmd::MCBarostat>(
                 run_config.mc_frequency,
@@ -247,7 +267,9 @@ int main(int argc, char** argv)
         simulation.set_remove_center_of_mass_velocity(run_config.remove_center_of_mass_velocity);
         simulation.set_initial_temperature(run_config.temperature);
         simulation.set_force_provider(active_provider);
-        simulation.set_neighbor_builder(neighbor_builder);
+        if (neighbor_builder) {
+            simulation.set_neighbor_builder(neighbor_builder);
+        }
         simulation.set_integrator(integrator);
         simulation.set_time_step(run_config.time_step);
 

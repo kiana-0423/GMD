@@ -18,6 +18,14 @@ namespace gmd {
 
 class System;
 
+// ---------------------------------------------------------------------------
+// Explicit LJ cross-pair override (overrides Lorentz-Berthelot mixing).
+// ---------------------------------------------------------------------------
+struct ExplicitPairOverride {
+	double epsilon = 0.0;  // well depth [eV]
+	double sigma   = 0.0;  // zero-crossing distance [Å]
+};
+
 // Per-type LJ parameters (one entry per type number, stored 0-based internally).
 struct LJElementParams {
 	std::string element;   // element symbol (e.g. "Ar"), used for mass lookup
@@ -55,8 +63,13 @@ struct LJForceFieldConfig {
 	// Useful when xyz input uses element symbols and each symbol is unambiguous.
 	std::unordered_map<std::string, int> element_name_to_type;
 
-	// Returns epsilon[eV] and sigma[Ang] for the pair (type_i, type_j)
-	// using Lorentz-Berthelot mixing rules. Indices are 0-based.
+	// Explicit cross-pair overrides keyed by (min_type, max_type), 0-based.
+	// When present for a pair (i,j), these values replace Lorentz-Berthelot mixing.
+	std::map<std::pair<int,int>, ExplicitPairOverride> pair_overrides;
+
+	// Returns epsilon[eV] and sigma[Ang] for the pair (type_i, type_j).
+	// Checks pair_overrides first; falls back to Lorentz-Berthelot mixing.
+	// Indices are 0-based.
 	void pair_params(int type_i, int type_j,
 	                 double& eps_out, double& sig_out) const noexcept;
 };
@@ -94,6 +107,10 @@ struct RunConfig {
 	std::string velocity_init_mode = "random";
 	std::uint32_t velocity_seed = 5489u;
 	bool remove_center_of_mass_velocity = true;
+	// External molecular FFs default to bonded-only mode because 1-2 / 1-3
+	// nonbonded exclusions are not implemented yet. Set to "lj_unsafe" to
+	// explicitly include molecular LJ anyway.
+	std::string molecular_nonbonded_mode = "none";
 
 	// Inline force field parameters parsed directly from the run input file.
 	// When present, no separate .ff file is required.
@@ -118,14 +135,6 @@ struct RunConfig {
 };
 
 // ---------------------------------------------------------------------------
-// Explicit LJ cross-pair override (overrides Lorentz-Berthelot mixing).
-// ---------------------------------------------------------------------------
-struct ExplicitPairOverride {
-	double epsilon = 0.0;  // well depth [eV]
-	double sigma   = 0.0;  // zero-crossing distance [Å]
-};
-
-// ---------------------------------------------------------------------------
 // Full molecular force field:
 //   - LJ nonbonded section  (atom types, cutoff, pair overrides)
 //   - bonded parameter tables  (bonds, angles, dihedrals, impropers)
@@ -137,11 +146,9 @@ struct ExplicitPairOverride {
 // ---------------------------------------------------------------------------
 struct MolecularForceFieldConfig {
 	// ---- nonbonded ----
-	LJForceFieldConfig lj;   // atom types (mass, ε, σ, q) + cutoff
-
-	// Explicit cross-pair overrides keyed by (min_type, max_type), 0-based.
-	// When present for a pair (i,j) these values replace Lorentz-Berthelot.
-	std::map<std::pair<int,int>, ExplicitPairOverride> pair_overrides;
+	// lj.pair_overrides holds any explicit cross-pair overrides parsed from
+	// 'pair i j ...' directives in the .ff file.
+	LJForceFieldConfig lj;   // atom types (mass, ε, σ, q) + cutoff + overrides
 
 	// ---- bonded parameter tables ----
 	// Indices in these vectors correspond to the type_idx stored in Topology terms.
