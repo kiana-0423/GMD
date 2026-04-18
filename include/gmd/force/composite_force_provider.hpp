@@ -34,7 +34,8 @@ public:
         result.success = true;
         result.potential_energy = 0.0;
         result.forces.assign(n, Force3D{0.0, 0.0, 0.0});
-        result.virial_valid = false;
+        result.virial = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+        result.virial_valid = true;
 
         for (auto& p : providers_) {
             ForceResult sub;
@@ -48,6 +49,13 @@ public:
                 result.forces[i][0] += sub.forces[i][0];
                 result.forces[i][1] += sub.forces[i][1];
                 result.forces[i][2] += sub.forces[i][2];
+            }
+            if (sub.virial_valid) {
+                for (std::size_t i = 0; i < result.virial.size(); ++i) {
+                    result.virial[i] += sub.virial[i];
+                }
+            } else {
+                result.virial_valid = false;
             }
         }
     }

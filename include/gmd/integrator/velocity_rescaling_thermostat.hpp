@@ -31,9 +31,6 @@ public:
     // Scale all velocities to match target_temperature exactly.
     void apply(System& system, double dt, double target_temperature) override;
 
-    // Last measured instantaneous temperature [K].
-    double current_temperature() const noexcept { return current_temperature_; }
-
 private:
     std::size_t dof_ = 0;              // degrees of freedom (set in initialize)
     double current_temperature_ = 0.0; // for diagnostics

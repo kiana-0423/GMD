@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstdint>
+
 #include "gmd/integrator/barostat.hpp"
 
 namespace gmd {
@@ -24,11 +26,14 @@ public:
 
     ~BerendsenBarostat() override = default;
 
-    void apply(System& system, double dt, double target_pressure,
+    void apply(System& system,
+               ForceProvider& provider,
+               RuntimeContext& runtime,
+               std::uint64_t step,
+               double dt,
+               double temperature,
+               double target_pressure,
                double virial_trace) override;
-
-    double tau_P() const noexcept { return tau_P_; }
-    double beta()  const noexcept { return beta_;  }
 
     void set_tau_P(double t) noexcept { tau_P_ = t; }
     void set_beta(double b)  noexcept { beta_  = b; }

@@ -45,10 +45,6 @@ public:
                          double dt_half,
                          double target_temperature) noexcept override;
 
-    double xi()   const noexcept { return xi_; }
-    double tau()  const noexcept { return tau_; }
-    double current_temperature() const noexcept { return current_temperature_; }
-
 private:
     double tau_  = 100.0;   // relaxation time (same units as dt)
     double xi_   = 0.0;     // friction variable

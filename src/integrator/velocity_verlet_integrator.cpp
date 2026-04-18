@@ -60,6 +60,8 @@ std::string_view VelocityVerletIntegrator::name() const noexcept {
 
 void VelocityVerletIntegrator::initialize(System& system, RuntimeContext& runtime) {
     (void)runtime;
+    last_virial_trace_ = 0.0;
+    last_virial_valid_ = false;
     auto forces = system.mutable_forces();
     for (auto& force : forces) {
         force = {0.0, 0.0, 0.0};
@@ -108,7 +110,8 @@ void VelocityVerletIntegrator::step(System& system,
     copy_forces_to_system(system, next_force);
 
     // Cache virial trace for barostat (uses full virial tensor if available).
-    if (next_force.virial_valid) {
+    last_virial_valid_ = next_force.virial_valid;
+    if (last_virial_valid_) {
         last_virial_trace_ = next_force.virial[0] + next_force.virial[4] + next_force.virial[8];
     }
 
@@ -127,8 +130,16 @@ void VelocityVerletIntegrator::step(System& system,
     }
 
     // --- Barostat (end of step) ---
+    // MCBarostat works unconditionally (no virial required).
+    // BerendsenBarostat is guarded: skip when virial is unavailable so that
+    // pressure is not driven by a zero-virial (incorrect) estimate.
     if (barostat_) {
-        barostat_->apply(system, dt, target_pressure_, last_virial_trace_);
+        const bool can_run = !barostat_->requires_virial() || last_virial_valid_;
+        if (can_run) {
+            barostat_->apply(system, force_provider, runtime,
+                             ctx.step, dt, target_temperature_,
+                             target_pressure_, last_virial_trace_);
+        }
     }
 }
 

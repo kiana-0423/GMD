@@ -1,0 +1,7 @@
+time_step           1.0
+run                 500
+velocity            300.0
+velocity_init       random
+remove_com_velocity true
+thermostat          nose_hoover
+thermostat_tau      100.0

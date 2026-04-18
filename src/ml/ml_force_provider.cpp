@@ -61,30 +61,4 @@ void MLForceProvider::finalize(RuntimeContext& runtime) {
     }
 }
 
-void MLForceProvider::set_model_path(std::filesystem::path model_path) noexcept {
-    model_path_ = std::move(model_path);
-    model_loaded_ = false;
-}
-
-const std::filesystem::path& MLForceProvider::model_path() const noexcept {
-    return model_path_;
-}
-
-void MLForceProvider::set_model_format(std::string model_format) noexcept {
-    model_format_ = std::move(model_format);
-}
-
-std::string_view MLForceProvider::model_format() const noexcept {
-    return model_format_;
-}
-
-void MLForceProvider::set_runtime_adapter(std::shared_ptr<ModelRuntimeAdapter> adapter) noexcept {
-    adapter_ = adapter ? std::move(adapter) : CreateUnavailableModelRuntimeAdapter();
-    model_loaded_ = false;
-}
-
-const std::shared_ptr<ModelRuntimeAdapter>& MLForceProvider::runtime_adapter() const noexcept {
-    return adapter_;
-}
-
 }  // namespace gmd

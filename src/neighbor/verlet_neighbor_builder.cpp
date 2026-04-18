@@ -51,12 +51,19 @@ bool VerletNeighborBuilder::needs_rebuild(const System& system, std::uint64_t /*
 
     const double trigger_sq = (r_skin_ * 0.5) * (r_skin_ * 0.5);
     const auto coords = system.coordinates();
+    const Box& box = system.box();
     const std::size_t n = coords.size();
 
     for (std::size_t i = 0; i < n; ++i) {
-        double dx = coords[i][0] - nl.ref_coordinates[i][0];
-        double dy = coords[i][1] - nl.ref_coordinates[i][1];
-        double dz = coords[i][2] - nl.ref_coordinates[i][2];
+        std::array<double, 3> dr = {
+            coords[i][0] - nl.ref_coordinates[i][0],
+            coords[i][1] - nl.ref_coordinates[i][1],
+            coords[i][2] - nl.ref_coordinates[i][2]
+        };
+        apply_minimum_image(dr, box);
+        const double dx = dr[0];
+        const double dy = dr[1];
+        const double dz = dr[2];
         if (dx*dx + dy*dy + dz*dz > trigger_sq) {
             return true;
         }

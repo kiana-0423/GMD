@@ -50,6 +50,7 @@ private:
     double target_temperature_ = 300.0;   // [K]
     double target_pressure_    = 1.0;     // user-defined pressure units
     double last_virial_trace_  = 0.0;
+    bool last_virial_valid_    = false;
 
     std::shared_ptr<Thermostat> thermostat_;
     std::shared_ptr<Barostat>   barostat_;

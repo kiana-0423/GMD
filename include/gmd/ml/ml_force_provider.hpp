@@ -26,15 +26,6 @@ public:
 	void compute(const ForceRequest& request, ForceResult& result, RuntimeContext& runtime) override;
 	void finalize(RuntimeContext& runtime) override;
 
-	void set_model_path(std::filesystem::path model_path) noexcept;
-	const std::filesystem::path& model_path() const noexcept;
-
-	void set_model_format(std::string model_format) noexcept;
-	std::string_view model_format() const noexcept;
-
-	void set_runtime_adapter(std::shared_ptr<ModelRuntimeAdapter> adapter) noexcept;
-	const std::shared_ptr<ModelRuntimeAdapter>& runtime_adapter() const noexcept;
-
 private:
 	std::filesystem::path model_path_;
 	std::string model_format_;

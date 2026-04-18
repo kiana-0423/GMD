@@ -8,7 +8,13 @@
 
 namespace gmd {
 
-void BerendsenBarostat::apply(System& system, double dt, double target_pressure,
+void BerendsenBarostat::apply(System& system,
+                               ForceProvider& /*provider*/,
+                               RuntimeContext& /*runtime*/,
+                               std::uint64_t  /*step*/,
+                               double dt,
+                               double /*temperature*/,
+                               double target_pressure,
                                double virial_trace) {
     const std::size_t n = system.atom_count();
     if (n == 0) return;

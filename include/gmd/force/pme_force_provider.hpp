@@ -43,9 +43,6 @@ public:
                  RuntimeContext& runtime) override;
     void finalize(RuntimeContext& runtime) override;
 
-    double alpha()       const noexcept { return alpha_; }
-    double real_cutoff() const noexcept { return real_cutoff_; }
-
 private:
     double alpha_;
     double alpha_sq_;

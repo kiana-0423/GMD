@@ -1,14 +1,19 @@
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <memory>
+#include <sstream>
+#include <string>
 #include <stdexcept>
 
+#include "gmd/force/bonded_force_provider.hpp"
 #include "gmd/core/simulation.hpp"
 #include "gmd/force/classical_force_provider.hpp"
 #include "gmd/force/composite_force_provider.hpp"
 #include "gmd/force/ewald_force_provider.hpp"
 #include "gmd/force/pme_force_provider.hpp"
 #include "gmd/integrator/berendsen_barostat.hpp"
+#include "gmd/integrator/mc_barostat.hpp"
 #include "gmd/integrator/nose_hoover_thermostat.hpp"
 #include "gmd/integrator/velocity_rescaling_thermostat.hpp"
 #include "gmd/integrator/velocity_verlet_integrator.hpp"
@@ -19,11 +24,50 @@
 #include "gmd/system/initializer.hpp"
 #include "gmd/system/system.hpp"
 
+namespace {
+
+enum class ForceFieldFileKind {
+    LJ,
+    Molecular,
+};
+
+ForceFieldFileKind detect_force_field_file_kind(const std::filesystem::path& path) {
+    std::ifstream input(path);
+    if (!input.is_open()) {
+        throw std::runtime_error("Failed to open force field file: " + path.string());
+    }
+
+    std::string line;
+    while (std::getline(input, line)) {
+        std::istringstream iss(line);
+        std::string key;
+        if (!(iss >> key)) continue;
+        if (!key.empty() && key[0] == '#') continue;
+        if (key != "force_field") continue;
+
+        std::string value;
+        if (!(iss >> value)) {
+            throw std::runtime_error(
+                "force_field directive in " + path.string() + " is missing its value");
+        }
+        if (value == "lj") return ForceFieldFileKind::LJ;
+        if (value == "molecular") return ForceFieldFileKind::Molecular;
+        throw std::runtime_error(
+            "Unsupported force_field type in " + path.string() + ": " + value);
+    }
+
+    throw std::runtime_error(
+        "Could not determine force_field type from file: " + path.string());
+}
+
+}  // namespace
+
 int main(int argc, char** argv)
 {
     const char* xyz_path = argc > 1 ? argv[1] : "xyz.in";
     const char* run_path = argc > 2 ? argv[2] : "run.in";
     const char* ff_path  = argc > 3 ? argv[3] : nullptr;
+    const char* top_path = argc > 4 ? argv[4] : nullptr;
 
     // Output stem: same directory as xyz input, base name "output".
     const std::filesystem::path output_stem =
@@ -39,38 +83,94 @@ int main(int argc, char** argv)
         // Load run config first so inline force field is available before the xyz file is parsed.
         const gmd::RunConfig run_config = loader.load_run(run_path);
 
-        // Pass the FF to load_xyz so type numbers map to masses automatically.
-        const gmd::LJForceFieldConfig* ff_ptr =
-            run_config.force_field.has_value() ? &run_config.force_field.value() : nullptr;
-        loader.load_xyz(xyz_path, system, ff_ptr);
+        std::optional<gmd::LJForceFieldConfig> external_lj_ff;
+        std::optional<gmd::MolecularForceFieldConfig> molecular_ff;
+        std::shared_ptr<gmd::Topology> topology;
+
+        // Resolve external FF before xyz loading so type→mass mapping works.
+        const gmd::LJForceFieldConfig* xyz_ff = nullptr;
+        if (run_config.force_field.has_value()) {
+            xyz_ff = &run_config.force_field.value();
+        } else if (ff_path != nullptr && std::filesystem::exists(ff_path)) {
+            const auto ff_kind = detect_force_field_file_kind(ff_path);
+            if (ff_kind == ForceFieldFileKind::Molecular) {
+                if (top_path == nullptr) {
+                    throw std::runtime_error(
+                        "Molecular force fields require a topology file as the fourth CLI argument");
+                }
+                molecular_ff = loader.load_molecular_ff(ff_path);
+                topology = loader.load_topology(top_path);
+                xyz_ff = &molecular_ff->lj;
+            } else {
+                external_lj_ff = loader.load_force_field(ff_path);
+                xyz_ff = &external_lj_ff.value();
+            }
+        }
+
+        loader.load_xyz(xyz_path, system, xyz_ff);
 
         // --- Force provider ---
-        std::shared_ptr<gmd::ClassicalForceProvider> force_provider;
+        std::shared_ptr<gmd::ClassicalForceProvider> lj_provider;
+        std::shared_ptr<gmd::ForceProvider> active_provider;
         if (run_config.force_field.has_value()) {
             const auto& ff_config = run_config.force_field.value();
-            force_provider = std::make_shared<gmd::ClassicalForceProvider>(ff_config);
+            lj_provider = std::make_shared<gmd::ClassicalForceProvider>(ff_config);
+            active_provider = lj_provider;
             std::cout << "[gmd] Loaded inline force field from " << run_path
                       << " (" << ff_config.elements.size() << " element type(s))\n";
-        } else if (ff_path != nullptr && std::filesystem::exists(ff_path)) {
-            const auto ff_config = loader.load_force_field(ff_path);
-            force_provider = std::make_shared<gmd::ClassicalForceProvider>(ff_config);
+        } else if (molecular_ff.has_value()) {
+            lj_provider = std::make_shared<gmd::ClassicalForceProvider>(molecular_ff->lj);
+
+            auto bonded_provider = std::make_shared<gmd::BondedForceProvider>(topology);
+            for (const auto& bp : molecular_ff->bond_types) {
+                bonded_provider->add_bond_type(bp);
+            }
+            for (const auto& ap : molecular_ff->angle_types) {
+                bonded_provider->add_angle_type(ap);
+            }
+            for (const auto& dp : molecular_ff->dihedral_types) {
+                bonded_provider->add_dihedral_type(dp);
+            }
+            for (const auto& ip : molecular_ff->improper_types) {
+                bonded_provider->add_improper_type(ip);
+            }
+
+            auto composite = std::make_shared<gmd::CompositeForceProvider>();
+            composite->add(lj_provider);
+            composite->add(bonded_provider);
+            active_provider = composite;
+
+            std::cout << "[gmd] Loaded force field from " << ff_path
+                      << " (" << molecular_ff->lj.elements.size() << " atom type(s), "
+                      << topology->bonds.size() << " bond(s), "
+                      << topology->angles.size() << " angle(s), "
+                      << topology->dihedrals.size() << " dihedral(s), "
+                      << topology->impropers.size() << " improper(s))\n";
+            std::cout << "[gmd] Loaded topology from " << top_path << "\n";
+        } else if (external_lj_ff.has_value()) {
+            const auto& ff_config = external_lj_ff.value();
+            lj_provider = std::make_shared<gmd::ClassicalForceProvider>(ff_config);
+            active_provider = lj_provider;
             std::cout << "[gmd] Loaded force field from " << ff_path
                       << " (" << ff_config.elements.size() << " element type(s))\n";
         } else {
-            force_provider = std::make_shared<gmd::ClassicalForceProvider>();
+            lj_provider = std::make_shared<gmd::ClassicalForceProvider>();
+            active_provider = lj_provider;
             std::cout << "[gmd] No force field supplied; using default Ar LJ parameters.\n";
         }
 
         // --- Long-range Coulomb (Ewald or PME) ---
-        // If a coulomb section is present in run.in, wrap the LJ provider in a
-        // CompositeForceProvider and add the selected Coulomb provider.
-        double lj_cutoff = force_provider->cutoff();
-        std::shared_ptr<gmd::ForceProvider> active_provider = force_provider;
+        // If a Coulomb section is present in run.in, add it to the active provider.
+        double lj_cutoff = lj_provider->cutoff();
 
         if (run_config.coulomb.has_value()) {
             const auto& cc = *run_config.coulomb;
-            auto composite = std::make_shared<gmd::CompositeForceProvider>();
-            composite->add(force_provider);
+            auto composite = std::dynamic_pointer_cast<gmd::CompositeForceProvider>(active_provider);
+            if (!composite) {
+                composite = std::make_shared<gmd::CompositeForceProvider>();
+                composite->add(active_provider);
+                active_provider = composite;
+            }
 
             if (cc.method == "pme") {
                 auto pme = std::make_shared<gmd::PMEForceProvider>(
@@ -88,7 +188,6 @@ int main(int argc, char** argv)
                           << "  kmax=" << cc.kmax
                           << "  r_cut=" << cc.real_cutoff << "\n";
             }
-            active_provider = composite;
         }
 
         // --- Neighbor builder (r_cut from LJ force provider, r_skin = 2.0 Å) ---
@@ -119,6 +218,20 @@ int main(int argc, char** argv)
             integrator->set_target_pressure(run_config.target_pressure);
             std::cout << "[gmd] Barostat: Berendsen  P=" << run_config.target_pressure
                       << " bar  tau=" << run_config.barostat_tau << " fs\n";
+            if (run_config.coulomb.has_value()) {
+                std::cout << "[gmd] Warning: Berendsen barostat requires virial from all active force terms; "
+                          << "with Coulomb enabled it may be inactive. "
+                          << "Consider 'barostat monte_carlo' instead.\n";
+            }
+        } else if (run_config.barostat_type == "monte_carlo") {
+            auto bstat = std::make_shared<gmd::MCBarostat>(
+                run_config.mc_frequency,
+                run_config.mc_volume_step);
+            integrator->set_barostat(bstat);
+            integrator->set_target_pressure(run_config.target_pressure);
+            std::cout << "[gmd] Barostat: Monte Carlo NPT  P=" << run_config.target_pressure
+                      << " bar  freq=" << run_config.mc_frequency
+                      << "  max_delta_ln_V=" << run_config.mc_volume_step << "\n";
         }
 
         // --- Velocity initializer ---
@@ -158,13 +271,13 @@ int main(int argc, char** argv)
 
         for (std::uint64_t s = 1; s <= run_config.num_steps; ++s) {
             simulation.step(runtime);
-            writer.write_frame_if(system, s, s * run_config.time_step, dof, output_interval);
+            writer.write_frame_if(system, s, s * run_config.time_step_fs, dof, output_interval);
         }
 
         // Always write final frame.
         if (run_config.num_steps % output_interval != 0) {
             writer.write_frame(system, run_config.num_steps,
-                               run_config.num_steps * run_config.time_step, dof);
+                               run_config.num_steps * run_config.time_step_fs, dof);
         }
 
         writer.close();

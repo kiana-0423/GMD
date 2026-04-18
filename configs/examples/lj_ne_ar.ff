@@ -1,8 +1,0 @@
-# Lennard-Jones force field for a Ne-Ar binary mixture.
-# Lorentz-Berthelot mixing rules are applied automatically for cross-pairs.
-force_field  lj
-cutoff       8.5
-
-# Each type specifies an element symbol, epsilon [eV] and sigma [Ang].
-type 1  Ne  epsilon  0.003093  sigma  2.780
-type 2  Ar  epsilon  0.010320  sigma  3.405

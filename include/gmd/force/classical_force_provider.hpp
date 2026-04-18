@@ -38,17 +38,10 @@ public:
     void compute(const ForceRequest& request, ForceResult& result, RuntimeContext& runtime) override;
     void finalize(RuntimeContext& runtime) override;
 
-    // --- Parameter accessors (single-element convenience) ---
-    double epsilon()      const noexcept;
-    double sigma()        const noexcept;
-    double cutoff()       const noexcept { return cutoff_; }
-    double energy_shift() const noexcept;
+    double cutoff() const noexcept { return cutoff_; }
 
     // Replace all parameters at once and rebuild the pair table.
     void set_params(const LJForceFieldConfig& config) noexcept;
-
-    // Access the full pair table (num_types × num_types).
-    const std::vector<std::vector<PairCache>>& pair_table() const noexcept { return pair_table_; }
 
 private:
     double cutoff_;        // cutoff radius [Ang]

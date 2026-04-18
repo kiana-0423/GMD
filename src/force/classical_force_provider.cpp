@@ -62,18 +62,6 @@ void ClassicalForceProvider::set_params(const LJForceFieldConfig& config) noexce
     build_pair_table(config);
 }
 
-double ClassicalForceProvider::epsilon() const noexcept {
-    return pair_table_.empty() ? 0.0 : pair_table_[0][0].eps4 / 4.0;
-}
-
-double ClassicalForceProvider::sigma() const noexcept {
-    return pair_table_.empty() ? 0.0 : std::sqrt(pair_table_[0][0].sig2);
-}
-
-double ClassicalForceProvider::energy_shift() const noexcept {
-    return pair_table_.empty() ? 0.0 : pair_table_[0][0].energy_shift;
-}
-
 std::string_view ClassicalForceProvider::name() const noexcept {
     return "classical_force_provider";
 }
@@ -91,7 +79,8 @@ void ClassicalForceProvider::compute(const ForceRequest& request,
     result.success = true;
     result.potential_energy = 0.0;
     result.forces.assign(n, Force3D{0.0, 0.0, 0.0});
-    result.virial_valid = false;
+    result.virial = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+    result.virial_valid = true;
 
     if (n == 0 || request.box == nullptr) {
         return;
@@ -132,6 +121,17 @@ void ClassicalForceProvider::compute(const ForceRequest& request,
         result.forces[j][0] -= ff * dr[0];
         result.forces[j][1] -= ff * dr[1];
         result.forces[j][2] -= ff * dr[2];
+
+        // Pair virial tensor contribution W_ab = r_a * F_b.
+        result.virial[0] += dr[0] * (ff * dr[0]);
+        result.virial[1] += dr[0] * (ff * dr[1]);
+        result.virial[2] += dr[0] * (ff * dr[2]);
+        result.virial[3] += dr[1] * (ff * dr[0]);
+        result.virial[4] += dr[1] * (ff * dr[1]);
+        result.virial[5] += dr[1] * (ff * dr[2]);
+        result.virial[6] += dr[2] * (ff * dr[0]);
+        result.virial[7] += dr[2] * (ff * dr[1]);
+        result.virial[8] += dr[2] * (ff * dr[2]);
     };
 
     if (request.neighbor_list != nullptr && request.neighbor_list->valid) {

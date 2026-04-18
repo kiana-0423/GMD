@@ -3,11 +3,16 @@
 #include <cctype>
 #include <cmath>
 #include <fstream>
+#include <map>
+#include <memory>
 #include <sstream>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
+
+#include "gmd/system/topology.hpp"
 
 #include "gmd/system/system.hpp"
 
@@ -15,7 +20,10 @@ namespace gmd {
 
 namespace {
 
-constexpr double kTimeUnitConversion = 1.018051e+1;
+// The integrator uses a reduced internal time unit derived from the code's
+// eV / Angstrom / amu convention. Keep the conversion explicit so input/output
+// can continue to use femtoseconds.
+constexpr double kInternalTimeUnitsPerFs = 1.018051e+1;
 
 // Standard atomic masses [amu] for common elements.
 // Used when xyz input provides element symbols instead of explicit masses.
@@ -43,6 +51,8 @@ std::vector<std::string> tokenize_line(std::istream& input) {
     std::vector<std::string> tokens;
     std::string token;
     while (line_stream >> token) {
+        // Stop at inline comment.
+        if (token.starts_with('#')) break;
         tokens.push_back(token);
     }
     return tokens;
@@ -363,8 +373,9 @@ RunConfig ConfigLoader::load_run(const std::filesystem::path& run_path) const {
         }
 
         if (tokens[0] == "time_step") {
-            config.time_step = parse_double(tokens[1], "time_step") / kTimeUnitConversion;
-            if (config.time_step < 0.0) {
+            config.time_step_fs = parse_double(tokens[1], "time_step");
+            config.time_step = config.time_step_fs / kInternalTimeUnitsPerFs;
+            if (config.time_step_fs < 0.0) {
                 throw std::runtime_error("time_step must be non-negative");
             }
         } else if (tokens[0] == "run") {
@@ -456,8 +467,8 @@ RunConfig ConfigLoader::load_run(const std::filesystem::path& run_path) const {
                 throw std::runtime_error("thermostat_tau must be positive");
         // ---- Barostat directives ----
         } else if (tokens[0] == "barostat") {
-            if (tokens[1] != "berendsen") {
-                throw std::runtime_error("barostat must be 'berendsen'");
+            if (tokens[1] != "berendsen" && tokens[1] != "monte_carlo") {
+                throw std::runtime_error("barostat must be 'berendsen' or 'monte_carlo'");
             }
             config.barostat_type = tokens[1];
         } else if (tokens[0] == "pressure") {
@@ -470,6 +481,14 @@ RunConfig ConfigLoader::load_run(const std::filesystem::path& run_path) const {
             config.compressibility = parse_double(tokens[1], "compressibility");
             if (config.compressibility <= 0.0)
                 throw std::runtime_error("compressibility must be positive");
+        } else if (tokens[0] == "mc_frequency") {
+            const double v = parse_double(tokens[1], "mc_frequency");
+            if (v < 1.0) throw std::runtime_error("mc_frequency must be >= 1");
+            config.mc_frequency = static_cast<std::uint32_t>(v);
+        } else if (tokens[0] == "mc_volume_step") {
+            config.mc_volume_step = parse_double(tokens[1], "mc_volume_step");
+            if (config.mc_volume_step <= 0.0)
+                throw std::runtime_error("mc_volume_step must be positive");
         } else {
             throw std::runtime_error("Unsupported run input directive: " + tokens[0]);
         }
@@ -579,6 +598,386 @@ LJForceFieldConfig ConfigLoader::load_force_field(const std::filesystem::path& f
     }
 
     return config;
+}
+
+// ============================================================================
+// ConfigLoader::load_molecular_ff
+// ============================================================================
+//
+// File format (.ff):
+//
+//   force_field  molecular
+//
+//   # --- Atom types ---------------------------------------------------------
+//   # type <N>  <elem>  mass <m>  epsilon <ε>  sigma <σ>  [charge <q>]
+//   # Units: mass [amu], epsilon [kcal/mol], sigma [Å], charge [e]
+//   type 1  CT  mass 12.011  epsilon 0.0860  sigma 3.400  charge -0.180
+//   type 2  HC  mass  1.008  epsilon 0.0157  sigma 2.650  charge  0.060
+//
+//   lj_cutoff  12.0          # LJ cutoff [Å]
+//
+//   # --- Explicit pair overrides (optional) ---------------------------------
+//   # pair <type_i> <type_j>  epsilon <ε>  sigma <σ>   (kcal/mol, Å)
+//   pair 1 2  epsilon 0.0367  sigma 3.025
+//
+//   # --- Bond types ----------------------------------------------------------
+//   # bond_type <N>  k <k>  r0 <r0>   (k: kcal/mol/Å², r0: Å)
+//   bond_type 1  k 310.0  r0 1.526
+//
+//   # --- Angle types ---------------------------------------------------------
+//   # angle_type <N>  k <k>  theta0 <θ_deg>  (k: kcal/mol/rad²)
+//   angle_type 1  k 40.0  theta0 112.7
+//
+//   # --- Dihedral types ------------------------------------------------------
+//   # dihedral_type <N>  k <k>  n <n>  delta <δ_deg>  (k: kcal/mol)
+//   dihedral_type 1  k 1.400  n 3  delta 0.0
+//
+//   # --- Improper types ------------------------------------------------------
+//   # improper_type <N>  k <k>  phi0 <φ_deg>  (k: kcal/mol/rad²)
+//   improper_type 1  k 10.5  phi0 0.0
+//
+// ============================================================================
+
+MolecularForceFieldConfig ConfigLoader::load_molecular_ff(
+        const std::filesystem::path& ff_path) const {
+
+    std::ifstream input(ff_path);
+    if (!input.is_open()) {
+        throw std::runtime_error("Failed to open molecular FF file: " + ff_path.string());
+    }
+
+    MolecularForceFieldConfig cfg;
+    bool has_ff_type = false;
+
+    // kcal/mol → eV and deg → rad conversion constants (mirrored locally)
+    constexpr double kcal_to_eV = 4.336410e-2;
+    constexpr double d2r        = 3.14159265358979323846 / 180.0;
+
+    while (input.peek() != EOF) {
+        const auto tokens = tokenize_line(input);
+        if (tokens.empty() || tokens[0].starts_with('#')) continue;
+
+        if (tokens.size() < 2) {
+            throw std::runtime_error("Molecular FF directive missing value: " + tokens[0]);
+        }
+
+        // ---- Top-level keyword ----
+        if (tokens[0] == "force_field") {
+            if (tokens[1] != "molecular") {
+                throw std::runtime_error(
+                    "load_molecular_ff: expected 'force_field molecular', got: " + tokens[1]);
+            }
+            has_ff_type = true;
+
+        } else if (tokens[0] == "lj_cutoff") {
+            cfg.lj.cutoff = parse_double(tokens[1], "lj_cutoff");
+            if (cfg.lj.cutoff <= 0.0)
+                throw std::runtime_error("lj_cutoff must be positive");
+
+        // ---- Atom type ----
+        } else if (tokens[0] == "type") {
+            // type <N>  <elem>  mass <m>  epsilon <ε>  sigma <σ>  [charge <q>]
+            if (tokens.size() < 8) {
+                throw std::runtime_error(
+                    "type directive: type <N> <elem> mass <m> epsilon <ε> sigma <σ> "
+                    "[charge <q>]");
+            }
+            const int type_num = parse_int(tokens[1], "type_number");
+            if (type_num < 1)
+                throw std::runtime_error("type number must be >= 1");
+
+            const int idx = type_num - 1;
+            if (static_cast<int>(cfg.lj.elements.size()) <= idx)
+                cfg.lj.elements.resize(static_cast<std::size_t>(idx + 1));
+
+            LJElementParams& ep = cfg.lj.elements[static_cast<std::size_t>(idx)];
+            ep.element = tokens[2];
+
+            // Look up built-in mass default
+            {
+                auto mit = kElementMasses.find(ep.element);
+                if (mit != kElementMasses.end()) ep.mass = mit->second;
+            }
+
+            // Parse key-value pairs after element symbol
+            bool got_eps = false, got_sig = false;
+            for (std::size_t k = 3; k + 1 < tokens.size(); k += 2) {
+                const auto& key = tokens[k];
+                const auto& val = tokens[k + 1];
+                if      (key == "mass")    { ep.mass    = parse_double(val, "mass");
+                                              if (ep.mass <= 0.0) throw std::runtime_error("mass must be positive"); }
+                else if (key == "epsilon") { ep.epsilon = parse_double(val, "epsilon") * kcal_to_eV;
+                                              if (ep.epsilon <= 0.0) throw std::runtime_error("epsilon must be positive");
+                                              got_eps = true; }
+                else if (key == "sigma")  { ep.sigma   = parse_double(val, "sigma");
+                                              if (ep.sigma <= 0.0) throw std::runtime_error("sigma must be positive");
+                                              got_sig = true; }
+                else if (key == "charge") { ep.charge  = parse_double(val, "charge"); }
+                else {
+                    throw std::runtime_error("Unknown key in type directive: " + key);
+                }
+            }
+            if (!got_eps || !got_sig)
+                throw std::runtime_error(
+                    "type " + std::to_string(type_num) + " must specify both epsilon and sigma");
+
+            cfg.lj.element_name_to_type[ep.element] = idx;
+
+        // ---- Explicit pair override ----
+        } else if (tokens[0] == "pair") {
+            // pair <type_i> <type_j>  epsilon <ε>  sigma <σ>
+            if (tokens.size() < 6) {
+                throw std::runtime_error(
+                    "pair directive: pair <type_i> <type_j> epsilon <ε> sigma <σ>");
+            }
+            const int ti = parse_int(tokens[1], "pair_type_i") - 1;
+            const int tj = parse_int(tokens[2], "pair_type_j") - 1;
+            if (ti < 0 || tj < 0)
+                throw std::runtime_error("pair type numbers must be >= 1");
+
+            ExplicitPairOverride ov;
+            bool got_eps = false, got_sig = false;
+            for (std::size_t k = 3; k + 1 < tokens.size(); k += 2) {
+                const auto& key = tokens[k];
+                if      (key == "epsilon") { ov.epsilon = parse_double(tokens[k+1], "pair_epsilon") * kcal_to_eV; got_eps = true; }
+                else if (key == "sigma")   { ov.sigma   = parse_double(tokens[k+1], "pair_sigma");                got_sig = true; }
+                else throw std::runtime_error("Unknown key in pair directive: " + key);
+            }
+            if (!got_eps || !got_sig)
+                throw std::runtime_error("pair directive must specify both epsilon and sigma");
+
+            const auto key = std::make_pair(std::min(ti, tj), std::max(ti, tj));
+            cfg.pair_overrides[key] = ov;
+
+        // ---- Bond types ----
+        } else if (tokens[0] == "bond_type") {
+            // bond_type <N>  k <k>  r0 <r0>
+            if (tokens.size() < 6) {
+                throw std::runtime_error("bond_type: bond_type <N> k <k> r0 <r0>");
+            }
+            const int num = parse_int(tokens[1], "bond_type_number");
+            if (num < 1) throw std::runtime_error("bond_type number must be >= 1");
+            const int idx = num - 1;
+            if (static_cast<int>(cfg.bond_types.size()) <= idx)
+                cfg.bond_types.resize(static_cast<std::size_t>(idx + 1));
+
+            BondParams& bp = cfg.bond_types[static_cast<std::size_t>(idx)];
+            bool got_k = false, got_r0 = false;
+            for (std::size_t k = 2; k + 1 < tokens.size(); k += 2) {
+                if      (tokens[k] == "k")  { bp.k  = parse_double(tokens[k+1], "bond_k") * kcal_to_eV; got_k  = true; }
+                else if (tokens[k] == "r0") { bp.r0 = parse_double(tokens[k+1], "bond_r0");              got_r0 = true; }
+                else throw std::runtime_error("Unknown key in bond_type: " + tokens[k]);
+            }
+            if (!got_k || !got_r0)
+                throw std::runtime_error("bond_type " + std::to_string(num) + " must specify k and r0");
+
+        // ---- Angle types ----
+        } else if (tokens[0] == "angle_type") {
+            // angle_type <N>  k <k>  theta0 <θ_deg>
+            if (tokens.size() < 6) {
+                throw std::runtime_error("angle_type: angle_type <N> k <k> theta0 <θ_deg>");
+            }
+            const int num = parse_int(tokens[1], "angle_type_number");
+            if (num < 1) throw std::runtime_error("angle_type number must be >= 1");
+            const int idx = num - 1;
+            if (static_cast<int>(cfg.angle_types.size()) <= idx)
+                cfg.angle_types.resize(static_cast<std::size_t>(idx + 1));
+
+            AngleParams& ap = cfg.angle_types[static_cast<std::size_t>(idx)];
+            bool got_k = false, got_t0 = false;
+            for (std::size_t k = 2; k + 1 < tokens.size(); k += 2) {
+                if      (tokens[k] == "k")      { ap.k      = parse_double(tokens[k+1], "angle_k") * kcal_to_eV; got_k  = true; }
+                else if (tokens[k] == "theta0") { ap.theta0 = parse_double(tokens[k+1], "angle_theta0") * d2r;   got_t0 = true; }
+                else throw std::runtime_error("Unknown key in angle_type: " + tokens[k]);
+            }
+            if (!got_k || !got_t0)
+                throw std::runtime_error("angle_type " + std::to_string(num) + " must specify k and theta0");
+
+        // ---- Dihedral types ----
+        } else if (tokens[0] == "dihedral_type") {
+            // dihedral_type <N>  k <k>  n <n>  delta <δ_deg>
+            if (tokens.size() < 8) {
+                throw std::runtime_error(
+                    "dihedral_type: dihedral_type <N> k <k> n <n> delta <δ_deg>");
+            }
+            const int num = parse_int(tokens[1], "dihedral_type_number");
+            if (num < 1) throw std::runtime_error("dihedral_type number must be >= 1");
+            const int idx = num - 1;
+            if (static_cast<int>(cfg.dihedral_types.size()) <= idx)
+                cfg.dihedral_types.resize(static_cast<std::size_t>(idx + 1));
+
+            DihedralParams& dp = cfg.dihedral_types[static_cast<std::size_t>(idx)];
+            bool got_k = false, got_n = false, got_d = false;
+            for (std::size_t k = 2; k + 1 < tokens.size(); k += 2) {
+                if      (tokens[k] == "k")     { dp.k     = parse_double(tokens[k+1], "dihedral_k") * kcal_to_eV; got_k = true; }
+                else if (tokens[k] == "n")     { dp.n     = parse_int(tokens[k+1], "dihedral_n");                 got_n = true; }
+                else if (tokens[k] == "delta") { dp.delta = parse_double(tokens[k+1], "dihedral_delta") * d2r;    got_d = true; }
+                else throw std::runtime_error("Unknown key in dihedral_type: " + tokens[k]);
+            }
+            if (!got_k || !got_n || !got_d)
+                throw std::runtime_error(
+                    "dihedral_type " + std::to_string(num) + " must specify k, n and delta");
+
+        // ---- Improper types ----
+        } else if (tokens[0] == "improper_type") {
+            // improper_type <N>  k <k>  phi0 <φ_deg>
+            if (tokens.size() < 6) {
+                throw std::runtime_error(
+                    "improper_type: improper_type <N> k <k> phi0 <φ_deg>");
+            }
+            const int num = parse_int(tokens[1], "improper_type_number");
+            if (num < 1) throw std::runtime_error("improper_type number must be >= 1");
+            const int idx = num - 1;
+            if (static_cast<int>(cfg.improper_types.size()) <= idx)
+                cfg.improper_types.resize(static_cast<std::size_t>(idx + 1));
+
+            ImproperParams& ip = cfg.improper_types[static_cast<std::size_t>(idx)];
+            bool got_k = false, got_p0 = false;
+            for (std::size_t k = 2; k + 1 < tokens.size(); k += 2) {
+                if      (tokens[k] == "k")    { ip.k    = parse_double(tokens[k+1], "improper_k") * kcal_to_eV; got_k  = true; }
+                else if (tokens[k] == "phi0") { ip.phi0 = parse_double(tokens[k+1], "improper_phi0") * d2r;     got_p0 = true; }
+                else throw std::runtime_error("Unknown key in improper_type: " + tokens[k]);
+            }
+            if (!got_k || !got_p0)
+                throw std::runtime_error("improper_type " + std::to_string(num) + " must specify k and phi0");
+
+        } else {
+            throw std::runtime_error("Unknown directive in molecular FF file: " + tokens[0]);
+        }
+    }
+
+    if (!has_ff_type)
+        throw std::runtime_error("Molecular FF file must start with 'force_field molecular'");
+    if (cfg.lj.elements.empty())
+        throw std::runtime_error("Molecular FF file must define at least one 'type' entry");
+
+    return cfg;
+}
+
+// ============================================================================
+// ConfigLoader::load_topology
+// ============================================================================
+//
+// File format (.top):
+//
+//   # Comment lines start with #.
+//
+//   bonds  <count>
+//   <i> <j>  bond_type <N>
+//   ...
+//
+//   angles  <count>
+//   <i> <j> <k>  angle_type <N>
+//   ...
+//
+//   dihedrals  <count>
+//   <i> <j> <k> <l>  dihedral_type <N>
+//   ...
+//
+//   impropers  <count>
+//   <i> <j> <k> <l>  improper_type <N>
+//   ...
+//
+// All atom indices are 1-based in the file; stored 0-based in Topology.
+// Type numbers are 1-based in the file; stored 0-based in Topology terms.
+// Sections may appear in any order and may be repeated (entries are appended).
+// A count of 0 is allowed (section header with no following entries).
+// ============================================================================
+
+std::shared_ptr<Topology> ConfigLoader::load_topology(
+        const std::filesystem::path& top_path) const {
+
+    std::ifstream input(top_path);
+    if (!input.is_open()) {
+        throw std::runtime_error("Failed to open topology file: " + top_path.string());
+    }
+
+    auto topo = std::make_shared<Topology>();
+
+    while (input.peek() != EOF) {
+        const auto tokens = tokenize_line(input);
+        if (tokens.empty() || tokens[0].starts_with('#')) continue;
+
+        // Every non-comment line is a section header: <keyword> <count>
+        if (tokens.size() < 2) {
+            throw std::runtime_error("Topology: expected '<section> <count>', got: " + tokens[0]);
+        }
+
+        const std::string& section = tokens[0];
+        const int count = parse_int(tokens[1], "section_count");
+        if (count < 0) throw std::runtime_error("Topology section count must be >= 0");
+
+        if (section == "bonds") {
+            for (int entry = 0; entry < count; ++entry) {
+                const auto row = tokenize_line(input);
+                // <i> <j>  bond_type <N>
+                if (row.size() < 4 || row[2] != "bond_type")
+                    throw std::runtime_error(
+                        "bonds entry must be: <i> <j> bond_type <N>");
+                BondTerm bt;
+                bt.i        = parse_int(row[0], "bond_i") - 1;
+                bt.j        = parse_int(row[1], "bond_j") - 1;
+                bt.type_idx = parse_int(row[3], "bond_type") - 1;
+                if (bt.i < 0 || bt.j < 0 || bt.type_idx < 0)
+                    throw std::runtime_error("Bond atom indices and type must be >= 1");
+                topo->bonds.push_back(bt);
+            }
+        } else if (section == "angles") {
+            for (int entry = 0; entry < count; ++entry) {
+                const auto row = tokenize_line(input);
+                // <i> <j> <k>  angle_type <N>
+                if (row.size() < 5 || row[3] != "angle_type")
+                    throw std::runtime_error(
+                        "angles entry must be: <i> <j> <k> angle_type <N>");
+                AngleTerm at;
+                at.i        = parse_int(row[0], "angle_i") - 1;
+                at.j        = parse_int(row[1], "angle_j") - 1;
+                at.k        = parse_int(row[2], "angle_k") - 1;
+                at.type_idx = parse_int(row[4], "angle_type") - 1;
+                if (at.i < 0 || at.j < 0 || at.k < 0 || at.type_idx < 0)
+                    throw std::runtime_error("Angle atom indices and type must be >= 1");
+                topo->angles.push_back(at);
+            }
+        } else if (section == "dihedrals") {
+            for (int entry = 0; entry < count; ++entry) {
+                const auto row = tokenize_line(input);
+                // <i> <j> <k> <l>  dihedral_type <N>
+                if (row.size() < 6 || row[4] != "dihedral_type")
+                    throw std::runtime_error(
+                        "dihedrals entry must be: <i> <j> <k> <l> dihedral_type <N>");
+                DihedralTerm dt;
+                dt.i        = parse_int(row[0], "dihedral_i") - 1;
+                dt.j        = parse_int(row[1], "dihedral_j") - 1;
+                dt.k        = parse_int(row[2], "dihedral_k") - 1;
+                dt.l        = parse_int(row[3], "dihedral_l") - 1;
+                dt.type_idx = parse_int(row[5], "dihedral_type") - 1;
+                if (dt.i < 0 || dt.j < 0 || dt.k < 0 || dt.l < 0 || dt.type_idx < 0)
+                    throw std::runtime_error("Dihedral atom indices and type must be >= 1");
+                topo->dihedrals.push_back(dt);
+            }
+        } else if (section == "impropers") {
+            for (int entry = 0; entry < count; ++entry) {
+                const auto row = tokenize_line(input);
+                // <i> <j> <k> <l>  improper_type <N>
+                if (row.size() < 6 || row[4] != "improper_type")
+                    throw std::runtime_error(
+                        "impropers entry must be: <i> <j> <k> <l> improper_type <N>");
+                ImproperTerm it;
+                it.i        = parse_int(row[0], "improper_i") - 1;
+                it.j        = parse_int(row[1], "improper_j") - 1;
+                it.k        = parse_int(row[2], "improper_k") - 1;
+                it.l        = parse_int(row[3], "improper_l") - 1;
+                it.type_idx = parse_int(row[5], "improper_type") - 1;
+                if (it.i < 0 || it.j < 0 || it.k < 0 || it.l < 0 || it.type_idx < 0)
+                    throw std::runtime_error("Improper atom indices and type must be >= 1");
+                topo->impropers.push_back(it);
+            }
+        } else {
+            throw std::runtime_error("Unknown topology section: " + section);
+        }
+    }
+
+    return topo;
 }
 
 }  // namespace gmd

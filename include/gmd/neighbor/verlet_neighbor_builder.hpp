@@ -41,8 +41,6 @@ public:
     bool needs_rebuild(const System& system, std::uint64_t step) const override;
     void rebuild(System& system, RuntimeContext& runtime, NeighborBuildStats* stats) override;
 
-    double r_cut()  const noexcept { return r_cut_; }
-    double r_skin() const noexcept { return r_skin_; }
     double r_list() const noexcept { return r_cut_ + r_skin_; }
 
 private:

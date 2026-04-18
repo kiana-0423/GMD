@@ -1,6 +1,0 @@
-# Lennard-Jones parameters for Argon
-# Reference: Rahman (1964), Phys. Rev. 136, A405
-force_field  lj
-epsilon      0.01032    # well depth [eV]  (= 1.67e-21 J = 0.238 kcal/mol)
-sigma        3.405      # zero-crossing distance [Angstrom]
-cutoff       8.5        # cutoff radius [Angstrom]  (~2.5 sigma)
