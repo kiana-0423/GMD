@@ -5,6 +5,8 @@
 
 #include "gmd/boundary/periodic_boundary.hpp"
 #include "gmd/force/force_provider.hpp"
+#include "gmd/integrator/barostat.hpp"
+#include "gmd/integrator/thermostat.hpp"
 #include "gmd/runtime/runtime_context.hpp"
 #include "gmd/system/system.hpp"
 
@@ -19,12 +21,14 @@ ForceResult evaluate_force(System& system,
                            RuntimeContext& runtime) {
     ForceResult result;
     const auto coordinates = system.coordinates();
+    const NeighborList& nl = system.neighbor_list();
     ForceRequest request{
-        .system = &system,
-        .box = &system.box(),
-        .step = step,
-        .time = time,
-        .coordinates = std::span<const Coordinate3D>(coordinates.data(), coordinates.size()),
+        .system        = &system,
+        .box           = &system.box(),
+        .step          = step,
+        .time          = time,
+        .coordinates   = std::span<const Coordinate3D>(coordinates.data(), coordinates.size()),
+        .neighbor_list = nl.valid ? &nl : nullptr,
     };
     force_provider.compute(request, result, runtime);
     if (!result.success) {
@@ -60,6 +64,9 @@ void VelocityVerletIntegrator::initialize(System& system, RuntimeContext& runtim
     for (auto& force : forces) {
         force = {0.0, 0.0, 0.0};
     }
+    if (thermostat_) {
+        thermostat_->initialize(system);
+    }
 }
 
 void VelocityVerletIntegrator::step(System& system,
@@ -71,6 +78,11 @@ void VelocityVerletIntegrator::step(System& system,
         throw std::runtime_error("VelocityVerletIntegrator requires a positive time step");
     }
 
+    // --- Thermostat pre-kick (Nosé-Hoover first half-kick or no-op) ---
+    if (thermostat_) {
+        thermostat_->apply_half_kick(system, 0.5 * dt, target_temperature_);
+    }
+
     ForceResult current_force = evaluate_force(system, force_provider, ctx.step, ctx.step * dt, runtime);
     copy_forces_to_system(system, current_force);
 
@@ -78,6 +90,7 @@ void VelocityVerletIntegrator::step(System& system,
     auto coordinates = system.mutable_coordinates();
     auto velocities = system.mutable_velocities();
 
+    // First half-kick (v += 0.5*a*dt) + full position update.
     for (std::size_t atom_index = 0; atom_index < system.atom_count(); ++atom_index) {
         if (masses[atom_index] <= 0.0) {
             throw std::runtime_error("VelocityVerletIntegrator requires strictly positive masses");
@@ -94,11 +107,28 @@ void VelocityVerletIntegrator::step(System& system,
     ForceResult next_force = evaluate_force(system, force_provider, ctx.step + 1, (ctx.step + 1) * dt, runtime);
     copy_forces_to_system(system, next_force);
 
+    // Cache virial trace for barostat (uses full virial tensor if available).
+    if (next_force.virial_valid) {
+        last_virial_trace_ = next_force.virial[0] + next_force.virial[4] + next_force.virial[8];
+    }
+
+    // Second half-kick.
     for (std::size_t atom_index = 0; atom_index < system.atom_count(); ++atom_index) {
         const double inverse_mass = 1.0 / masses[atom_index];
         for (std::size_t dim = 0; dim < 3; ++dim) {
             velocities[atom_index][dim] += 0.5 * next_force.forces[atom_index][dim] * inverse_mass * dt;
         }
+    }
+
+    // --- Thermostat post-kick (Nosé-Hoover second half-kick, or full rescaling step) ---
+    if (thermostat_) {
+        thermostat_->apply_half_kick(system, 0.5 * dt, target_temperature_);
+        thermostat_->apply(system, dt, target_temperature_);
+    }
+
+    // --- Barostat (end of step) ---
+    if (barostat_) {
+        barostat_->apply(system, dt, target_pressure_, last_virial_trace_);
     }
 }
 
@@ -108,6 +138,26 @@ double VelocityVerletIntegrator::dt() const noexcept {
 
 void VelocityVerletIntegrator::set_dt(double dt) noexcept {
     dt_ = dt;
+}
+
+void VelocityVerletIntegrator::set_thermostat(std::shared_ptr<Thermostat> thermostat) noexcept {
+    thermostat_ = std::move(thermostat);
+}
+
+void VelocityVerletIntegrator::set_target_temperature(double temperature) noexcept {
+    target_temperature_ = temperature;
+}
+
+void VelocityVerletIntegrator::set_barostat(std::shared_ptr<Barostat> barostat) noexcept {
+    barostat_ = std::move(barostat);
+}
+
+void VelocityVerletIntegrator::set_target_pressure(double pressure) noexcept {
+    target_pressure_ = pressure;
+}
+
+void VelocityVerletIntegrator::set_last_virial_trace(double virial_trace) noexcept {
+    last_virial_trace_ = virial_trace;
 }
 
 }  // namespace gmd

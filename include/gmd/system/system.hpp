@@ -9,6 +9,27 @@
 
 namespace gmd {
 
+// Compressed-sparse-row neighbor list stored inside System.
+// After a NeighborBuilder::rebuild() call:
+//   - atom i's neighbors are neighbors[offsets[i] .. offsets[i]+counts[i])
+//   - each entry is a half-pair (j > i for Verlet lists built with Newton III)
+//   - ref_coordinates holds the positions at last rebuild, used for skin check
+struct NeighborList {
+	std::vector<int>   counts;           // counts[i]  = number of neighbors of atom i
+	std::vector<int>   offsets;          // offsets[i] = start index in `neighbors`
+	std::vector<int>   neighbors;        // flat neighbor index storage
+	std::vector<std::array<double, 3>> ref_coordinates;  // positions at last rebuild
+	bool valid = false;                  // false until first rebuild
+
+	void clear() noexcept {
+		counts.clear();
+		offsets.clear();
+		neighbors.clear();
+		ref_coordinates.clear();
+		valid = false;
+	}
+};
+
 // Owns per-atom simulation state. In the simpleMD reference program this role
 // is carried by Atom: storing coordinates loaded from input together with the
 // arrays updated during dynamics, such as velocities and forces. Velocity
@@ -26,6 +47,7 @@ public:
 		coordinates_.assign(atom_count, Vec3{0.0, 0.0, 0.0});
 		velocities_.assign(atom_count, Vec3{0.0, 0.0, 0.0});
 		forces_.assign(atom_count, Vec3{0.0, 0.0, 0.0});
+		atom_types_.assign(atom_count, 0);
 	}
 
 	std::size_t atom_count() const noexcept {
@@ -50,6 +72,14 @@ public:
 
 	std::span<double> mutable_masses() noexcept {
 		return masses_;
+	}
+
+	std::span<const int> atom_types() const noexcept {
+		return atom_types_;
+	}
+
+	std::span<int> mutable_atom_types() noexcept {
+		return atom_types_;
 	}
 
 	std::span<const Vec3> coordinates() const noexcept {
@@ -84,13 +114,23 @@ public:
 		potential_energy_ = value;
 	}
 
+	const NeighborList& neighbor_list() const noexcept {
+		return neighbor_list_;
+	}
+
+	NeighborList& mutable_neighbor_list() noexcept {
+		return neighbor_list_;
+	}
+
 private:
 	Box box_;
 	std::vector<double> masses_;
+	std::vector<int>    atom_types_;
 	std::vector<Vec3> coordinates_;
 	std::vector<Vec3> velocities_;
 	std::vector<Vec3> forces_;
 	double potential_energy_ = 0.0;
+	NeighborList neighbor_list_;
 };
 
 }  // namespace gmd

@@ -11,6 +11,7 @@ namespace gmd {
 struct Box;
 class RuntimeContext;
 class System;
+struct NeighborList;
 
 using Coordinate3D = std::array<double, 3>;
 using Force3D = std::array<double, 3>;
@@ -22,6 +23,9 @@ struct ForceRequest {
     std::uint64_t step = 0;
     double time = 0.0;
     std::span<const Coordinate3D> coordinates;
+    // Optional: pre-built neighbor list. When non-null, ForceProviders should
+    // use it instead of an O(N²) double loop.
+    const NeighborList* neighbor_list = nullptr;
 };
 
 // Aggregate outputs produced by a force evaluation.

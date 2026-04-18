@@ -1,5 +1,6 @@
 #include "gmd/io/config_loader.hpp"
 
+#include <cmath>
 #include <fstream>
 #include <sstream>
 #include <stdexcept>
@@ -97,12 +98,19 @@ void ConfigLoader::load_xyz(const std::filesystem::path& xyz_path, System& syste
     system.set_box(box);
 
     auto coordinates = system.mutable_coordinates();
-    auto masses = system.mutable_masses();
+    auto masses      = system.mutable_masses();
+    auto atom_types  = system.mutable_atom_types();
     for (std::size_t atom_index = 0; atom_index < atom_count; ++atom_index) {
         tokens = tokenize_line(input);
         if (tokens.size() != 5 && tokens.size() != 8) {
-            throw std::runtime_error("Each atom line in xyz input must contain either 5 items (type x y z mass) or 8 items (type x y z vx vy vz mass)");
+            throw std::runtime_error(
+                "Atom line " + std::to_string(atom_index + 1)
+                + " must have 5 columns (type x y z mass) or 8 columns (type x y z vx vy vz mass),"
+                  " got " + std::to_string(tokens.size()));
         }
+
+        // Column 0: integer atom type (stored in system so force providers can use it).
+        atom_types[atom_index] = parse_int(tokens[0], "atom_type");
 
         coordinates[atom_index] = {parse_double(tokens[1], "x"),
                                    parse_double(tokens[2], "y"),
@@ -117,7 +125,8 @@ void ConfigLoader::load_xyz(const std::filesystem::path& xyz_path, System& syste
             masses[atom_index] = parse_double(tokens[4], "mass");
         }
         if (masses[atom_index] <= 0.0) {
-            throw std::runtime_error("Atom masses must be positive");
+            throw std::runtime_error(
+                "Mass of atom " + std::to_string(atom_index + 1) + " must be positive");
         }
     }
 }
@@ -166,6 +175,107 @@ RunConfig ConfigLoader::load_run(const std::filesystem::path& run_path) const {
         } else {
             throw std::runtime_error("Unsupported run input directive: " + tokens[0]);
         }
+    }
+
+    return config;
+}
+
+void LJForceFieldConfig::pair_params(int type_i, int type_j,
+                                     double& eps_out, double& sig_out) const noexcept {
+    const auto& ei = elements[static_cast<std::size_t>(type_i)];
+    const auto& ej = elements[static_cast<std::size_t>(type_j)];
+    eps_out = std::sqrt(ei.epsilon * ej.epsilon);   // Lorentz-Berthelot (geometric)
+    sig_out = 0.5 * (ei.sigma + ej.sigma);           // Lorentz-Berthelot (arithmetic)
+}
+
+LJForceFieldConfig ConfigLoader::load_force_field(const std::filesystem::path& ff_path) const {
+    std::ifstream input(ff_path);
+    if (!input.is_open()) {
+        throw std::runtime_error("Failed to open force field file: " + ff_path.string());
+    }
+
+    LJForceFieldConfig config;
+    bool has_force_field_type = false;
+    // Temporary single-element epsilon/sigma (legacy format).
+    double single_epsilon = 0.0;
+    double single_sigma   = 0.0;
+    bool   has_single_eps = false;
+    bool   has_single_sig = false;
+
+    while (input.peek() != EOF) {
+        const auto tokens = tokenize_line(input);
+        if (tokens.empty() || tokens[0].starts_with('#')) {
+            continue;
+        }
+        if (tokens.size() < 2) {
+            throw std::runtime_error("Force field directive missing value: " + tokens[0]);
+        }
+
+        if (tokens[0] == "force_field") {
+            if (tokens[1] != "lj") {
+                throw std::runtime_error("Unsupported force_field type: " + tokens[1]
+                                         + " (only 'lj' is supported)");
+            }
+            has_force_field_type = true;
+        } else if (tokens[0] == "cutoff") {
+            config.cutoff = parse_double(tokens[1], "cutoff");
+            if (config.cutoff <= 0.0) {
+                throw std::runtime_error("cutoff must be positive");
+            }
+        } else if (tokens[0] == "epsilon") {
+            // Legacy single-element format.
+            single_epsilon = parse_double(tokens[1], "epsilon");
+            if (single_epsilon <= 0.0) throw std::runtime_error("epsilon must be positive");
+            has_single_eps = true;
+        } else if (tokens[0] == "sigma") {
+            single_sigma = parse_double(tokens[1], "sigma");
+            if (single_sigma <= 0.0) throw std::runtime_error("sigma must be positive");
+            has_single_sig = true;
+        } else if (tokens[0] == "element") {
+            // Multi-element format:
+            //   element  Ar  epsilon  0.01032  sigma  3.405
+            if (tokens.size() < 6) {
+                throw std::runtime_error(
+                    "element directive expects: element <name> epsilon <val> sigma <val>");
+            }
+            const std::string& elem_name = tokens[1];
+            // Parse key-value pairs after the name (order-independent).
+            LJElementParams ep;
+            bool got_eps = false, got_sig = false;
+            for (std::size_t k = 2; k + 1 < tokens.size(); k += 2) {
+                if (tokens[k] == "epsilon") {
+                    ep.epsilon = parse_double(tokens[k + 1], "epsilon");
+                    if (ep.epsilon <= 0.0) throw std::runtime_error("element epsilon must be positive");
+                    got_eps = true;
+                } else if (tokens[k] == "sigma") {
+                    ep.sigma = parse_double(tokens[k + 1], "sigma");
+                    if (ep.sigma <= 0.0) throw std::runtime_error("element sigma must be positive");
+                    got_sig = true;
+                }
+            }
+            if (!got_eps || !got_sig) {
+                throw std::runtime_error("element '" + elem_name + "' must specify both epsilon and sigma");
+            }
+            const int type_idx = static_cast<int>(config.elements.size());
+            config.elements.push_back(ep);
+            config.element_name_to_type[elem_name] = type_idx;
+        } else {
+            throw std::runtime_error("Unsupported force field directive: " + tokens[0]);
+        }
+    }
+
+    if (!has_force_field_type) {
+        throw std::runtime_error("Force field file must specify 'force_field' type");
+    }
+
+    // If legacy single-element format was used, promote to elements vector.
+    if (config.elements.empty()) {
+        if (!has_single_eps || !has_single_sig) {
+            throw std::runtime_error(
+                "Single-element LJ force field must specify both 'epsilon' and 'sigma'");
+        }
+        config.elements.push_back({single_epsilon, single_sigma});
+        config.element_name_to_type["default"] = 0;
     }
 
     return config;

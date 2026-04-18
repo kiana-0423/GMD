@@ -32,50 +32,79 @@ Including the following modules:
   - 计算动能  
   说明：原子位置初始化仍由 config_loader.cpp 从输入文件加载，因此该模块应定义为“速度初始化模块”。
 
-- 边界条件模块：已拆分为独立文件，部分完成  
+- 边界条件模块：已拆分为独立文件，完成并已接入力场  
   对应文件是 boundary/periodic_boundary.hpp、boundary/periodic_boundary.cpp、boundary/minimum_image.hpp 和 boundary/minimum_image.cpp。  
   当前已实现：
   - PBC：`wrap_coordinate`、`wrap_position`、`wrap_positions`
   - MIC：`apply_minimum_image_component`、`apply_minimum_image`  
   当前接线状态：
   - `VelocityVerletIntegrator` 已使用 `wrap_position` 做坐标周期回卷
-  - `minimum_image` 逻辑已提供接口，但尚未接入 `ClassicalForceProvider` 的真实受力计算
+  - `apply_minimum_image` 已接入 `ClassicalForceProvider::compute`，每对原子的位移向量均经过 MIC 处理
 
-- 力场模块：接口完成，实际物理实现未完成  
-  对应文件是 force_provider.hpp、classical_force_provider.hpp 和 classical_force_provider.cpp。  
-  当前已经有统一的 `ForceProvider` 抽象，也已经把 `ClassicalForceProvider` 接进了主流程。  
-  但 `ClassicalForceProvider::compute` 目前只返回零势能和零力，不是实际的 LJ 或其他真实势函数。  
-  所以它是“框架接通了，但物理力场还没实现”。
+- 力场模块：LJ 力场物理实现已完成，力场读取接口已完成，邻居表已接入  
+  对应文件是 force_provider.hpp、classical_force_provider.hpp、classical_force_provider.cpp，以及 config_loader.hpp/config_loader.cpp（读取接口）。  
+  当前已实现：
+  - `ClassicalForceProvider::compute` 实现了完整的 Lennard-Jones (12-6)，含截断（cutoff）和势能平移（shifted potential，截断处能量连续）
+  - 使用 `apply_minimum_image` 处理周期边界，MIC 已真正接入受力计算
+  - 牛顿第三定律配对更新，每对原子仅计算一次
+  - 当 `ForceRequest::neighbor_list` 有效时走 O(N) 邻居表路径，否则回退 O(N²) 双循环
+  - 构造函数支持显式参数或从 `LJForceFieldConfig` 直接构造
+  - 参数访问器：`epsilon()`、`sigma()`、`cutoff()`、`energy_shift()`
+  - `set_params()` 支持运行时替换参数并重算缓存
+  - `ConfigLoader::load_force_field()` 读取 `.ff` 格式配置文件（`force_field lj`、`epsilon`、`sigma`、`cutoff`），含合法性校验
+  - 提供示例配置文件 `configs/examples/lj_argon.ff`（氩原子 LJ 参数）
+  多元素支持（本次新增）：
+  - `LJForceFieldConfig` 重构为含 `elements` 向量和 `element_name_to_type` 映射
+  - `pair_params(type_i, type_j)` 按 Lorentz-Berthelot 规则（几何平均 ε，算术平均 σ）自动计算交叉对参数
+  - `ClassicalForceProvider` 重构为 `pair_table_`（type×type 预计算 `PairCache`），`compute()` 按原子类型索引查表
+  - `.ff` 文件新增 `element <name> epsilon <val> sigma <val>` 多元素指令；单元素旧格式向下兼容
+  - 提供示例 `configs/examples/lj_ne_ar.ff`（Ne/Ar 二元混合）
 
-- 积分模块：基本完成  
-  对应文件是 integrator.hpp、velocity_verlet_integrator.hpp 和 velocity_verlet_integrator.cpp。  
-  现在已经有：
+- 积分模块：已完成，支持 thermostat 和 barostat 接入  
+  对应文件是 integrator.hpp、velocity_verlet_integrator.hpp/.cpp、thermostat.hpp/.cpp、velocity_rescaling_thermostat.hpp/.cpp、nose_hoover_thermostat.hpp/.cpp、barostat.hpp、berendsen_barostat.hpp/.cpp。  
+  当前已实现：
   - 抽象积分器接口
-  - `VelocityVerletIntegrator` 具体实现
-  - 与 `ForceProvider` 的实际联动
-  - 坐标和速度更新
-  - 步进中的周期回卷  
-  从工程结构上，这个模块已经不是空壳了，已经能真正驱动 `Simulation::step()`。  
-  但因为力场还是零力占位，所以目前积分模块跑起来更像“自由粒子演化 + 周期边界”。
+  - `VelocityVerletIntegrator` 具体实现（坐标+速度更新、周期回卷、邻居表透传）
+  - **Thermostat 抽象接口**：`apply()`（全步，用于速度缩放类）和 `apply_half_kick()`（半步，用于扩展系统类）
+  - **VelocityRescalingThermostat**：每步将全体速度缩放至目标温度，自由度修正为 3N−3
+  - **NoseHooverThermostat**：VVNH 劈裂——两次 `apply_half_kick()` 包夹 VV 步，摩擦变量 ξ 更新；Q 首次调用时惰性初始化（`Q = dof·kB·T·τ²`）
+  - **Barostat 抽象接口**：`apply(system, dt, P_target, virial_trace)`
+  - **BerendsenBarostat**：每步末尾按 `mu = cbrt(1 − β·dt/τ_P·(P_target − P))` 等比缩放盒长和坐标；压强由动能+维里估算
+  - `VelocityVerletIntegrator` 新增 `set_thermostat()`、`set_target_temperature()`、`set_barostat()`、`set_target_pressure()` 接口
+  - 步序：thermostat pre-half-kick → 第一半步力+位移 → 重新计算力 → 第二半步速度 → thermostat post-half-kick + full apply → barostat
+  - 辅助函数：`compute_twice_ke()`、`temperature_from_twice_ke()`、`kBoltzmann = 8.617333262e-5 eV/K`
 
-- 输入模块：已完成并扩展初始化相关配置  
+- 邻居表模块：已完成（cell list + Verlet skin）  
+  对应文件是 neighbor_builder.hpp（抽象接口）、verlet_neighbor_builder.hpp 和 verlet_neighbor_builder.cpp。  
+  当前已实现：
+  - `VerletNeighborBuilder`：继承 `NeighborBuilder` 抽象接口
+  - **建表（`rebuild()`）**：O(N) cell list 算法——将模拟盒划分为边长 ≥ r_list 的格子，linked list 填格，只检查 3×3×3=27 个邻居格，半对存储（j > i，利用 Newton III），MIC 距离筛选，CSR 压缩存储到 `System::NeighborList`
+  - **重建判断（`needs_rebuild()`）**：O(N) 最大位移准则——任意原子位移超过 r_skin/2 即触发重建
+  - **`initialize()`**：调用第一次 `rebuild()`
+  - `NeighborList` 以 CSR 格式存入 `System`（`counts`、`offsets`、`neighbors`、`ref_coordinates`、`valid`）
+  - `ForceRequest` 增加 `neighbor_list` 字段，积分器和主循环均已透传
+  参数：`r_cut`（与力场 cutoff 一致）、`r_skin`（典型 1.5 Å）
+
+- 输入模块：已完成并扩展初始化相关配置及力场读取  
   对应文件是 config_loader.hpp 和 config_loader.cpp。  
   目前能读取：
   - `xyz` 文件中的原子数、坐标、质量、盒子尺寸
   - `xyz` 8 列格式中的输入速度 vx/vy/vz
   - `run` 文件中的步数、时间步长、温度
-  - `run` 中的初始化控制项：`velocity_init`、`velocity_seed`、`remove_com_velocity`  
-  并且包含基础合法性检查。
+  - `run` 中的初始化控制项：`velocity_init`、`velocity_seed`、`remove_com_velocity`
+  - `.ff` 力场参数文件，支持单/多元素格式（`load_force_field()`）  
+  健壮性改进：`xyz` 第 0 列整数类型写入 `System::atom_types_`；原子行错误含行号；质量非正数报告具体原子序号。
 
-- 输出模块：基本未完成  
-  对应接口 trajectory_writer.hpp 目前还是前向声明，没有实现。  
-  现在程序唯一的输出只是 gmd_main.cpp 里最后打印一行启动/运行摘要，不具备：
-  - 坐标轨迹输出
-  - 能量输出文件
-  - 温度/热力学量输出  
-  所以输出模块目前应判断为“未完成”。
+- 输出模块：已完成基础实现  
+  对应文件是 trajectory_writer.hpp 和 trajectory_writer.cpp。  
+  当前已实现：
+  - **XYZ 轨迹文件**（`*.xyz`）：extended XYZ 格式，每帧含原子数行、注释行（step/time/PE/KE/T），随后每原子一行 `type  x  y  z`
+  - **能量日志文件**（`*.log`）：空格分隔表格，列为 `step  time[fs]  PE[eV]  KE[eV]  E_total[eV]  T[K]`
+  - `write_frame()` 支持外部传入 `twice_ke`（避免重复遍历速度）或自动内部计算
+  - `write_frame_if()` 按步长间隔过滤，`frame_count()` 追踪已写帧数
+  - 析构时自动关闭并刷新文件
 
-- 主循环模块：已完成基本骨架，但文件归属应修正  
+- 主循环模块：已完成基本骨架，初始力 bug 已修复，邻居表已接入  
   主循环并不在 system.hpp。`System` 现在只是状态容器。  
   真正的主循环模块是 simulation.hpp 和 simulation.cpp，程序装配入口在 gmd_main.cpp。  
   当前这部分已经实现了：
@@ -83,15 +112,18 @@ Including the following modules:
   - 配置 `ForceProvider`
   - 配置 `Integrator`
   - 配置 `VelocityInitializer`
-  - `initialize()`
-  - `step()`
+  - 配置 `NeighborBuilder`（可选）
+  - `initialize()`：速度初始化 → 邻居表首次建立 → t=0 初始力计算，确保 Velocity Verlet 第一个半步使用真实力；初始力计算时透传邻居表
+  - `step()`：自动检查 `needs_rebuild()` 并在必要时重建邻居表
   - `run()`  
-  所以主循环骨架已经完成，而且已经能实际跑若干步。
+  主循环骨架已完成，配合已实现的 LJ 力场和 cell-list 邻居表，现在能真正驱动物理正确、O(N) 复杂度的原子动力学。
 
 Problems to be solved:
 
-- 最关键的问题是初始力没有在进入时间循环前先算一次。现在的顺序是先初始化速度，然后直接进入循环做积分，再算力。这会导致第一步的前半步速度更新使用的是全零力，而不是t=0时刻的真实力。严格的Velocity Verlet通常应先做一次初始 force evaluation，再进入 half-kick / drift / force / half-kick。
-- 没有邻居表，受力计算是 O(N²) 双循环，体系一大就不实用。这也是它和正式框架中 NeighborBuilder 抽象的明显差别。
-- 截断势没有做 shifted potential 或 switched force 处理，截止半径处能量和力都有不连续，长时间能量守恒会比较差。
-- 没有 thermostat、barostat、约束、轨迹输出、不同元素力场、键角二面角等，所以它更像“稀有气体 LJ 演示器”，不是通用 MD 程序。
-- 输入解析也比较脆弱，比如默认直接访问第二个token，没有完整健壮性检查，精度转换里 getDouble 里还先用了 float 临时变量。
+- ~~最关键的问题是初始力没有在进入时间循环前先算一次~~（已修复：`Simulation::initialize()` 末尾现在会执行一次初始力计算）
+- ~~截断势没有做 shifted potential 处理~~（已修复：`ClassicalForceProvider` 在构造时预计算 `energy_shift_`，各对势能均减去 `V(r_cut)`）
+- ~~没有邻居表，受力计算是 O(N²) 双循环~~（已修复：`VerletNeighborBuilder` 以 cell list 建表，`ClassicalForceProvider` 走 O(N) 邻居表路径）
+- ~~没有 thermostat、barostat、不同元素力场~~（已修复：VelocityRescaling/Nosé-Hoover thermostat、Berendsen barostat、多元素 LJ 均已实现并接入积分器）
+- ~~输出模块（TrajectoryWriter）尚未实现~~（已修复：XYZ 轨迹 + 能量日志均已实现，支持按间隔输出）
+- ~~输入解析脆弱：未存储原子类型、错误信息缺行号~~（已修复：`atom_types_` 现在正确从 xyz 第 0 列读取；错误消息含原子序号）
+- 仍缺少：约束（SHAKE/RATTLE）、键角/二面角力场，因此仍非通用 MD 程序。

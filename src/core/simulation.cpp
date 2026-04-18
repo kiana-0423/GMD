@@ -101,6 +101,31 @@ void Simulation::initialize(RuntimeContext& runtime) {
     if (impl_->integrator != nullptr) {
         impl_->integrator->initialize(*impl_->system, runtime);
     }
+
+    // Compute initial forces at t=0 so that the first Velocity Verlet
+    // half-kick uses real forces rather than the zero-initialised arrays.
+    if (impl_->force_provider != nullptr) {
+        const System* sys = impl_->system;
+        ForceRequest req;
+        req.system         = sys;
+        req.box            = &sys->box();
+        req.step           = 0;
+        req.time           = 0.0;
+        req.coordinates    = sys->coordinates();
+        req.neighbor_list  = sys->neighbor_list().valid ? &sys->neighbor_list() : nullptr;
+
+        ForceResult res;
+        impl_->force_provider->compute(req, res, runtime);
+
+        if (res.success) {
+            auto forces = impl_->system->mutable_forces();
+            for (std::size_t i = 0; i < forces.size(); ++i) {
+                forces[i] = res.forces[i];
+            }
+            impl_->system->set_potential_energy(res.potential_energy);
+        }
+    }
+
     impl_->step = 0;
 }
 

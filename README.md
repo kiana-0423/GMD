@@ -18,6 +18,7 @@ GMD is a molecular dynamics software project built around a C++ core and CUDA ba
 - [Development Workflow](#development-workflow)
 - [Contributing](#contributing)
 - [Project Status](#project-status)
+- [Development Log](#development-log)
 - [License](#license)
 - [Support and Contact](#support-and-contact)
 
@@ -691,30 +692,30 @@ The project should explicitly implement the following end-to-end code paths.
 
 ## Suggested Milestones
 
-The implementation should proceed in this order:
-
-1. Build the C++ core, runtime layer, and CLI.
-2. Add CUDA neighbor list, pair force, and Velocity Verlet support.
-3. Make the engine run a simple Lennard-Jones fluid case.
-4. Add checkpoint, logging, and regression tests.
-5. Add the `ForceProvider` abstraction for ML backends.
-6. Integrate one stable ML runtime backend in C++.
-7. Add optional Python bindings with `pybind11`.
+1. ✓ Build the C++ core, runtime layer, and CLI.
+2. ✓ Implement CPU neighbor list (cell list + Verlet skin), LJ pair force, and Velocity Verlet integrator.
+3. ✓ Run a simple Lennard-Jones fluid case with correct physics (shifted potential, MIC, Newton III).
+4. ✓ Add thermostat (velocity rescaling, Nosé-Hoover) and barostat (Berendsen).
+5. ✓ Add multi-element LJ support (Lorentz-Berthelot mixing rules) and trajectory output.
+6. Add CUDA neighbor list, pair force, and integration kernels.
+7. Add checkpoint, logging, and regression tests.
+8. Add the `ForceProvider` abstraction for ML backends.
+9. Integrate one stable ML runtime backend (TorchScript or ONNX).
+10. Add optional Python bindings with `pybind11`.
 
 ## Recommended First Deliverable
 
 The first stable version of GMD should support:
 
-- single GPU execution
-- periodic boundary conditions
-- Verlet neighbor lists
-- Lennard-Jones nonbonded interactions
-- Velocity Verlet integration
-- trajectory output
-- checkpoint and restart
-- one pluggable force backend interface
-
-This keeps the first version narrow enough to implement, while preserving the correct architecture for later ML force field integration.
+- ✓ periodic boundary conditions
+- ✓ Verlet neighbor lists (cell list, O(N))
+- ✓ Lennard-Jones nonbonded interactions (single and multi-element)
+- ✓ Velocity Verlet integration
+- ✓ thermostat (velocity rescaling, Nosé-Hoover) and barostat (Berendsen)
+- ✓ trajectory output (extended XYZ + energy log)
+- ✓ one pluggable force backend interface (`ForceProvider`)
+- ☐ single GPU execution (CUDA backend not yet implemented)
+- ☐ checkpoint and restart
 
 ## Development Workflow
 
@@ -757,16 +758,135 @@ For major changes, please open an issue first to discuss the proposed changes.
 
 ## Project Status
 
-**Current Version**: 0.1.0 (Early Development)
+**Current Version**: 0.2.0 (Active Development)
 
-This project is actively under development. The current focus is on:
+### Implemented ✓
 
-- Establishing core simulation engine architecture
-- Implementing fundamental MD algorithms (Verlet lists, force computation)
-- Setting up CUDA integration framework
-- Creating baseline test suite
+| Module | Status | Key Files |
+|--------|--------|-----------|
+| Data / System | ✓ Complete | `box.hpp`, `system.hpp` |
+| Boundary Conditions | ✓ Complete | `periodic_boundary`, `minimum_image` |
+| Neighbor List | ✓ Complete | `verlet_neighbor_builder` (cell list + Verlet skin) |
+| Classical Force Field (LJ) | ✓ Complete | `classical_force_provider` — shifted potential, MIC, Newton III, O(N) neighbor-list path |
+| Multi-element LJ | ✓ Complete | Lorentz-Berthelot mixing rules; `element` directive in `.ff` files |
+| Integrator (Velocity Verlet) | ✓ Complete | `velocity_verlet_integrator` |
+| Thermostat | ✓ Complete | `VelocityRescalingThermostat`, `NoseHooverThermostat` (VVNH splitting) |
+| Barostat | ✓ Complete | `BerendsenBarostat` (kinetic + virial pressure estimate) |
+| Velocity Initializer | ✓ Complete | Maxwell-Boltzmann sampling, COM velocity removal, temperature scaling |
+| Input Parsing | ✓ Complete | `ConfigLoader` — xyz (5/8 col), run config, `.ff` force field files |
+| Trajectory Output | ✓ Complete | `TrajectoryWriter` — extended XYZ + energy/temperature log |
+| Main Loop | ✓ Complete | `Simulation` — initialize, step, run; neighbor rebuild check; t=0 force bug fixed |
 
-See [Suggested Milestones](#suggested-milestones) above for development roadmap.
+### Not Yet Implemented
+
+- **Bonded interactions**: bond stretches, angle bending, dihedral/improper torsions
+- **Constraints**: SHAKE/RATTLE for rigid bonds
+- **CUDA backend**: all computation currently runs on CPU
+- **ML force fields**: `MLForceProvider` / `ModelRuntimeAdapter` interfaces exist but are not implemented
+- **Checkpoint / restart**: no save/restore of simulation state
+- **Python bindings**: pybind11 layer not yet built
+- **Tests**: unit and regression test suite not yet populated
+
+---
+
+## Development Log
+
+> 以下为各模块实现进度的详细记录（中文）。
+
+### 数据模块 ✓
+对应文件：`box.hpp`、`system.hpp`、`config_loader.hpp/.cpp`。
+
+`Box` 保存盒长和半盒长；`System` 保存质量、原子类型、坐标、速度、受力、势能、邻居表；`ConfigLoader::load_xyz` 把原子数、坐标、质量、盒子尺寸、原子类型一次性读进 `System`。
+
+### 初始化模块 ✓
+对应文件：`initializer.hpp/.cpp`。
+
+- 随机速度初始化（Maxwell-Boltzmann 高斯采样）
+- 输入速度模式（从 xyz 8 列格式读取 vx/vy/vz）
+- 去掉质心速度（可开关）
+- 按目标温度缩放（含自由度修正，去质心后使用 3N-3）
+
+### 边界条件模块 ✓
+对应文件：`boundary/periodic_boundary`、`boundary/minimum_image`。
+
+- PBC：`wrap_coordinate`、`wrap_position`、`wrap_positions`
+- MIC：`apply_minimum_image_component`、`apply_minimum_image`
+- 均已接入 `VelocityVerletIntegrator`（坐标回卷）和 `ClassicalForceProvider::compute`（位移 MIC 处理）
+
+### 邻居表模块 ✓
+对应文件：`neighbor_builder.hpp`（抽象接口）、`verlet_neighbor_builder.hpp/.cpp`。
+
+- **建表（`rebuild()`）**：O(N) cell list 算法——模拟盒划分为边长 ≥ r_list 的格子，linked list 填格，只检查 3×3×3 个邻居格，半对 CSR 存储（j > i，Newton III）
+- **重建判断（`needs_rebuild()`）**：任意原子位移超过 r_skin/2 即触发重建
+- `ForceRequest` 透传 `NeighborList`，力场自动走 O(N) 路径
+
+### 力场模块 ✓
+对应文件：`force_provider.hpp`、`classical_force_provider.hpp/.cpp`，以及 `config_loader`（读取接口）。
+
+**LJ 物理实现：**
+- Lennard-Jones (12-6)，含截断和 shifted potential（截断处能量连续）
+- MIC 接入，Newton III 配对，O(N) 邻居表路径 / O(N²) 回退
+
+**多元素支持（Lorentz-Berthelot）：**
+- `LJForceFieldConfig` 包含 `elements` 向量和 `element_name_to_type` 映射
+- `pair_params(type_i, type_j)` 自动计算交叉参数（几何平均 ε，算术平均 σ）
+- `ClassicalForceProvider` 以 `pair_table_`（type×type 预计算 `PairCache`）索引查表
+- `.ff` 文件格式：支持 `element Ar epsilon X sigma Y` 多元素指令；旧格式向下兼容
+- 示例文件：`configs/examples/lj_argon.ff`（Ar），`configs/examples/lj_ne_ar.ff`（Ne/Ar 混合）
+
+### 积分模块 ✓
+对应文件：`velocity_verlet_integrator.hpp/.cpp`、`thermostat.hpp/.cpp`、`velocity_rescaling_thermostat`、`nose_hoover_thermostat`、`barostat.hpp`、`berendsen_barostat.hpp/.cpp`。
+
+**Velocity Verlet 积分器：**
+步序：thermostat pre-half-kick → 第一半步力+位移 → 重新计算力 → 第二半步速度 → thermostat post-half-kick + full apply → barostat
+
+**Thermostat：**
+- `VelocityRescalingThermostat`：每步将全体速度缩放至目标温度，自由度 3N-3
+- `NoseHooverThermostat`：VVNH 劈裂，摩擦变量 ξ 更新，Q 惰性初始化（`Q = dof·kB·T·τ²`）
+
+**Barostat：**
+- `BerendsenBarostat`：按 `mu = cbrt(1 − β·dt/τ_P·(P_target − P))` 等比缩放盒长和坐标；压强由动能+维里估算
+
+**接口（在 `VelocityVerletIntegrator` 上）：**
+`set_thermostat()`、`set_target_temperature()`、`set_barostat()`、`set_target_pressure()`
+
+### 输入模块 ✓
+对应文件：`config_loader.hpp/.cpp`。
+
+- `xyz` 5 列（type x y z mass）或 8 列（+vx vy vz）格式；第 0 列类型写入 `System::atom_types_`
+- `run` 文件：步数、时间步、温度、`velocity_init`、`velocity_seed`、`remove_com_velocity`
+- `.ff` 力场参数文件（单/多元素）
+
+### 输出模块 ✓
+对应文件：`trajectory_writer.hpp/.cpp`。
+
+- **XYZ 轨迹文件**（`*.xyz`）：extended XYZ 格式，注释行含 step/time/PE/KE/T
+- **能量日志文件**（`*.log`）：`step  time[fs]  PE[eV]  KE[eV]  E_total[eV]  T[K]`
+- `write_frame_if()` 按步长间隔过滤；析构时自动关闭并刷新
+
+### 主循环模块 ✓
+对应文件：`simulation.hpp/.cpp`，入口 `gmd_main.cpp`。
+
+- `initialize()`：速度初始化 → 邻居表首次建立 → t=0 初始力计算
+- `step()`：自动检查 `needs_rebuild()` 并在必要时重建邻居表
+- `run()`：调用 `step()` 指定次数
+
+### 已解决的问题
+- ~~初始力未在时间循环前计算~~（已修复）
+- ~~截断势未做 shifted potential~~（已修复）
+- ~~受力计算 O(N²) 双循环无邻居表~~（已修复：cell list O(N)）
+- ~~无 thermostat / barostat / 多元素力场~~（已修复）
+- ~~输出模块未实现~~（已修复）
+- ~~未存储原子类型、解析错误信息不含行号~~（已修复）
+
+### 尚未实现
+- 键合相互作用（bond / angle / dihedral）
+- 约束（SHAKE / RATTLE）
+- CUDA 后端
+- ML 力场运行时
+- Checkpoint / restart
+- Python bindings
+- 单元测试和回归测试
 
 ## License
 
