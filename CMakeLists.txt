@@ -31,6 +31,8 @@ add_library(gmd_core STATIC
     src/boundary/periodic_boundary.cpp
     src/core/simulation.cpp
     src/force/classical_force_provider.cpp
+    src/force/ewald_force_provider.cpp
+    src/force/pme_force_provider.cpp
     src/integrator/thermostat.cpp
     src/integrator/velocity_rescaling_thermostat.cpp
     src/integrator/nose_hoover_thermostat.cpp

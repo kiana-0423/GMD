@@ -1,6 +1,6 @@
 # GMD
 
-GMD is a molecular dynamics software project built around a C++ core and CUDA backends, with optional Python bindings for workflow orchestration and machine learning integration.
+GMD is a molecular dynamics engine written in C++20, with a clean `ForceProvider` abstraction that supports classical Lennard-Jones force fields, long-range Coulomb electrostatics (Ewald summation and Particle-Mesh Ewald), and a pluggable interface for future CUDA and machine-learning backends.
 
 ## Table of Contents
 
@@ -8,6 +8,7 @@ GMD is a molecular dynamics software project built around a C++ core and CUDA ba
 - [Requirements](#requirements)
 - [Building](#building)
 - [Quick Start](#quick-start)
+- [Input File Reference](#input-file-reference)
 - [Architecture Principles](#architecture-principles)
 - [Project Structure](#project-structure)
 - [Folder Descriptions](#folder-descriptions)
@@ -91,33 +92,29 @@ cmake --build . --parallel $(nproc)
 
 ### Running a Simple Example
 
-After building, you can run one of the included examples:
+After building, run the bundled test case:
 
 ```bash
-cd build
-./gmd ../examples/lj_fluid/config.txt
+cd build_test
+../build/gmd xyz.in run.in
 ```
 
-Available examples:
-- `examples/lj_fluid/`: Lennard-Jones fluid simulation
-- `examples/water_box/`: Water system with classical force field
-- `examples/mlff_demo/`: Machine learning force field demonstration
+This produces `output.xyz` (extended XYZ trajectory) and `output.log` (energy/temperature log).
+
+Or pass an explicit force-field file as a third argument:
+
+```bash
+../build/gmd xyz.in run.in ../configs/examples/lj_argon.ff
+```
 
 ### Configuration Files
 
-Configuration files are located in `configs/examples/` and `configs/testcases/`. Create a new configuration file or modify existing ones to customize your simulation:
+A simulation is driven by two plain-text input files:
 
-```text
-[Simulation]
-timesteps = 1000
-dt = 0.001
-
-[System]
-initial_config = path/to/structure.gro
-
-[ForceField]
-type = classical  # or ml_model
-```
+| File | Purpose |
+|------|---------|
+| `xyz.in` | Initial atom positions and box dimensions |
+| `run.in` | Simulation parameters, force field, ensemble settings |
 
 ### Testing
 
@@ -134,6 +131,171 @@ ctest -R unit       # Unit tests only
 ctest -R integration # Integration tests only
 ctest -R performance # Performance benchmarks
 ```
+
+## Input File Reference
+
+GMD uses two plain-text input files. Lines starting with `#` are comments.
+
+---
+
+### xyz.in — Initial Configuration
+
+```
+<N>                      # number of atoms
+<Lx>  <Ly>  <Lz>        # box lengths [Å]
+<type>  <x>  <y>  <z>   # one line per atom (4-column form)
+...
+```
+
+`<type>` is a 1-based integer that maps to a `type` entry in `run.in`.  
+An 8-column form with explicit velocities is also accepted:
+
+```
+<type>  <x>  <y>  <z>  <vx>  <vy>  <vz>  <mass>
+```
+
+**Example** (`build_test/xyz.in`):
+
+```
+4
+20.0 20.0 20.0
+1   2.0   2.0   2.0
+1   8.0   2.0   2.0
+1   2.0   8.0   2.0
+1   2.0   2.0   8.0
+```
+
+---
+
+### run.in — Simulation Parameters
+
+#### Dynamics
+
+| Directive | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `run <N>` | int | — | Number of integration steps |
+| `time_step <dt>` | float | — | Time step [fs] |
+| `velocity <T>` | float | — | Target / initial temperature [K] |
+| `velocity_init random\|input` | string | `random` | Sample Maxwell-Boltzmann or read from xyz |
+| `velocity_seed <s>` | uint | `5489` | RNG seed for velocity initialisation |
+| `remove_com_velocity true\|false` | bool | `true` | Remove centre-of-mass drift |
+
+#### Force Field (inline LJ)
+
+Specify directly in `run.in` — no separate `.ff` file required.
+
+```ini
+force_field  lj
+cutoff       8.5          # pair cutoff [Å]
+type 1  Ar  epsilon 0.01032  sigma 3.405  charge 0.0
+type 2  Ne  epsilon 0.00312  sigma 2.749
+```
+
+`type <N> <element> epsilon <ε> sigma <σ> [charge <q>]`
+
+- `N` — 1-based type index matching the first column in `xyz.in`
+- `element` — chemical symbol (used for mass lookup from built-in periodic table)
+- `epsilon` — LJ well depth [eV]
+- `sigma` — LJ zero-crossing distance [Å]
+- `charge` — partial charge [e], default `0.0`
+
+Cross-type pairs use Lorentz-Berthelot mixing rules automatically.
+
+Alternatively, point to an external `.ff` file:
+
+```ini
+# pass the file path as the third CLI argument:
+# ./gmd xyz.in run.in path/to/forcefield.ff
+```
+
+#### Ensemble / Thermostat
+
+```ini
+# NVE (default) — omit the thermostat line
+
+# NVT — velocity rescaling (good for equilibration)
+thermostat  velocity_rescaling
+
+# NVT — Nosé-Hoover (correct NVT sampling)
+thermostat      nose_hoover
+thermostat_tau  100.0      # coupling time constant [fs], default 100
+```
+
+| Directive | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `thermostat velocity_rescaling\|nose_hoover` | string | — | Temperature coupling scheme |
+| `thermostat_tau <τ>` | float | `100.0` | Nosé-Hoover coupling time [fs] |
+
+#### Barostat
+
+```ini
+# NPT — Berendsen pressure bath (combine with any thermostat)
+barostat        berendsen
+pressure        1.0        # target pressure [bar], default 1.0
+barostat_tau    2000.0     # pressure bath relaxation time [fs], default 2000
+compressibility 4.5e-5     # isothermal compressibility [1/bar], default 4.5e-5
+```
+
+| Directive | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `barostat berendsen` | string | — | Pressure coupling scheme |
+| `pressure <P>` | float | `1.0` | Target pressure [bar] |
+| `barostat_tau <τ>` | float | `2000.0` | Pressure bath relaxation time [fs] |
+| `compressibility <β>` | float | `4.5e-5` | Isothermal compressibility [1/bar] |
+
+#### Long-range Coulomb
+
+```ini
+# Ewald summation (direct k-space sum, O(N·kmax³))
+coulomb           ewald
+ewald_alpha       0.3      # splitting parameter [1/Å]; 0 = auto
+ewald_kmax        7        # max k-vector index; 0 = auto
+ewald_cutoff      10.0     # real-space cutoff [Å]; 0 = auto
+
+# Particle-Mesh Ewald (mesh FFT, O(N·p³ + K³ log K))
+coulomb           pme
+pme_alpha         0.3      # splitting parameter [1/Å]; 0 = auto
+pme_cutoff        10.0     # real-space cutoff [Å]; 0 = auto
+pme_order         4        # B-spline order (4 or 6)
+pme_grid          32 32 32 # mesh dimensions (each must be a power of 2)
+```
+
+| Directive | Description |
+|-----------|-------------|
+| `coulomb ewald\|pme` | Enable long-range Coulomb and select method |
+| `ewald_alpha` | Ewald splitting α [1/Å] (0 = auto-select from cutoff) |
+| `ewald_kmax` | Max k-vector index (0 = auto) |
+| `ewald_cutoff` | Real-space cutoff [Å] (0 = 45 % of shortest box side) |
+| `pme_alpha` | Same as `ewald_alpha` for PME |
+| `pme_cutoff` | Same as `ewald_cutoff` for PME |
+| `pme_order` | B-spline interpolation order (4 or 6) |
+| `pme_grid Nx Ny Nz` | PME mesh dimensions — each must be a power of 2 |
+
+> **Note:** Coulomb interactions require non-zero charges on at least some atom types (`charge` keyword in the `type` directive).
+
+---
+
+#### Complete run.in example (NVT Nosé-Hoover)
+
+```ini
+# Dynamics
+velocity         300.0
+time_step        2.0
+run              10000
+velocity_init    random
+remove_com_velocity  true
+
+# Force field (single-element Argon LJ)
+force_field  lj
+cutoff       8.5
+type 1  Ar  epsilon 0.01032  sigma 3.405  charge 0.0
+
+# NVT ensemble
+thermostat      nose_hoover
+thermostat_tau  100.0
+```
+
+---
 
 ## Architecture Principles
 
@@ -697,7 +859,9 @@ The project should explicitly implement the following end-to-end code paths.
 3. ✓ Run a simple Lennard-Jones fluid case with correct physics (shifted potential, MIC, Newton III).
 4. ✓ Add thermostat (velocity rescaling, Nosé-Hoover) and barostat (Berendsen).
 5. ✓ Add multi-element LJ support (Lorentz-Berthelot mixing rules) and trajectory output.
-6. Add CUDA neighbor list, pair force, and integration kernels.
+6. ✓ Add LAMMPS-style typed force field input (`type N element ε σ charge q`) and inline FF in `run.in`.
+7. ✓ Add long-range Coulomb via Ewald summation and Particle-Mesh Ewald (self-contained FFT).
+8. Add CUDA neighbor list, pair force, and integration kernels.
 7. Add checkpoint, logging, and regression tests.
 8. Add the `ForceProvider` abstraction for ML backends.
 9. Integrate one stable ML runtime backend (TorchScript or ONNX).
@@ -714,6 +878,8 @@ The first stable version of GMD should support:
 - ✓ thermostat (velocity rescaling, Nosé-Hoover) and barostat (Berendsen)
 - ✓ trajectory output (extended XYZ + energy log)
 - ✓ one pluggable force backend interface (`ForceProvider`)
+- ✓ LAMMPS-style typed force field (`type N element ε σ charge q`)
+- ✓ long-range Coulomb: Ewald summation and Particle-Mesh Ewald (no external FFT dependency)
 - ☐ single GPU execution (CUDA backend not yet implemented)
 - ☐ checkpoint and restart
 
@@ -758,7 +924,7 @@ For major changes, please open an issue first to discuss the proposed changes.
 
 ## Project Status
 
-**Current Version**: 0.2.0 (Active Development)
+**Current Version**: 0.3.0 (Active Development)
 
 ### Implemented ✓
 
@@ -768,12 +934,14 @@ For major changes, please open an issue first to discuss the proposed changes.
 | Boundary Conditions | ✓ Complete | `periodic_boundary`, `minimum_image` |
 | Neighbor List | ✓ Complete | `verlet_neighbor_builder` (cell list + Verlet skin) |
 | Classical Force Field (LJ) | ✓ Complete | `classical_force_provider` — shifted potential, MIC, Newton III, O(N) neighbor-list path |
-| Multi-element LJ | ✓ Complete | Lorentz-Berthelot mixing rules; `element` directive in `.ff` files |
+| Multi-element LJ | ✓ Complete | Lorentz-Berthelot mixing rules; typed `type N element ε σ` directives in `run.in` / `.ff` files |
+| Long-range Coulomb | ✓ Complete | `EwaldForceProvider` (direct k-sum), `PMEForceProvider` (B-spline mesh + self-contained 3D FFT) |
+| Composite Force Provider | ✓ Complete | `CompositeForceProvider` — stacks LJ + Coulomb providers |
 | Integrator (Velocity Verlet) | ✓ Complete | `velocity_verlet_integrator` |
 | Thermostat | ✓ Complete | `VelocityRescalingThermostat`, `NoseHooverThermostat` (VVNH splitting) |
 | Barostat | ✓ Complete | `BerendsenBarostat` (kinetic + virial pressure estimate) |
 | Velocity Initializer | ✓ Complete | Maxwell-Boltzmann sampling, COM velocity removal, temperature scaling |
-| Input Parsing | ✓ Complete | `ConfigLoader` — xyz (5/8 col), run config, `.ff` force field files |
+| Input Parsing | ✓ Complete | `ConfigLoader` — xyz (4/8 col), run.in (dynamics + FF + thermostat + barostat + Coulomb), `.ff` files |
 | Trajectory Output | ✓ Complete | `TrajectoryWriter` — extended XYZ + energy/temperature log |
 | Main Loop | ✓ Complete | `Simulation` — initialize, step, run; neighbor rebuild check; t=0 force bug fixed |
 
@@ -831,8 +999,13 @@ For major changes, please open an issue first to discuss the proposed changes.
 - `LJForceFieldConfig` 包含 `elements` 向量和 `element_name_to_type` 映射
 - `pair_params(type_i, type_j)` 自动计算交叉参数（几何平均 ε，算术平均 σ）
 - `ClassicalForceProvider` 以 `pair_table_`（type×type 预计算 `PairCache`）索引查表
-- `.ff` 文件格式：支持 `element Ar epsilon X sigma Y` 多元素指令；旧格式向下兼容
+- `.ff` 文件格式：支持 `type N element epsilon X sigma Y [charge Q]` 多元素指令；旧格式向下兼容
 - 示例文件：`configs/examples/lj_argon.ff`（Ar），`configs/examples/lj_ne_ar.ff`（Ne/Ar 混合）
+
+**长程 Coulomb（Ewald + PME）：**
+- `EwaldForceProvider`：直接 k-空间求和，三项分离（实空间 erfc、倒易空间、自能修正），参数可自动选取
+- `PMEForceProvider`：B-样条电荷展布 → 3D FFT（内置 Cooley-Tukey，网格维度须为 2 的幂）→ 影响函数 → IFFT → 力内插；支持 4 阶和 6 阶
+- `CompositeForceProvider`：将 LJ 与 Coulomb 提供者叠加为单一 `ForceProvider`
 
 ### 积分模块 ✓
 对应文件：`velocity_verlet_integrator.hpp/.cpp`、`thermostat.hpp/.cpp`、`velocity_rescaling_thermostat`、`nose_hoover_thermostat`、`barostat.hpp`、`berendsen_barostat.hpp/.cpp`。
@@ -853,9 +1026,12 @@ For major changes, please open an issue first to discuss the proposed changes.
 ### 输入模块 ✓
 对应文件：`config_loader.hpp/.cpp`。
 
-- `xyz` 5 列（type x y z mass）或 8 列（+vx vy vz）格式；第 0 列类型写入 `System::atom_types_`
-- `run` 文件：步数、时间步、温度、`velocity_init`、`velocity_seed`、`remove_com_velocity`
-- `.ff` 力场参数文件（单/多元素）
+`xyz.in` 格式（4 列 `type x y z`，或 8 列加速度/质量）；`run.in` 完整指令集见 [Input File Reference](#input-file-reference)。
+- `run`、`time_step`、`velocity`、`velocity_init`、`velocity_seed`、`remove_com_velocity`
+- `force_field lj`、`cutoff`、`type N element epsilon σ sigma σ [charge q]`
+- `thermostat velocity_rescaling|nose_hoover`、`thermostat_tau`
+- `barostat berendsen`、`pressure`、`barostat_tau`、`compressibility`
+- `coulomb ewald|pme`，以及各子参数（`ewald_alpha`、`ewald_kmax`、`ewald_cutoff`、`pme_alpha`、`pme_cutoff`、`pme_order`、`pme_grid`）
 
 ### 输出模块 ✓
 对应文件：`trajectory_writer.hpp/.cpp`。
@@ -878,6 +1054,8 @@ For major changes, please open an issue first to discuss the proposed changes.
 - ~~无 thermostat / barostat / 多元素力场~~（已修复）
 - ~~输出模块未实现~~（已修复）
 - ~~未存储原子类型、解析错误信息不含行号~~（已修复）
+- ~~无长程静电~~（已修复：Ewald 和 PME 均已实现）
+- ~~run.in 不支持系综和 Coulomb 设定~~（已修复）
 
 ### 尚未实现
 - 键合相互作用（bond / angle / dihedral）

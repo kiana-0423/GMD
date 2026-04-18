@@ -44,6 +44,7 @@ public:
 
 	void resize(std::size_t atom_count) {
 		masses_.assign(atom_count, 0.0);
+		charges_.assign(atom_count, 0.0);
 		coordinates_.assign(atom_count, Vec3{0.0, 0.0, 0.0});
 		velocities_.assign(atom_count, Vec3{0.0, 0.0, 0.0});
 		forces_.assign(atom_count, Vec3{0.0, 0.0, 0.0});
@@ -72,6 +73,14 @@ public:
 
 	std::span<double> mutable_masses() noexcept {
 		return masses_;
+	}
+
+	std::span<const double> charges() const noexcept {
+		return charges_;
+	}
+
+	std::span<double> mutable_charges() noexcept {
+		return charges_;
 	}
 
 	std::span<const int> atom_types() const noexcept {
@@ -125,6 +134,7 @@ public:
 private:
 	Box box_;
 	std::vector<double> masses_;
+	std::vector<double> charges_;
 	std::vector<int>    atom_types_;
 	std::vector<Vec3> coordinates_;
 	std::vector<Vec3> velocities_;

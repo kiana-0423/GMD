@@ -3,6 +3,6 @@
 force_field  lj
 cutoff       8.5
 
-# Each element specifies epsilon [eV] and sigma [Ang].
-element  Ne  epsilon  0.003093  sigma  2.780
-element  Ar  epsilon  0.010320  sigma  3.405
+# Each type specifies an element symbol, epsilon [eV] and sigma [Ang].
+type 1  Ne  epsilon  0.003093  sigma  2.780
+type 2  Ar  epsilon  0.010320  sigma  3.405

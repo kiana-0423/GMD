@@ -3,3 +3,41 @@ time_step 2.0
 run 1000
 velocity_init random
 remove_com_velocity true
+
+# Inline force field (LJ, Argon)
+# Argon has no partial charges; add charge to enable the Coulomb section below.
+force_field lj
+cutoff 8.5
+type 1 Ar epsilon 0.01032 sigma 3.405 charge 0.0
+
+# ---- 系综控制（恒温器 / 恒压器）----
+#
+# NVE（默认，无温控）：不写 thermostat 行即可
+#
+# NVT — 速度缩放（适合平衡，不采样正则系综）：
+#   thermostat  velocity_rescaling
+#
+# NVT — Nosé-Hoover（正确采样 NVT 系综）：
+#   thermostat      nose_hoover
+#   thermostat_tau  100.0      # 耦合时间常数 [fs]，默认 100
+#
+# NPT — Berendsen 压浴（配合任一恒温器使用）：
+#   barostat        berendsen
+#   pressure        1.0        # 目标压力 [bar]，默认 1.0
+#   barostat_tau    2000.0     # 压浴弛豫时间 [fs]，默认 2000
+#   compressibility 4.5e-5     # 等温压缩率 [1/bar]，默认 4.5e-5（液态水）
+
+# ---- Long-range Coulomb (uncomment one section to enable) ----
+#
+# Ewald summation (direct k-space sum, O(N*kmax^3)):
+#   coulomb ewald
+#   ewald_alpha 0.3          # splitting parameter [1/Å]; 0 = auto
+#   ewald_kmax  7            # max k-vector index;   0 = auto
+#   ewald_real_cutoff 8.5    # real-space cutoff [Å]; 0 = auto
+#
+# Particle-Mesh Ewald (mesh-accelerated, O(N*p^3 + K^3 log K)):
+#   coulomb pme
+#   pme_alpha 0.3            # splitting parameter [1/Å]; 0 = auto
+#   pme_real_cutoff 8.5      # real-space cutoff [Å]; 0 = auto
+#   pme_order 4              # B-spline order (4 or 6)
+#   pme_grid 32 32 32        # mesh dimensions (each must be a power of 2)
