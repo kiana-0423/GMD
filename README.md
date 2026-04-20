@@ -10,7 +10,7 @@ GMD is a C++20 molecular dynamics engine built around a small set of composable 
 
 ---
 
-## What's New in v0.4
+## What's New in v1.0
 
 | Feature | Files |
 |---|---|
