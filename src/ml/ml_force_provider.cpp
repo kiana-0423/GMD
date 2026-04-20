@@ -15,6 +15,11 @@ std::string_view MLForceProvider::name() const noexcept {
     return "ml_force_provider";
 }
 
+float MLForceProvider::cutoff() const noexcept {
+    if (adapter_) return adapter_->cutoff();
+    return 0.0f;
+}
+
 void MLForceProvider::initialize(RuntimeContext& runtime) {
     if (!adapter_) {
         adapter_ = CreateUnavailableModelRuntimeAdapter();
@@ -45,6 +50,9 @@ void MLForceProvider::compute(const ForceRequest& request,
         .model_format = model_format_,
         .coordinates = request.coordinates,
         .box = request.box,
+        .atomic_numbers = request.system ? request.system->atomic_numbers()
+                                         : std::span<const int>{},
+        .neighbor_list = request.neighbor_list,
     };
     ModelEvaluationResult model_result;
     adapter_->evaluate(model_request, model_result, runtime);

@@ -18,6 +18,9 @@ struct NeighborList {
 	std::vector<int>   counts;           // counts[i]  = number of neighbors of atom i
 	std::vector<int>   offsets;          // offsets[i] = start index in `neighbors`
 	std::vector<int>   neighbors;        // flat neighbor index storage
+	// Per-pair integer image shift vectors S such that edge_shift = S * box.lengths.
+	// image_flags[k] corresponds to neighbors[k].
+	std::vector<std::array<int, 3>> image_flags;
 	std::vector<std::array<double, 3>> ref_coordinates;  // positions at last rebuild
 	bool valid = false;                  // false until first rebuild
 
@@ -25,6 +28,7 @@ struct NeighborList {
 		counts.clear();
 		offsets.clear();
 		neighbors.clear();
+		image_flags.clear();
 		ref_coordinates.clear();
 		valid = false;
 	}
@@ -49,6 +53,7 @@ public:
 		velocities_.assign(atom_count, Vec3{0.0, 0.0, 0.0});
 		forces_.assign(atom_count, Vec3{0.0, 0.0, 0.0});
 		atom_types_.assign(atom_count, 0);
+		atomic_numbers_.assign(atom_count, 0);
 	}
 
 	std::size_t atom_count() const noexcept {
@@ -89,6 +94,14 @@ public:
 
 	std::span<int> mutable_atom_types() noexcept {
 		return atom_types_;
+	}
+
+	std::span<const int> atomic_numbers() const noexcept {
+		return atomic_numbers_;
+	}
+
+	std::span<int> mutable_atomic_numbers() noexcept {
+		return atomic_numbers_;
 	}
 
 	std::span<const Vec3> coordinates() const noexcept {
@@ -136,6 +149,7 @@ private:
 	std::vector<double> masses_;
 	std::vector<double> charges_;
 	std::vector<int>    atom_types_;
+	std::vector<int>    atomic_numbers_;
 	std::vector<Vec3> coordinates_;
 	std::vector<Vec3> velocities_;
 	std::vector<Vec3> forces_;

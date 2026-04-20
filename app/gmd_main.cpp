@@ -19,10 +19,14 @@
 #include "gmd/integrator/velocity_verlet_integrator.hpp"
 #include "gmd/io/config_loader.hpp"
 #include "gmd/io/trajectory_writer.hpp"
+#include "gmd/ml/ml_force_provider.hpp"
 #include "gmd/neighbor/verlet_neighbor_builder.hpp"
 #include "gmd/runtime/runtime_context.hpp"
 #include "gmd/system/initializer.hpp"
 #include "gmd/system/system.hpp"
+#ifdef GMD_ENABLE_TORCH
+#include "gmd/ml/torchscript_adapter.hpp"
+#endif
 
 namespace {
 
@@ -170,6 +174,31 @@ int main(int argc, char** argv)
             need_neighbor_builder = true;
             std::cout << "[gmd] Loaded force field from " << ff_path
                       << " (" << ff_config.elements.size() << " element type(s))\n";
+        } else if (run_config.force_field_type == "ml") {
+#ifdef GMD_ENABLE_TORCH
+            if (run_config.ml_model_path.empty()) {
+                throw std::runtime_error(
+                    "force_field ml requires a 'model_path' directive in the run file");
+            }
+            auto ts_adapter = std::make_shared<gmd::TorchScriptModelRuntimeAdapter>();
+            auto ml_provider = std::make_shared<gmd::MLForceProvider>(
+                run_config.ml_model_path, ts_adapter);
+            // Load the model now so cutoff() is available before NeighborBuilder is set up.
+            gmd::RuntimeContext tmp_runtime;
+            ml_provider->initialize(tmp_runtime);
+            short_range_cutoff = static_cast<double>(ml_provider->cutoff());
+            if (short_range_cutoff <= 0.0) {
+                throw std::runtime_error(
+                    "ML model 'local_cutoff' attribute is missing or <= 0");
+            }
+            active_provider = ml_provider;
+            need_neighbor_builder = true;
+            std::cout << "[gmd] Loaded ML model from " << run_config.ml_model_path.string()
+                      << "  cutoff=" << short_range_cutoff << " \u00c5\n";
+#else
+            throw std::runtime_error(
+                "force_field ml requires GMD to be built with -DGMD_ENABLE_TORCH=ON");
+#endif
         } else {
             lj_provider = std::make_shared<gmd::ClassicalForceProvider>();
             active_provider = lj_provider;

@@ -39,6 +39,17 @@ const std::unordered_map<std::string, double> kElementMasses = {
     {"Xe", 131.29}, {"Au", 196.967},{"Pb", 207.2},
 };
 
+// Atomic numbers (Z) for common elements.
+const std::unordered_map<std::string, int> kElementAtomicNumbers = {
+    {"H",  1},  {"He", 2},  {"Li", 3},  {"Be", 4},  {"B",  5},
+    {"C",  6},  {"N",  7},  {"O",  8},  {"F",  9},  {"Ne", 10},
+    {"Na", 11}, {"Mg", 12}, {"Al", 13}, {"Si", 14}, {"P",  15},
+    {"S",  16}, {"Cl", 17}, {"Ar", 18}, {"K",  19}, {"Ca", 20},
+    {"Ti", 22}, {"Fe", 26}, {"Ni", 28}, {"Cu", 29}, {"Zn", 30},
+    {"Kr", 36}, {"Ag", 47}, {"Sn", 50}, {"Xe", 54}, {"Au", 79},
+    {"Pb", 82},
+};
+
 // Returns true if the string looks like an element symbol (starts with a letter).
 bool is_element_symbol(const std::string& s) {
     return !s.empty() && std::isalpha(static_cast<unsigned char>(s[0]));
@@ -402,6 +413,39 @@ void ConfigLoader::load_xyz(const std::filesystem::path& xyz_path, System& syste
             }
         }
     }
+
+    // Populate per-atom atomic numbers from element symbols.
+    // For element-symbol mode the element comes from the xyz line (stored in
+    // local_element_map or ff->element_name_to_type).  For integer-type mode
+    // the element symbol is taken from ff->elements[type_idx].element.
+    {
+        auto atomic_numbers = system.mutable_atomic_numbers();
+        const auto types    = system.atom_types();
+
+        // Build a per-type atomic number lookup from the ff (if available).
+        std::unordered_map<int, int> type_to_z;
+        if (ff != nullptr) {
+            for (auto& [sym, tidx] : ff->element_name_to_type) {
+                auto zit = kElementAtomicNumbers.find(sym);
+                if (zit != kElementAtomicNumbers.end()) {
+                    type_to_z[tidx] = zit->second;
+                }
+            }
+        }
+        // Also include entries built from the local element map (no-ff element-symbol mode).
+        for (auto& [sym, tidx] : local_element_map) {
+            auto zit = kElementAtomicNumbers.find(sym);
+            if (zit != kElementAtomicNumbers.end()) {
+                type_to_z[tidx] = zit->second;
+            }
+        }
+
+        for (std::size_t i = 0; i < atom_count; ++i) {
+            const int tidx = types[i];
+            auto it = type_to_z.find(tidx);
+            atomic_numbers[i] = (it != type_to_z.end()) ? it->second : 0;
+        }
+    }
 }
 
 RunConfig ConfigLoader::load_run(const std::filesystem::path& run_path) const {
@@ -463,11 +507,17 @@ RunConfig ConfigLoader::load_run(const std::filesystem::path& run_path) const {
             config.molecular_nonbonded_mode = tokens[1];
         // ---- Inline force field directives ----
         } else if (tokens[0] == "force_field") {
-            if (tokens[1] != "lj") {
+            if (tokens[1] == "lj") {
+                has_inline_ff = true;
+                config.force_field_type = "lj";
+            } else if (tokens[1] == "ml") {
+                config.force_field_type = "ml";
+            } else {
                 throw std::runtime_error("Unsupported force_field type: " + tokens[1]
-                                         + " (only 'lj' is supported)");
+                                         + " (supported: lj, ml)");
             }
-            has_inline_ff = true;
+        } else if (tokens[0] == "model_path") {
+            config.ml_model_path = tokens[1];
         } else if (tokens[0] == "cutoff") {
             inline_ff.cutoff = parse_double(tokens[1], "cutoff");
             if (inline_ff.cutoff <= 0.0) throw std::runtime_error("cutoff must be positive");

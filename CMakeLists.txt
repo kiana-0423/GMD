@@ -6,6 +6,7 @@ include(CTest)
 
 option(GMD_ENABLE_CUDA "Enable CUDA language support" OFF)
 option(GMD_BUILD_PYTHON "Build Python bindings" OFF)
+option(GMD_ENABLE_TORCH "Enable TorchScript ML force provider (requires LibTorch)" OFF)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -18,6 +19,10 @@ include(CompilerOptions)
 if(GMD_ENABLE_CUDA)
     enable_language(CUDA)
     include(CUDAOptions)
+endif()
+
+if(GMD_ENABLE_TORCH)
+    find_package(Torch REQUIRED)
 endif()
 
 add_library(gmd_headers INTERFACE)
@@ -50,6 +55,12 @@ add_library(gmd_core STATIC
     src/system/initializer.cpp
 )
 target_link_libraries(gmd_core PUBLIC gmd_headers)
+
+if(GMD_ENABLE_TORCH)
+    target_sources(gmd_core PRIVATE src/ml/torchscript_adapter.cpp)
+    target_link_libraries(gmd_core PUBLIC ${TORCH_LIBRARIES})
+    target_compile_definitions(gmd_core PUBLIC GMD_ENABLE_TORCH)
+endif()
 
 gmd_apply_default_warnings(gmd_core)
 

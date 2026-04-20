@@ -125,10 +125,12 @@ void VerletNeighborBuilder::rebuild(System& system,
     nl.counts.assign(n, 0);
     nl.offsets.assign(n + 1, 0);
     nl.neighbors.clear();
+    nl.image_flags.clear();
     nl.ref_coordinates.resize(n);
 
     // Temporary per-atom neighbor vectors to avoid overallocation.
     std::vector<std::vector<int>> tmp(n);
+    std::vector<std::vector<std::array<int, 3>>> tmp_flags(n);
 
     for (std::size_t i = 0; i < n; ++i) {
         double xi = coords[i][0] - std::floor(coords[i][0] / box.lengths[0]) * box.lengths[0];
@@ -175,10 +177,18 @@ void VerletNeighborBuilder::rebuild(System& system,
                         coords[i][1] - coords[j][1],
                         coords[i][2] - coords[j][2]
                     };
+                    // Integer shift S: edge_shift = S * box.lengths
+                    // Such that r_j + edge_shift - r_i gives the MIC bond vector.
+                    std::array<int, 3> S = {
+                        static_cast<int>(std::round(dr[0] / box.lengths[0])),
+                        static_cast<int>(std::round(dr[1] / box.lengths[1])),
+                        static_cast<int>(std::round(dr[2] / box.lengths[2]))
+                    };
                     apply_minimum_image(dr, box);
                     const double r2 = dr[0]*dr[0] + dr[1]*dr[1] + dr[2]*dr[2];
                     if (r2 < r_list_sq) {
                         tmp[i].push_back(j);
+                        tmp_flags[i].push_back(S);
                     }
                 }
                 j = next_[j];
@@ -195,9 +205,11 @@ void VerletNeighborBuilder::rebuild(System& system,
         nl.offsets[i + 1] = nl.offsets[i] + nl.counts[i];
     }
     nl.neighbors.resize(static_cast<std::size_t>(nl.offsets[n]));
+    nl.image_flags.resize(static_cast<std::size_t>(nl.offsets[n]));
     for (std::size_t i = 0; i < n; ++i) {
         for (int k = 0; k < nl.counts[i]; ++k) {
-            nl.neighbors[nl.offsets[i] + k] = tmp[i][k];
+            nl.neighbors[nl.offsets[i] + k]    = tmp[i][k];
+            nl.image_flags[nl.offsets[i] + k]  = tmp_flags[i][k];
         }
     }
 

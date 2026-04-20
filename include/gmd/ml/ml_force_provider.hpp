@@ -22,6 +22,10 @@ public:
 
 	std::string_view name() const noexcept override;
 
+	// Returns the force cutoff radius [Å] as read from the model artifact.
+	// Returns 0 if the backend does not expose this information.
+	float cutoff() const noexcept;
+
 	void initialize(RuntimeContext& runtime) override;
 	void compute(const ForceRequest& request, ForceResult& result, RuntimeContext& runtime) override;
 	void finalize(RuntimeContext& runtime) override;

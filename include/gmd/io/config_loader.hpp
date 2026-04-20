@@ -115,6 +115,10 @@ struct RunConfig {
 	std::string velocity_init_mode = "random";
 	std::uint32_t velocity_seed = 5489u;
 	bool remove_center_of_mass_velocity = true;
+	// "lj" | "molecular" | "ml" | ""  (empty = no explicit force_field directive)
+	std::string force_field_type;
+	// Path to a TorchScript model file; populated when force_field_type == "ml".
+	std::filesystem::path ml_model_path;
 	// External molecular FFs default to bonded-only mode because 1-2 / 1-3
 	// nonbonded exclusions are not implemented yet. Set to "lj_unsafe" to
 	// explicitly include molecular LJ anyway.
