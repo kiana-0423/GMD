@@ -1,5 +1,7 @@
 # GMD — Good Molecular Dynamics  `v1.1`
 
+Release history is tracked in [CHANGELOG.md](CHANGELOG.md). The current documented release is `v1.1` from `2026-04-20`.
+
 GMD is a C++20 molecular dynamics engine built around a small set of composable runtime abstractions:
 
 - `ForceProvider` — force and energy evaluation (LJ, bonded, Ewald/PME, ML)
