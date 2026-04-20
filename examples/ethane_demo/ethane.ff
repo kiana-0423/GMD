@@ -7,6 +7,8 @@
 # force_field  molecular          (required, must be the first non-comment line)
 #
 # lj_cutoff  <Å>                  LJ truncation radius
+# mixing_rule <name>              Cross-type LJ mixing rule when no pair override is present
+#                                  lorentz_berthelot (default) | geometric | waldman_hagler
 #
 # type <N>  <elem>                Atom type definition.
 #   mass    <amu>                 Atomic mass.  May be omitted for common elements
@@ -15,7 +17,7 @@
 #   charge  <e>                   Partial charge in units of the elementary charge
 #
 # pair <type_i> <type_j>          Explicit cross-pair override.
-#   epsilon <kcal/mol>            Overrides Lorentz-Berthelot mixing for this pair.
+#   epsilon <kcal/mol>            Overrides mixing_rule for this pair.
 #   sigma   <Å>
 #
 # bond_type <N>                   Harmonic bond V = k (r - r0)²

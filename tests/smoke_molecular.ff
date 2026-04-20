@@ -9,7 +9,7 @@ lj_cutoff  8.0
 type 1  N  mass 14.007  epsilon 0.0715  sigma 3.310  charge 0.0
 type 2  O  mass 15.999  epsilon 0.1200  sigma 3.000  charge 0.0
 
-# Cross-pair override chosen to differ clearly from LB mixing.
+# Cross-pair override chosen to differ clearly from the configured mixing rule.
 pair 1 2  epsilon 0.0100  sigma 1.000
 
 bond_type 1  k 228.0  r0 1.098

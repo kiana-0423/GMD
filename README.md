@@ -1,4 +1,4 @@
-# GMD — Good Molecular Dynamics  `v0.4`
+# GMD — Good Molecular Dynamics  `v1.1`
 
 GMD is a C++20 molecular dynamics engine built around a small set of composable runtime abstractions:
 
@@ -7,6 +7,17 @@ GMD is a C++20 molecular dynamics engine built around a small set of composable 
 - `NeighborBuilder` — Verlet-list construction with skin-distance rebuild check
 - `Integrator` — velocity-Verlet time stepping with optional thermostat / barostat hooks
 - `Simulation` — orchestrator that wires everything together
+
+---
+
+## What's New in v1.1
+
+| Feature | Files |
+|---|---|
+| **Selectable LJ mixing rules** — `mixing_rule` / `mixing` now works for inline LJ in `run.in`, standalone LJ `.ff`, and molecular `.ff` files | `include/gmd/io/config_loader.hpp` `src/io/config_loader.cpp` |
+| **Three supported combining rules** — `lorentz_berthelot` (default), `geometric`, and `waldman_hagler` for cross-type LJ pairs without explicit overrides | same files above |
+| **Rule aliases and flexible spelling** — accepts `lb`, `geom`, `wh`, plus hyphenated names such as `lorentz-berthelot` and `waldman-hagler` | same files above |
+| **Clearer non-bonded documentation** — examples and input format docs now describe `mixing_rule` and note that explicit `pair` entries override the configured fallback rule | `README.md` `examples/ethane_demo/ethane.ff` |
 
 ---
 
@@ -28,7 +39,7 @@ Implemented:
 
 - periodic boundary conditions and minimum-image convention
 - cell-list Verlet neighbor lists with skin-distance rebuild check
-- shifted Lennard-Jones pair interactions (multi-element, Lorentz-Berthelot mixing, explicit pair overrides that take priority over mixing rules)
+- shifted Lennard-Jones pair interactions (multi-element, selectable mixing rules, explicit pair overrides that take priority over mixing)
 - **harmonic bonds** (`V = k(r − r₀)²`)
 - **harmonic angles** (`V = k(θ − θ₀)²`)
 - **periodic proper dihedrals** (`V = k[1 + cos(nφ − δ)]`)
@@ -209,9 +220,16 @@ Inline LJ force field:
 ```ini
 force_field lj
 cutoff 8.5
+mixing_rule lorentz_berthelot   # or geometric / waldman_hagler
 type 1 Ar epsilon 0.01032 sigma 3.405 charge 0.0
 type 2 Ne epsilon 0.00312 sigma 2.749
 ```
+
+Supported mixing-rule spellings:
+
+- `lorentz_berthelot`, `lorentz-berthelot`, `lb`
+- `geometric`, `geom`
+- `waldman_hagler`, `waldman-hagler`, `wh`
 
 Thermostat:
 
@@ -256,13 +274,14 @@ All `kcal/mol` and degree values are **converted automatically** to internal `eV
 ```ini
 force_field  molecular
 
+mixing_rule  lorentz_berthelot   # optional; default is lorentz_berthelot
 lj_cutoff  10.0
 
 # Atom types: mass [amu], epsilon [kcal/mol], sigma [Å], charge [e]
 type 1  C  mass 12.011  epsilon 0.0660  sigma 3.500  charge -0.180
 type 2  H  mass  1.008  epsilon 0.0300  sigma 2.500  charge  0.060
 
-# Explicit cross-pair override (overrides Lorentz-Berthelot mixing)
+# Explicit cross-pair override (overrides mixing_rule fallback)
 pair 1 2  epsilon 0.0447  sigma 3.000
 
 # Bond types: k [kcal/mol/Å²], r0 [Å]

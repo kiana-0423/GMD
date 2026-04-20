@@ -1,5 +1,6 @@
 #include "gmd/io/config_loader.hpp"
 
+#include <algorithm>
 #include <cctype>
 #include <cmath>
 #include <fstream>
@@ -41,6 +42,29 @@ const std::unordered_map<std::string, double> kElementMasses = {
 // Returns true if the string looks like an element symbol (starts with a letter).
 bool is_element_symbol(const std::string& s) {
     return !s.empty() && std::isalpha(static_cast<unsigned char>(s[0]));
+}
+
+std::string to_lower_ascii(std::string s) {
+    std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    return s;
+}
+
+std::string parse_mixing_rule(const std::string& token) {
+    const std::string rule = to_lower_ascii(token);
+    if (rule == "lb" || rule == "lorentz_berthelot" || rule == "lorentz-berthelot") {
+        return "lorentz_berthelot";
+    }
+    if (rule == "geometric" || rule == "geom") {
+        return "geometric";
+    }
+    if (rule == "waldman_hagler" || rule == "waldman-hagler" || rule == "wh") {
+        return "waldman_hagler";
+    }
+    throw std::runtime_error(
+        "Unsupported mixing_rule: " + token
+        + " (supported: lorentz_berthelot|lb, geometric|geom, waldman_hagler|wh)");
 }
 
 std::vector<std::string> tokenize_line(std::istream& input) {
@@ -447,6 +471,8 @@ RunConfig ConfigLoader::load_run(const std::filesystem::path& run_path) const {
         } else if (tokens[0] == "cutoff") {
             inline_ff.cutoff = parse_double(tokens[1], "cutoff");
             if (inline_ff.cutoff <= 0.0) throw std::runtime_error("cutoff must be positive");
+        } else if (tokens[0] == "mixing_rule" || tokens[0] == "mixing") {
+            inline_ff.mixing_rule = parse_mixing_rule(tokens[1]);
         } else if (tokens[0] == "epsilon") {
             single_epsilon = parse_double(tokens[1], "epsilon");
             if (single_epsilon <= 0.0) throw std::runtime_error("epsilon must be positive");
@@ -564,11 +590,28 @@ void LJForceFieldConfig::pair_params(int type_i, int type_j,
         sig_out = it->second.sigma;
         return;
     }
-    // Fall back to Lorentz-Berthelot mixing rules.
+    // Fall back to configurable mixing rules.
     const auto& ei = elements[static_cast<std::size_t>(type_i)];
     const auto& ej = elements[static_cast<std::size_t>(type_j)];
-    eps_out = std::sqrt(ei.epsilon * ej.epsilon);   // geometric mean
-    sig_out = 0.5 * (ei.sigma + ej.sigma);           // arithmetic mean
+
+    if (mixing_rule == "geometric") {
+        eps_out = std::sqrt(ei.epsilon * ej.epsilon);
+        sig_out = std::sqrt(ei.sigma * ej.sigma);
+        return;
+    }
+    if (mixing_rule == "waldman_hagler") {
+        const double si6 = std::pow(ei.sigma, 6.0);
+        const double sj6 = std::pow(ej.sigma, 6.0);
+        const double denom = si6 + sj6;
+        sig_out = std::pow(0.5 * denom, 1.0 / 6.0);
+        eps_out = (2.0 * std::sqrt(ei.epsilon * ej.epsilon) * std::pow(ei.sigma, 3.0)
+                   * std::pow(ej.sigma, 3.0)) / denom;
+        return;
+    }
+
+    // Default: Lorentz-Berthelot.
+    eps_out = std::sqrt(ei.epsilon * ej.epsilon);  // geometric mean
+    sig_out = 0.5 * (ei.sigma + ej.sigma);         // arithmetic mean
 }
 
 LJForceFieldConfig ConfigLoader::load_force_field(const std::filesystem::path& ff_path) const {
@@ -605,6 +648,8 @@ LJForceFieldConfig ConfigLoader::load_force_field(const std::filesystem::path& f
             if (config.cutoff <= 0.0) {
                 throw std::runtime_error("cutoff must be positive");
             }
+        } else if (tokens[0] == "mixing_rule" || tokens[0] == "mixing") {
+            config.mixing_rule = parse_mixing_rule(tokens[1]);
         } else if (tokens[0] == "epsilon") {
             // Legacy single-element format.
             single_epsilon = parse_double(tokens[1], "epsilon");
@@ -656,6 +701,7 @@ LJForceFieldConfig ConfigLoader::load_force_field(const std::filesystem::path& f
 // File format (.ff):
 //
 //   force_field  molecular
+//   mixing_rule  lorentz_berthelot   # optional
 //
 //   # --- Atom types ---------------------------------------------------------
 //   # type <N>  <elem>  mass <m>  epsilon <ε>  sigma <σ>  [charge <q>]
@@ -722,6 +768,8 @@ MolecularForceFieldConfig ConfigLoader::load_molecular_ff(
             cfg.lj.cutoff = parse_double(tokens[1], "lj_cutoff");
             if (cfg.lj.cutoff <= 0.0)
                 throw std::runtime_error("lj_cutoff must be positive");
+        } else if (tokens[0] == "mixing_rule" || tokens[0] == "mixing") {
+            cfg.lj.mixing_rule = parse_mixing_rule(tokens[1]);
 
         // ---- Atom type ----
         } else if (tokens[0] == "type") {

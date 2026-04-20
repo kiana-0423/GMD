@@ -46,6 +46,7 @@ struct LJElementParams {
 // Multi-type format (type numbers are 1-based, like LAMMPS):
 //   force_field  lj
 //   cutoff       8.5
+//   mixing_rule  lorentz_berthelot
 //   type 1  Ar  epsilon 0.01032  sigma 3.405
 //   type 2  Ne  epsilon 0.00312  sigma 2.749
 //   # Same element, different parameters:
@@ -55,6 +56,13 @@ struct LJElementParams {
 struct LJForceFieldConfig {
 	// Cutoff radius shared by all pairs [Angstrom].
 	double cutoff = 8.5;
+
+	// Cross-type mixing rule used when a pair has no explicit override.
+	// Supported values:
+	//   - "lorentz_berthelot" (default): epsilon geometric, sigma arithmetic
+	//   - "geometric": epsilon geometric, sigma geometric
+	//   - "waldman_hagler": WH combining rule
+	std::string mixing_rule = "lorentz_berthelot";
 
 	// Per-type parameters, indexed 0-based (type N in the file → index N-1).
 	std::vector<LJElementParams> elements;
@@ -68,7 +76,7 @@ struct LJForceFieldConfig {
 	std::map<std::pair<int,int>, ExplicitPairOverride> pair_overrides;
 
 	// Returns epsilon[eV] and sigma[Ang] for the pair (type_i, type_j).
-	// Checks pair_overrides first; falls back to Lorentz-Berthelot mixing.
+	// Checks pair_overrides first; falls back to the configured mixing_rule.
 	// Indices are 0-based.
 	void pair_params(int type_i, int type_j,
 	                 double& eps_out, double& sig_out) const noexcept;
