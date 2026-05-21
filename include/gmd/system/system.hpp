@@ -2,7 +2,9 @@
 
 #include <array>
 #include <cstddef>
+#include <optional>
 #include <span>
+#include <stdexcept>
 #include <vector>
 
 #include "../system/box.hpp"
@@ -46,7 +48,13 @@ public:
 	System() = default;
 	~System() = default;
 
-	void resize(std::size_t atom_count) {
+	void resize(std::size_t atom_count,
+	            std::optional<std::size_t> local_count = std::nullopt) {
+		const std::size_t new_local_count = local_count.value_or(atom_count);
+		if (new_local_count > atom_count) {
+			throw std::invalid_argument("Local atom count cannot exceed total atom count");
+		}
+
 		masses_.assign(atom_count, 0.0);
 		charges_.assign(atom_count, 0.0);
 		coordinates_.assign(atom_count, Vec3{0.0, 0.0, 0.0});
@@ -54,10 +62,84 @@ public:
 		forces_.assign(atom_count, Vec3{0.0, 0.0, 0.0});
 		atom_types_.assign(atom_count, 0);
 		atomic_numbers_.assign(atom_count, 0);
+		atom_tags_.resize(atom_count);
+		for (std::size_t atom_index = 0; atom_index < atom_count; ++atom_index) {
+			atom_tags_[atom_index] = static_cast<int>(atom_index);
+		}
+		atom_owners_.assign(atom_count, 0);
+		num_local_atoms_ = new_local_count;
+		clear_reverse_ghost_virial();
+		neighbor_list_.clear();
 	}
 
 	std::size_t atom_count() const noexcept {
 		return coordinates_.size();
+	}
+
+	std::size_t num_local_atoms() const noexcept {
+		return num_local_atoms_;
+	}
+
+	std::size_t num_ghost_atoms() const noexcept {
+		return atom_count() - num_local_atoms_;
+	}
+
+	bool is_local_atom(std::size_t atom_index) const noexcept {
+		return atom_index < num_local_atoms_;
+	}
+
+	int atom_tag(std::size_t atom_index) const noexcept {
+		return atom_tags_[atom_index];
+	}
+
+	int atom_owner(std::size_t atom_index) const noexcept {
+		return atom_owners_[atom_index];
+	}
+
+	std::span<int> mutable_atom_tags() noexcept {
+		return atom_tags_;
+	}
+
+	std::span<int> mutable_atom_owners() noexcept {
+		return atom_owners_;
+	}
+
+	void mark_atoms_local(int count) {
+		if (count < 0 || static_cast<std::size_t>(count) > atom_count()) {
+			throw std::invalid_argument("Local atom count must fit the atom storage");
+		}
+
+		num_local_atoms_ = static_cast<std::size_t>(count);
+	}
+
+	void add_ghost_atom(double mass,
+	                    double charge,
+	                    const Vec3& position,
+	                    int tag,
+	                    int owner) {
+		masses_.push_back(mass);
+		charges_.push_back(charge);
+		coordinates_.push_back(position);
+		velocities_.push_back(Vec3{0.0, 0.0, 0.0});
+		forces_.push_back(Vec3{0.0, 0.0, 0.0});
+		atom_types_.push_back(0);
+		atomic_numbers_.push_back(0);
+		atom_tags_.push_back(tag);
+		atom_owners_.push_back(owner);
+		neighbor_list_.clear();
+	}
+
+	void clear_ghost_atoms() {
+		masses_.resize(num_local_atoms_);
+		charges_.resize(num_local_atoms_);
+		coordinates_.resize(num_local_atoms_);
+		velocities_.resize(num_local_atoms_);
+		forces_.resize(num_local_atoms_);
+		atom_types_.resize(num_local_atoms_);
+		atomic_numbers_.resize(num_local_atoms_);
+		atom_tags_.resize(num_local_atoms_);
+		atom_owners_.resize(num_local_atoms_);
+		neighbor_list_.clear();
 	}
 
 	void set_box(const Box& box) noexcept {
@@ -128,6 +210,20 @@ public:
 		return forces_;
 	}
 
+	const std::array<double, 9>& reverse_ghost_virial() const noexcept {
+		return reverse_ghost_virial_;
+	}
+
+	void clear_reverse_ghost_virial() noexcept {
+		reverse_ghost_virial_ = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+	}
+
+	void accumulate_reverse_ghost_virial(const std::array<double, 9>& virial) noexcept {
+		for (std::size_t index = 0; index < reverse_ghost_virial_.size(); ++index) {
+			reverse_ghost_virial_[index] += virial[index];
+		}
+	}
+
 	double potential_energy() const noexcept {
 		return potential_energy_;
 	}
@@ -150,9 +246,17 @@ private:
 	std::vector<double> charges_;
 	std::vector<int>    atom_types_;
 	std::vector<int>    atomic_numbers_;
+	std::vector<int>    atom_tags_;
+	std::vector<int>    atom_owners_;
 	std::vector<Vec3> coordinates_;
 	std::vector<Vec3> velocities_;
 	std::vector<Vec3> forces_;
+	std::size_t num_local_atoms_ = 0;
+	std::array<double, 9> reverse_ghost_virial_ = {
+		0.0, 0.0, 0.0,
+		0.0, 0.0, 0.0,
+		0.0, 0.0, 0.0
+	};
 	double potential_energy_ = 0.0;
 	NeighborList neighbor_list_;
 };

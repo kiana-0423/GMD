@@ -28,6 +28,11 @@ c++ -std=c++20 -I"${ROOT_DIR}/include" \
   "${ROOT_DIR}/src/ml/ml_force_provider.cpp" \
   "${ROOT_DIR}/src/ml/model_runtime_adapter.cpp" \
   "${ROOT_DIR}/src/neighbor/verlet_neighbor_builder.cpp" \
+  "${ROOT_DIR}/src/parallel/domain_decomposition.cpp" \
+  "${ROOT_DIR}/src/parallel/mpi_communicator.cpp" \
+  "${ROOT_DIR}/src/parallel/mpi_environment.cpp" \
+  "${ROOT_DIR}/src/parallel/pme_parallel.cpp" \
+  "${ROOT_DIR}/src/runtime/runtime_context.cpp" \
   "${ROOT_DIR}/src/system/initializer.cpp" \
   -o "${BIN_PATH}"
 

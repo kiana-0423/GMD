@@ -3,10 +3,18 @@
 #include <array>
 #include <cassert>
 #include <cmath>
+#include <limits>
+#include <string>
 #include <stdexcept>
 
 #include "gmd/boundary/minimum_image.hpp"
+#include "gmd/runtime/runtime_context.hpp"
 #include "gmd/system/box.hpp"
+#include "gmd/system/system.hpp"
+
+#ifdef GMD_ENABLE_MPI
+#include <mpi.h>
+#endif
 
 namespace gmd {
 
@@ -58,6 +66,101 @@ inline void accum_force(ForceResult& result, int idx, const Vec3& f) noexcept {
     result.forces[static_cast<std::size_t>(idx)][0] += f[0];
     result.forces[static_cast<std::size_t>(idx)][1] += f[1];
     result.forces[static_cast<std::size_t>(idx)][2] += f[2];
+}
+
+inline std::array<int, 2> atom_indices(const BondTerm& term) noexcept {
+    return {term.i, term.j};
+}
+
+inline std::array<int, 3> atom_indices(const AngleTerm& term) noexcept {
+    return {term.i, term.j, term.k};
+}
+
+inline std::array<int, 4> atom_indices(const DihedralTerm& term) noexcept {
+    return {term.i, term.j, term.k, term.l};
+}
+
+inline std::array<int, 4> atom_indices(const ImproperTerm& term) noexcept {
+    return {term.i, term.j, term.k, term.l};
+}
+
+template <typename Term>
+void validate_nonnegative_atom_indices(const Term& term, const char* term_name) {
+    for (int atom_index : atom_indices(term)) {
+        if (atom_index < 0) {
+            throw std::runtime_error(std::string("BondedForceProvider: ") +
+                                     term_name + " atom index out of range");
+        }
+    }
+}
+
+template <typename Term>
+void validate_atom_indices(const Term& term,
+                           std::size_t atom_count,
+                           const char* term_name) {
+    validate_nonnegative_atom_indices(term, term_name);
+    for (int atom_index : atom_indices(term)) {
+        if (static_cast<std::size_t>(atom_index) >= atom_count) {
+            throw std::runtime_error(std::string("BondedForceProvider: ") +
+                                     term_name + " atom index out of range");
+        }
+    }
+}
+
+template <typename Term>
+void validate_atom_indices(const std::vector<Term>& terms,
+                           std::size_t atom_count,
+                           const char* term_name) {
+    for (const auto& term : terms) {
+        validate_atom_indices(term, atom_count, term_name);
+    }
+}
+
+template <typename Term>
+void validate_nonnegative_atom_indices(const std::vector<Term>& terms,
+                                       const char* term_name) {
+    for (const auto& term : terms) {
+        validate_nonnegative_atom_indices(term, term_name);
+    }
+}
+
+template <typename Term>
+bool has_local_atom(const System& system, const Term& term) noexcept {
+    for (int atom_index : atom_indices(term)) {
+        if (system.is_local_atom(static_cast<std::size_t>(atom_index))) {
+            return true;
+        }
+    }
+    return false;
+}
+
+template <typename Term>
+bool all_atoms_local(const System& system, const Term& term) noexcept {
+    for (int atom_index : atom_indices(term)) {
+        if (!system.is_local_atom(static_cast<std::size_t>(atom_index))) {
+            return false;
+        }
+    }
+    return true;
+}
+
+template <typename Term>
+int min_tag_owner(const System& system, const Term& term, int local_rank) noexcept {
+    int owner = -1;
+    int min_tag = std::numeric_limits<int>::max();
+    for (int atom_index : atom_indices(term)) {
+        const auto system_index = static_cast<std::size_t>(atom_index);
+        const int tag = system.atom_tag(system_index);
+        if (tag >= min_tag) {
+            continue;
+        }
+
+        min_tag = tag;
+        owner = system.is_local_atom(system_index)
+            ? local_rank
+            : system.atom_owner(system_index);
+    }
+    return owner;
 }
 
 // -----------------------------------------------------------------------
@@ -200,11 +303,19 @@ void BondedForceProvider::initialize(RuntimeContext& /*runtime*/) {
         if (ip.type_idx < 0 || ip.type_idx >= static_cast<int>(improper_types_.size()))
             throw std::runtime_error("BondedForceProvider: improper type_idx out of range");
     }
+
+    // The System storage is supplied to compute(), so initialize() can catch
+    // malformed negative topology indices here and compute() verifies their
+    // upper bound against the current local + ghost atom storage.
+    validate_nonnegative_atom_indices(topology_->bonds, "bond");
+    validate_nonnegative_atom_indices(topology_->angles, "angle");
+    validate_nonnegative_atom_indices(topology_->dihedrals, "dihedral");
+    validate_nonnegative_atom_indices(topology_->impropers, "improper");
 }
 
 void BondedForceProvider::compute(const ForceRequest& request,
                                    ForceResult& result,
-                                   RuntimeContext& /*runtime*/) {
+                                   RuntimeContext& runtime) {
     const std::size_t n = request.coordinates.size();
     result.success = true;
     result.potential_energy = 0.0;
@@ -212,32 +323,111 @@ void BondedForceProvider::compute(const ForceRequest& request,
     result.virial = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
     result.virial_valid = true;
 
-    if (!topology_) return;
+    if (topology_) {
+        validate_atom_indices(topology_->bonds, n, "bond");
+        validate_atom_indices(topology_->angles, n, "angle");
+        validate_atom_indices(topology_->dihedrals, n, "dihedral");
+        validate_atom_indices(topology_->impropers, n, "improper");
 
-    compute_bonds    (request, result);
-    compute_angles   (request, result);
-    compute_dihedrals(request, result);
-    compute_impropers(request, result);
+        compute_system_ = request.system;
+        compute_rank_ = runtime.rank();
 
-    // Bonded forces are already accumulated per atom. For internal forces with
-    // zero net translation, the configurational virial can be formed from the
-    // outer product r_i ⊗ F_i and summed over all atoms.
-    for (std::size_t i = 0; i < n; ++i) {
-        const auto& r = request.coordinates[i];
-        const auto& f = result.forces[i];
-        result.virial[0] += r[0] * f[0];
-        result.virial[1] += r[0] * f[1];
-        result.virial[2] += r[0] * f[2];
-        result.virial[3] += r[1] * f[0];
-        result.virial[4] += r[1] * f[1];
-        result.virial[5] += r[1] * f[2];
-        result.virial[6] += r[2] * f[0];
-        result.virial[7] += r[2] * f[1];
-        result.virial[8] += r[2] * f[2];
+        compute_bonds    (request, result);
+        compute_angles   (request, result);
+        compute_dihedrals(request, result);
+        compute_impropers(request, result);
+
+        compute_system_ = nullptr;
+        compute_rank_ = 0;
+
+        // Bonded forces are already accumulated per atom. For internal forces with
+        // zero net translation, the configurational virial can be formed from the
+        // outer product r_i ⊗ F_i and summed over all atoms.
+        for (std::size_t i = 0; i < n; ++i) {
+            const auto& r = request.coordinates[i];
+            const auto& f = result.forces[i];
+            result.virial[0] += r[0] * f[0];
+            result.virial[1] += r[0] * f[1];
+            result.virial[2] += r[0] * f[2];
+            result.virial[3] += r[1] * f[0];
+            result.virial[4] += r[1] * f[1];
+            result.virial[5] += r[1] * f[2];
+            result.virial[6] += r[2] * f[0];
+            result.virial[7] += r[2] * f[1];
+            result.virial[8] += r[2] * f[2];
+        }
     }
+
+#ifdef GMD_ENABLE_MPI
+    int is_initialized = 0;
+    int is_finalized = 0;
+    MPI_Initialized(&is_initialized);
+    MPI_Finalized(&is_finalized);
+    if (is_initialized != 0 && is_finalized == 0) {
+        auto local_virial = result.virial;
+        MPI_Allreduce(local_virial.data(),
+                      result.virial.data(),
+                      static_cast<int>(result.virial.size()),
+                      MPI_DOUBLE,
+                      MPI_SUM,
+                      MPI_COMM_WORLD);
+    }
+#endif
 }
 
 void BondedForceProvider::finalize(RuntimeContext& /*runtime*/) {}
+
+int BondedForceProvider::compute_owner(const BondTerm& term) const {
+    return compute_system_ != nullptr
+        ? min_tag_owner(*compute_system_, term, compute_rank_)
+        : compute_rank_;
+}
+
+int BondedForceProvider::compute_owner(const AngleTerm& term) const {
+    return compute_system_ != nullptr
+        ? min_tag_owner(*compute_system_, term, compute_rank_)
+        : compute_rank_;
+}
+
+int BondedForceProvider::compute_owner(const DihedralTerm& term) const {
+    return compute_system_ != nullptr
+        ? min_tag_owner(*compute_system_, term, compute_rank_)
+        : compute_rank_;
+}
+
+int BondedForceProvider::compute_owner(const ImproperTerm& term) const {
+    return compute_system_ != nullptr
+        ? min_tag_owner(*compute_system_, term, compute_rank_)
+        : compute_rank_;
+}
+
+bool BondedForceProvider::should_compute(const BondTerm& term) const {
+    if (compute_system_ == nullptr || all_atoms_local(*compute_system_, term)) {
+        return true;
+    }
+    return has_local_atom(*compute_system_, term) && compute_owner(term) == compute_rank_;
+}
+
+bool BondedForceProvider::should_compute(const AngleTerm& term) const {
+    if (compute_system_ == nullptr || all_atoms_local(*compute_system_, term)) {
+        return true;
+    }
+    return has_local_atom(*compute_system_, term) && compute_owner(term) == compute_rank_;
+}
+
+bool BondedForceProvider::should_compute(const DihedralTerm& term) const {
+    if (compute_system_ == nullptr || all_atoms_local(*compute_system_, term)) {
+        return true;
+    }
+    return has_local_atom(*compute_system_, term) && compute_owner(term) == compute_rank_;
+}
+
+bool BondedForceProvider::should_compute(const ImproperTerm& term) const {
+    if (compute_system_ == nullptr || all_atoms_local(*compute_system_, term)) {
+        return true;
+    }
+    return has_local_atom(*compute_system_, term) && compute_owner(term) == compute_rank_;
+}
 
 // ---------------------------------------------------------------------------
 // Kernel: harmonic bonds
@@ -252,6 +442,10 @@ void BondedForceProvider::compute_bonds(const ForceRequest& req,
     const Box&  box    = *req.box;
 
     for (const auto& b : topology_->bonds) {
+        if (!should_compute(b)) {
+            continue;
+        }
+
         const auto& pi = coords[static_cast<std::size_t>(b.i)];
         const auto& pj = coords[static_cast<std::size_t>(b.j)];
 
@@ -296,6 +490,10 @@ void BondedForceProvider::compute_angles(const ForceRequest& req,
     const Box&  box    = *req.box;
 
     for (const auto& a : topology_->angles) {
+        if (!should_compute(a)) {
+            continue;
+        }
+
         const auto& pi = coords[static_cast<std::size_t>(a.i)];
         const auto& pj = coords[static_cast<std::size_t>(a.j)];
         const auto& pk = coords[static_cast<std::size_t>(a.k)];
@@ -358,6 +556,10 @@ void BondedForceProvider::compute_dihedrals(const ForceRequest& req,
     const Box&  box    = *req.box;
 
     for (const auto& d : topology_->dihedrals) {
+        if (!should_compute(d)) {
+            continue;
+        }
+
         const auto& pi = coords[static_cast<std::size_t>(d.i)];
         const auto& pj = coords[static_cast<std::size_t>(d.j)];
         const auto& pk = coords[static_cast<std::size_t>(d.k)];
@@ -393,6 +595,10 @@ void BondedForceProvider::compute_impropers(const ForceRequest& req,
     const Box&  box    = *req.box;
 
     for (const auto& ip : topology_->impropers) {
+        if (!should_compute(ip)) {
+            continue;
+        }
+
         const auto& pi = coords[static_cast<std::size_t>(ip.i)];
         const auto& pj = coords[static_cast<std::size_t>(ip.j)];
         const auto& pk = coords[static_cast<std::size_t>(ip.k)];

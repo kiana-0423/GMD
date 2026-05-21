@@ -2,12 +2,15 @@
 
 #include <array>
 #include <cstdint>
+#include <memory>
 #include <string_view>
 #include <vector>
 
 #include "gmd/neighbor/neighbor_builder.hpp"
 
 namespace gmd {
+
+class DomainDecomposition;
 
 // Verlet neighbor list built with a cell-list algorithm.
 //
@@ -42,10 +45,13 @@ public:
     void rebuild(System& system, RuntimeContext& runtime, NeighborBuildStats* stats) override;
 
     double r_list() const noexcept { return r_cut_ + r_skin_; }
+    void set_domain_decomposition(std::shared_ptr<DomainDecomposition> dd) noexcept;
 
 private:
     double r_cut_;
     double r_skin_;
+    std::size_t num_local_{0};
+    std::shared_ptr<DomainDecomposition> domain_decomposition_;
 
     // --- cell list internal storage ---
     // Number of cells along each axis.

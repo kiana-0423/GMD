@@ -6,8 +6,13 @@
 #include <stdexcept>
 
 #include "gmd/boundary/minimum_image.hpp"
+#include "gmd/runtime/runtime_context.hpp"
 #include "gmd/system/box.hpp"
 #include "gmd/system/system.hpp"
+
+#ifdef GMD_ENABLE_MPI
+#include <mpi.h>
+#endif
 
 namespace gmd {
 
@@ -21,6 +26,84 @@ static constexpr double kPMECoulomb = 14.3996;
 static bool is_power_of_two(int n) noexcept {
     return n > 0 && (n & (n - 1)) == 0;
 }
+
+#ifdef GMD_ENABLE_MPI
+static bool mpi_is_available() noexcept {
+    int is_initialized = 0;
+    int is_finalized = 0;
+    MPI_Initialized(&is_initialized);
+    MPI_Finalized(&is_finalized);
+    return is_initialized != 0 && is_finalized == 0;
+}
+
+static int mpi_size() noexcept {
+    if (!mpi_is_available()) {
+        return 1;
+    }
+
+    int size = 1;
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
+    return size;
+}
+
+static bool all_ranks_have_no_charges(bool local_has_charges) noexcept {
+    if (!mpi_is_available()) {
+        return !local_has_charges;
+    }
+
+    int local = local_has_charges ? 1 : 0;
+    int global = 0;
+    MPI_Allreduce(&local, &global, 1, MPI_INT, MPI_LOR, MPI_COMM_WORLD);
+    return global == 0;
+}
+
+static double allreduce_scalar(double local_value) noexcept {
+    if (!mpi_is_available()) {
+        return local_value;
+    }
+
+    double global_value = 0.0;
+    MPI_Allreduce(&local_value, &global_value, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+    return global_value;
+}
+
+static void allreduce_mesh(std::vector<std::complex<double>>& mesh) {
+    if (!mpi_is_available()) {
+        return;
+    }
+
+    std::vector<double> packed(mesh.size() * 2);
+    for (std::size_t index = 0; index < mesh.size(); ++index) {
+        packed[index * 2] = std::real(mesh[index]);
+        packed[index * 2 + 1] = std::imag(mesh[index]);
+    }
+
+    MPI_Allreduce(MPI_IN_PLACE,
+                  packed.data(),
+                  static_cast<int>(packed.size()),
+                  MPI_DOUBLE,
+                  MPI_SUM,
+                  MPI_COMM_WORLD);
+
+    for (std::size_t index = 0; index < mesh.size(); ++index) {
+        mesh[index] = {packed[index * 2], packed[index * 2 + 1]};
+    }
+}
+#else
+static int mpi_size() noexcept {
+    return 1;
+}
+
+static bool all_ranks_have_no_charges(bool local_has_charges) noexcept {
+    return !local_has_charges;
+}
+
+static double allreduce_scalar(double local_value) noexcept {
+    return local_value;
+}
+
+static void allreduce_mesh(std::vector<std::complex<double>>&) {}
+#endif
 
 // ---------------------------------------------------------------------------
 // Construction / lifecycle
@@ -56,7 +139,9 @@ PMEForceProvider::PMEForceProvider(double alpha, double real_cutoff,
 std::string_view PMEForceProvider::name() const noexcept {
     return "pme_force_provider";
 }
-void PMEForceProvider::initialize(RuntimeContext&) {}
+void PMEForceProvider::initialize(RuntimeContext& runtime) {
+    parallel_decomposition_.setup(runtime.size(), grid_);
+}
 void PMEForceProvider::finalize(RuntimeContext&) {}
 
 // ---------------------------------------------------------------------------
@@ -202,7 +287,7 @@ void PMEForceProvider::precompute_influence(const Box& box) {
 
 void PMEForceProvider::compute(const ForceRequest& req,
                                 ForceResult& res,
-                                RuntimeContext&) {
+                                RuntimeContext& runtime) {
     const std::size_t n = req.coordinates.size();
     res.success = true;
     res.potential_energy = 0.0;
@@ -215,13 +300,15 @@ void PMEForceProvider::compute(const ForceRequest& req,
     const auto charges = req.system->charges();
     if (charges.size() != n) return;
 
+    const std::size_t local_atom_count = std::min(req.system->num_local_atoms(), n);
     bool has_charges = false;
-    for (std::size_t i = 0; i < n; ++i)
+    for (std::size_t i = 0; i < local_atom_count; ++i)
         if (charges[i] != 0.0) { has_charges = true; break; }
-    if (!has_charges) return;
+    if (all_ranks_have_no_charges(has_charges)) return;
 
     resolve_params(*req.box);
     precompute_influence(*req.box);
+    parallel_decomposition_.setup(runtime.size(), grid_);
 
     compute_real_space(req, res);
     compute_reciprocal_pme(req, res);
@@ -258,11 +345,17 @@ void PMEForceProvider::compute_real_space(const ForceRequest& req,
     const auto  charges = req.system->charges();
     const Box&  box     = *req.box;
     const std::size_t n = coords.size();
+    const std::size_t local_atom_count = req.system->num_local_atoms();
 
     const double two_alpha_over_sqrt_pi =
         2.0 * alpha_ / std::sqrt(std::numbers::pi);
 
     auto eval_pair = [&](std::size_t i, std::size_t j) {
+        if (!req.system->is_local_atom(j) &&
+            req.system->atom_tag(i) >= req.system->atom_tag(j)) {
+            return;
+        }
+
         const double qi = charges[i], qj = charges[j];
         if (qi == 0.0 && qj == 0.0) return;
 
@@ -293,14 +386,14 @@ void PMEForceProvider::compute_real_space(const ForceRequest& req,
 
     if (req.neighbor_list != nullptr && req.neighbor_list->valid) {
         const NeighborList& nl = *req.neighbor_list;
-        for (std::size_t i = 0; i < n; ++i) {
+        for (std::size_t i = 0; i < local_atom_count; ++i) {
             const int start = nl.offsets[i];
             const int count = nl.counts[i];
             for (int k = 0; k < count; ++k)
                 eval_pair(i, static_cast<std::size_t>(nl.neighbors[start + k]));
         }
     } else {
-        for (std::size_t i = 0; i < n - 1; ++i)
+        for (std::size_t i = 0; i < local_atom_count; ++i)
             for (std::size_t j = i + 1; j < n; ++j)
                 eval_pair(i, j);
     }
@@ -316,21 +409,22 @@ void PMEForceProvider::compute_reciprocal_pme(const ForceRequest& req,
     const auto  charges = req.system->charges();
     const Box&  box     = *req.box;
     const std::size_t n = coords.size();
+    const std::size_t local_atom_count = std::min(req.system->num_local_atoms(), n);
     const int K1 = grid_[0], K2 = grid_[1], K3 = grid_[2];
     const double Lx = box.lengths[0], Ly = box.lengths[1], Lz = box.lengths[2];
     const int p = order_;
 
-    // ---- Step 1: Zero the charge mesh ----
+    // Phase 4 keeps a full mesh per rank. Each rank spreads only its local
+    // atoms and then sums the charge mesh globally before the replicated FFT.
     std::fill(mesh_.begin(), mesh_.end(), std::complex<double>{0.0, 0.0});
 
-    // ---- Step 2: B-spline charge spreading ----
     // For atom i with scaled fractional coordinate u_α = r_α/L_α * K_α:
     //   base_m = floor(u_α)
     //   t      = u_α - base_m   (fractional part, in [0,1))
     //   p contributing grid points starting from m_start = base_m - (p-1)
     //   weight at grid point m_start + k  =  M_p(t + (p-1) - k)  for k=0..p-1
 
-    for (std::size_t i = 0; i < n; ++i) {
+    for (std::size_t i = 0; i < local_atom_count; ++i) {
         if (charges[i] == 0.0) continue;
 
         const double ux = coords[i][0] / Lx * K1;
@@ -368,57 +462,7 @@ void PMEForceProvider::compute_reciprocal_pme(const ForceRequest& req,
         }
     }
 
-    // ---- Step 3: Forward 3-D FFT ----
-    fft3d(mesh_, false);
-
-    // ---- Step 4: Apply influence function; accumulate energy ----
-    // U_recip = (1/2) Σ_m Q̂*(m) · G(m) · Q̂(m)
-    //         = (1/2) Σ_m G(m) |Q̂(m)|²
-    double recip_energy = 0.0;
-    for (std::size_t idx = 0; idx < mesh_.size(); ++idx) {
-        const double g = influence_[idx];
-        mesh_[idx] *= g;
-        recip_energy += g * (std::real(mesh_[idx]) * std::real(mesh_[idx] / g)
-                            + std::imag(mesh_[idx]) * std::imag(mesh_[idx] / g));
-    }
-    // Simpler: energy = 0.5 * Σ_m G(m) |Q̂(m)|²
-    // Recompute cleanly (influence is already applied above, so use modified mesh).
-    // We already multiplied mesh_ by G, so the unmodified |Q̂|² is not available.
-    // Recompute energy from the potential mesh after IFFT instead.
-
-    // Reset and redo the application step cleanly.
-    // Reload mesh and compute energy + modified mesh together.
-    (void)recip_energy;
-
-    // Redo step 3+4 cleanly:
-    std::fill(mesh_.begin(), mesh_.end(), std::complex<double>{0.0, 0.0});
-    for (std::size_t i = 0; i < n; ++i) {
-        if (charges[i] == 0.0) continue;
-        const double ux = coords[i][0] / Lx * K1;
-        const double uy = coords[i][1] / Ly * K2;
-        const double uz = coords[i][2] / Lz * K3;
-        const int bx = static_cast<int>(std::floor(ux));
-        const int by = static_cast<int>(std::floor(uy));
-        const int bz = static_cast<int>(std::floor(uz));
-        const double tx = ux - bx, ty = uy - by, tz = uz - bz;
-        for (int kx = 0; kx < p; ++kx) {
-            const double wx = bspline(tx + static_cast<double>(p-1-kx), p);
-            if (wx == 0.0) continue;
-            const int mx = ((bx - (p-1-kx)) % K1 + K1) % K1;
-            for (int ky = 0; ky < p; ++ky) {
-                const double wy = bspline(ty + static_cast<double>(p-1-ky), p);
-                if (wy == 0.0) continue;
-                const int my = ((by - (p-1-ky)) % K2 + K2) % K2;
-                for (int kz = 0; kz < p; ++kz) {
-                    const double wz = bspline(tz + static_cast<double>(p-1-kz), p);
-                    if (wz == 0.0) continue;
-                    const int mz = ((bz - (p-1-kz)) % K3 + K3) % K3;
-                    const std::size_t idx = static_cast<std::size_t>(mx*K2*K3 + my*K3 + mz);
-                    mesh_[idx] += charges[i] * wx * wy * wz;
-                }
-            }
-        }
-    }
+    allreduce_mesh(mesh_);
     fft3d(mesh_, false);
 
     // Compute energy: ½ Σ_m G(m)|Q̂(m)|²  and apply influence function.
@@ -430,7 +474,9 @@ void PMEForceProvider::compute_reciprocal_pme(const ForceRequest& req,
         e_recip   += 0.5 * g * (re*re + im*im);
         mesh_[idx] *= g;
     }
-    res.potential_energy += e_recip;
+    // The FFT result is now replicated. Store one equal share so the existing
+    // Simulation energy allreduce produces one global reciprocal energy.
+    res.potential_energy += e_recip / static_cast<double>(mpi_size());
 
     // ---- Step 5: Inverse 3-D FFT to get potential on mesh ----
     fft3d(mesh_, true);
@@ -438,7 +484,7 @@ void PMEForceProvider::compute_reciprocal_pme(const ForceRequest& req,
     // ---- Step 6: Force interpolation ----
     // F_i,α = -q_i · K_α/L_α · Σ_{m} V(m) · (∂w_α/∂u_α)(m_α)
     //                                         · Π_{β≠α} w_β(m_β)
-    for (std::size_t i = 0; i < n; ++i) {
+    for (std::size_t i = 0; i < local_atom_count; ++i) {
         if (charges[i] == 0.0) continue;
 
         const double ux = coords[i][0] / Lx * K1;
@@ -494,7 +540,7 @@ void PMEForceProvider::compute_reciprocal_pme(const ForceRequest& req,
 void PMEForceProvider::compute_self_correction(const ForceRequest& req,
                                                 ForceResult& res) const {
     const auto charges = req.system->charges();
-    const std::size_t n = charges.size();
+    const std::size_t n = req.system->num_local_atoms();
 
     double q2_sum = 0.0, Q_net = 0.0;
     for (std::size_t i = 0; i < n; ++i) {
@@ -505,12 +551,14 @@ void PMEForceProvider::compute_self_correction(const ForceRequest& req,
     res.potential_energy -=
         kPMECoulomb * (alpha_ / std::sqrt(std::numbers::pi)) * q2_sum;
 
+    Q_net = allreduce_scalar(Q_net);
     if (Q_net != 0.0) {
         const double V = req.box->lengths[0]
                        * req.box->lengths[1]
                        * req.box->lengths[2];
         res.potential_energy -=
-            kPMECoulomb * std::numbers::pi / (2.0 * V * alpha_sq_) * Q_net * Q_net;
+            kPMECoulomb * std::numbers::pi / (2.0 * V * alpha_sq_)
+            * Q_net * Q_net / static_cast<double>(mpi_size());
     }
 }
 

@@ -4,11 +4,27 @@
 
 #include "gmd/system/system.hpp"
 
+#ifdef GMD_ENABLE_MPI
+#include <mpi.h>
+#endif
+
 namespace gmd {
 
 void VelocityRescalingThermostat::initialize(const System& system) noexcept {
     // 3N - 3: remove three COM translational degrees of freedom.
-    const std::size_t n = system.atom_count();
+    std::size_t n = system.atom_count();
+#ifdef GMD_ENABLE_MPI
+    int is_initialized = 0;
+    int is_finalized = 0;
+    MPI_Initialized(&is_initialized);
+    MPI_Finalized(&is_finalized);
+    if (is_initialized != 0 && is_finalized == 0) {
+        long long local_count = static_cast<long long>(n);
+        long long global_count = 0;
+        MPI_Allreduce(&local_count, &global_count, 1, MPI_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
+        n = static_cast<std::size_t>(global_count);
+    }
+#endif
     dof_ = (n >= 2) ? 3 * n - 3 : 3 * n;
 }
 

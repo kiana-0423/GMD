@@ -9,6 +9,8 @@ namespace gmd {
 
 class ForceProvider;
 class Integrator;
+class DomainDecomposition;
+class MpiCommunicator;
 class NeighborBuilder;
 class RuntimeContext;
 class System;
@@ -29,6 +31,8 @@ public:
     void set_force_provider(std::shared_ptr<ForceProvider> provider) noexcept;
     void set_neighbor_builder(std::shared_ptr<NeighborBuilder> builder) noexcept;
     void set_integrator(std::shared_ptr<Integrator> integrator) noexcept;
+    void set_mpi_communicator(std::shared_ptr<MpiCommunicator> comm) noexcept;
+    void set_domain_decomposition(std::shared_ptr<DomainDecomposition> dd) noexcept;
     void set_velocity_initializer(std::shared_ptr<VelocityInitializer> initializer) noexcept;
     void set_velocity_init_mode(VelocityInitMode mode) noexcept;
     void set_remove_center_of_mass_velocity(bool enabled) noexcept;

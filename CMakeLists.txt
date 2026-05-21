@@ -7,6 +7,7 @@ include(CTest)
 option(GMD_ENABLE_CUDA "Enable CUDA language support" OFF)
 option(GMD_BUILD_PYTHON "Build Python bindings" OFF)
 option(GMD_ENABLE_TORCH "Enable TorchScript ML force provider (requires LibTorch)" OFF)
+option(GMD_ENABLE_MPI "Enable MPI parallel support" OFF)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -23,6 +24,11 @@ endif()
 
 if(GMD_ENABLE_TORCH)
     find_package(Torch REQUIRED)
+endif()
+
+if(GMD_ENABLE_MPI)
+    find_package(MPI REQUIRED)
+    include(MPIOptions)
 endif()
 
 add_library(gmd_headers INTERFACE)
@@ -52,6 +58,11 @@ add_library(gmd_core STATIC
     src/ml/ml_force_provider.cpp
     src/ml/model_runtime_adapter.cpp
     src/neighbor/verlet_neighbor_builder.cpp
+    src/parallel/domain_decomposition.cpp
+    src/parallel/mpi_communicator.cpp
+    src/parallel/mpi_environment.cpp
+    src/parallel/pme_parallel.cpp
+    src/runtime/runtime_context.cpp
     src/system/initializer.cpp
 )
 target_link_libraries(gmd_core PUBLIC gmd_headers)
@@ -60,6 +71,10 @@ if(GMD_ENABLE_TORCH)
     target_sources(gmd_core PRIVATE src/ml/torchscript_adapter.cpp)
     target_link_libraries(gmd_core PUBLIC ${TORCH_LIBRARIES})
     target_compile_definitions(gmd_core PUBLIC GMD_ENABLE_TORCH)
+endif()
+
+if(GMD_ENABLE_MPI)
+    gmd_configure_mpi_target(gmd_core)
 endif()
 
 gmd_apply_default_warnings(gmd_core)
@@ -71,8 +86,11 @@ if(BUILD_TESTING)
     file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/tests)
     configure_file(tests/smoke_lj.xyz         ${CMAKE_CURRENT_BINARY_DIR}/tests/smoke_xyz.in       COPYONLY)
     configure_file(tests/smoke_lj.run         ${CMAKE_CURRENT_BINARY_DIR}/tests/smoke_run.in       COPYONLY)
+    configure_file(tests/smoke_mpi_lj.xyz     ${CMAKE_CURRENT_BINARY_DIR}/tests/smoke_mpi_lj.xyz   COPYONLY)
+    configure_file(tests/smoke_mpi_lj.run     ${CMAKE_CURRENT_BINARY_DIR}/tests/smoke_mpi_lj.run   COPYONLY)
     configure_file(tests/smoke_ewald.xyz      ${CMAKE_CURRENT_BINARY_DIR}/tests/smoke_ewald.xyz    COPYONLY)
     configure_file(tests/smoke_ewald.run      ${CMAKE_CURRENT_BINARY_DIR}/tests/smoke_ewald.run    COPYONLY)
+    configure_file(tests/smoke_pme.run        ${CMAKE_CURRENT_BINARY_DIR}/tests/smoke_pme.run      COPYONLY)
     configure_file(tests/smoke_mc_barostat.xyz ${CMAKE_CURRENT_BINARY_DIR}/tests/smoke_mc_barostat.xyz COPYONLY)
     configure_file(tests/smoke_mc_barostat.run ${CMAKE_CURRENT_BINARY_DIR}/tests/smoke_mc_barostat.run COPYONLY)
     configure_file(tests/smoke_molecular.xyz  ${CMAKE_CURRENT_BINARY_DIR}/tests/smoke_molecular.xyz COPYONLY)
@@ -97,6 +115,14 @@ if(BUILD_TESTING)
     set_tests_properties(gmd_smoke_ewald PROPERTIES LABELS "smoke;integration")
 
     add_test(
+        NAME gmd_smoke_pme
+        COMMAND gmd
+                ${CMAKE_CURRENT_BINARY_DIR}/tests/smoke_ewald.xyz
+                ${CMAKE_CURRENT_BINARY_DIR}/tests/smoke_pme.run
+    )
+    set_tests_properties(gmd_smoke_pme PROPERTIES LABELS "smoke;integration")
+
+    add_test(
         NAME gmd_smoke_mc_barostat
         COMMAND gmd
                 ${CMAKE_CURRENT_BINARY_DIR}/tests/smoke_mc_barostat.xyz
@@ -115,4 +141,36 @@ if(BUILD_TESTING)
         WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
     )
     set_tests_properties(gmd_smoke_molecular PROPERTIES LABELS "smoke;integration")
+
+    if(GMD_ENABLE_MPI)
+        add_test(
+            NAME gmd_smoke_mpi_lj_2proc
+            COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 2
+                    $<TARGET_FILE:gmd>
+                    ${CMAKE_CURRENT_BINARY_DIR}/tests/smoke_mpi_lj.xyz
+                    ${CMAKE_CURRENT_BINARY_DIR}/tests/smoke_mpi_lj.run
+        )
+        set_tests_properties(gmd_smoke_mpi_lj_2proc
+            PROPERTIES
+                LABELS "smoke;integration;mpi"
+                PROCESSORS 2)
+
+        add_executable(gmd_compare_energy_logs tests/compare_energy_logs.cpp)
+        add_test(
+            NAME gmd_smoke_mpi_lj_consistency
+            COMMAND ${CMAKE_COMMAND}
+                    -DGMD_EXECUTABLE=$<TARGET_FILE:gmd>
+                    -DGMD_COMPARE_EXECUTABLE=$<TARGET_FILE:gmd_compare_energy_logs>
+                    -DMPIEXEC_EXECUTABLE=${MPIEXEC_EXECUTABLE}
+                    -DMPIEXEC_NUMPROC_FLAG=${MPIEXEC_NUMPROC_FLAG}
+                    -DMPI_LJ_XYZ=${CMAKE_CURRENT_BINARY_DIR}/tests/smoke_mpi_lj.xyz
+                    -DMPI_LJ_RUN=${CMAKE_CURRENT_BINARY_DIR}/tests/smoke_mpi_lj.run
+                    -DMPI_LJ_WORK_ROOT=${CMAKE_CURRENT_BINARY_DIR}/tests/mpi_lj_consistency
+                    -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/RunMpiLJConsistency.cmake
+        )
+        set_tests_properties(gmd_smoke_mpi_lj_consistency
+            PROPERTIES
+                LABELS "smoke;integration;mpi"
+                PROCESSORS 2)
+    endif()
 endif()

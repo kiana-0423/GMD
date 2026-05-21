@@ -4,8 +4,10 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <utility>
 
 #include "gmd/boundary/minimum_image.hpp"
+#include "gmd/parallel/domain_decomposition.hpp"
 #include "gmd/system/system.hpp"
 
 namespace gmd {
@@ -15,6 +17,11 @@ VerletNeighborBuilder::VerletNeighborBuilder(double r_cut, double r_skin) noexce
 
 std::string_view VerletNeighborBuilder::name() const noexcept {
     return "verlet_neighbor_builder";
+}
+
+void VerletNeighborBuilder::set_domain_decomposition(
+        std::shared_ptr<DomainDecomposition> dd) noexcept {
+    domain_decomposition_ = std::move(dd);
 }
 
 // ---------------------------------------------------------------------------
@@ -50,12 +57,16 @@ bool VerletNeighborBuilder::needs_rebuild(const System& system, std::uint64_t /*
     const auto& nl = system.neighbor_list();
     if (!nl.valid) return true;
 
+    if (system.num_local_atoms() != num_local_ ||
+        nl.ref_coordinates.size() < num_local_) {
+        return true;
+    }
+
     const double trigger_sq = (r_skin_ * 0.5) * (r_skin_ * 0.5);
     const auto coords = system.coordinates();
     const Box& box = system.box();
-    const std::size_t n = coords.size();
 
-    for (std::size_t i = 0; i < n; ++i) {
+    for (std::size_t i = 0; i < num_local_; ++i) {
         std::array<double, 3> dr = {
             coords[i][0] - nl.ref_coordinates[i][0],
             coords[i][1] - nl.ref_coordinates[i][1],
@@ -80,6 +91,7 @@ void VerletNeighborBuilder::rebuild(System& system,
                                     NeighborBuildStats* stats) {
     const auto coords  = system.coordinates();
     const std::size_t n = coords.size();
+    const std::size_t num_local = system.num_local_atoms();
     const Box& box     = system.box();
     NeighborList& nl   = system.mutable_neighbor_list();
 
@@ -126,13 +138,12 @@ void VerletNeighborBuilder::rebuild(System& system,
     nl.offsets.assign(n + 1, 0);
     nl.neighbors.clear();
     nl.image_flags.clear();
-    nl.ref_coordinates.resize(n);
 
     // Temporary per-atom neighbor vectors to avoid overallocation.
     std::vector<std::vector<int>> tmp(n);
     std::vector<std::vector<std::array<int, 3>>> tmp_flags(n);
 
-    for (std::size_t i = 0; i < n; ++i) {
+    for (std::size_t i = 0; i < num_local; ++i) {
         double xi = coords[i][0] - std::floor(coords[i][0] / box.lengths[0]) * box.lengths[0];
         double yi = coords[i][1] - std::floor(coords[i][1] / box.lengths[1]) * box.lengths[1];
         double zi = coords[i][2] - std::floor(coords[i][2] / box.lengths[2]) * box.lengths[2];
@@ -184,6 +195,21 @@ void VerletNeighborBuilder::rebuild(System& system,
                         static_cast<int>(std::round(dr[1] / box.lengths[1])),
                         static_cast<int>(std::round(dr[2] / box.lengths[2]))
                     };
+                    if (!system.is_local_atom(static_cast<std::size_t>(j)) &&
+                        domain_decomposition_ != nullptr) {
+                        const DomainInfo& domain = domain_decomposition_->info();
+                        double ghost_x = coords[static_cast<std::size_t>(j)][0];
+                        int ghost_x_shift = 0;
+                        while (ghost_x < domain.lo[0]) {
+                            ghost_x += box.lengths[0];
+                            ++ghost_x_shift;
+                        }
+                        while (ghost_x >= domain.hi[0]) {
+                            ghost_x -= box.lengths[0];
+                            --ghost_x_shift;
+                        }
+                        S[0] = ghost_x_shift;
+                    }
                     apply_minimum_image(dr, box);
                     const double r2 = dr[0]*dr[0] + dr[1]*dr[1] + dr[2]*dr[2];
                     if (r2 < r_list_sq) {
@@ -216,9 +242,11 @@ void VerletNeighborBuilder::rebuild(System& system,
     // -----------------------------------------------------------------------
     // 5. Save reference coordinates for next needs_rebuild() check.
     // -----------------------------------------------------------------------
-    for (std::size_t i = 0; i < n; ++i) {
+    nl.ref_coordinates.resize(num_local);
+    for (std::size_t i = 0; i < num_local; ++i) {
         nl.ref_coordinates[i] = coords[i];
     }
+    num_local_ = num_local;
     nl.valid = true;
 
     if (stats != nullptr) {

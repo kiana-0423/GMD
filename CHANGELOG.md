@@ -2,6 +2,59 @@
 
 All notable user-facing changes in GMD are documented here.
 
+## [v2.1] - 2026-05-22
+
+### Added
+
+- **MPI spatial domain decomposition** for distributed parallel simulations.
+  - `DomainDecomposition` (`include/gmd/parallel/domain_decomposition.hpp`, `src/parallel/domain_decomposition.cpp`) provides 1D x-axis box splitting with configurable ghost width derived from cutoff + skin.
+  - `MpiCommunicator` (`include/gmd/parallel/mpi_communicator.hpp`, `src/parallel/mpi_communicator.cpp`) encapsulates allreduce (scalar/vector), broadcast, barrier, ghost-atom coordinate exchange, and reverse force accumulation.
+  - `MpiEnvironment` (`include/gmd/parallel/mpi_environment.hpp`, `src/parallel/mpi_environment.cpp`) provides RAII-style `MPI_Init`/`MPI_Finalize` with non-MPI fallback.
+- **PME pencil decomposition** infrastructure.
+  - `PmeParallelDecomposition` (`include/gmd/parallel/pme_parallel.hpp`, `src/parallel/pme_parallel.cpp`) defines a 2D process grid (Py × Pz) with transpose collectives (`x→y`, `y→z`, `z→y`, `y→x`). Currently the PME mesh is replicated; distributed FFT will be activated in a future release.
+- **`GMD_ENABLE_MPI` CMake option** — opt-in MPI build with `find_package(MPI REQUIRED)`, `MPI::MPI_CXX` linkage, and `GMD_ENABLE_MPI` compile definition. See `cmake/MPIOptions.cmake` for the `gmd_configure_mpi_target` helper.
+- **MPI smoke tests** — two new CTest targets (only registered when `GMD_ENABLE_MPI=ON`):
+  - `gmd_smoke_mpi_lj_2proc`: runs a 2-process LJ simulation.
+  - `gmd_smoke_mpi_lj_consistency`: compares serial and 2-process energy logs to verify numerical consistency.
+  - New test collateral: `tests/smoke_mpi_lj.xyz`, `tests/smoke_mpi_lj.run`, `tests/compare_energy_logs.cpp`, `cmake/RunMpiLJConsistency.cmake`.
+- **CLI `--np N` flag** — validates that the MPI world size matches the expected process count.
+- **Rank-aware I/O** — only rank 0 writes trajectory and energy log files; global coordinates are gathered via `allreduce_vector` for output frames.
+- **System MPI extensions** — `System` gains `atom_tags_`, `atom_owners_`, `num_local_atoms_` with corresponding accessors (`atom_tag()`, `atom_owner()`, `num_local_atoms()`, `mutable_atom_tags()`, `mutable_atom_owners()`). `resize()` accepts an optional `local_count` parameter.
+
+### Changed (MPI correctness fixes)
+
+- **`compute_twice_ke()`** (`src/integrator/thermostat.cpp`) — added `MPI_Allreduce` so all ranks return the same global kinetic energy. This ensures that temperature-dependent operations (thermostat scaling, barostat pressure) are consistent across ranks.
+- **Nose-Hoover thermostat `initialize()`** (`src/integrator/nose_hoover_thermostat.cpp`) — `dof_` is now computed from the globally allreduced atom count so that the friction coefficient xi evolves identically on every rank.
+- **Velocity rescaling thermostat `initialize()`** (`src/integrator/velocity_rescaling_thermostat.cpp`) — same global `dof_` fix.
+- **`VelocityInitializer`** (`src/system/initializer.cpp`):
+  - `remove_center_of_mass_velocity()` — added `MPI_Allreduce` for total mass and COM momentum so that all ranks subtract the same COM velocity.
+  - `rescale_temperature()` — added `MPI_Allreduce` for kinetic energy and atom count so that the scaling factor is consistent.
+  - `initialize()` — in MPI mode no longer early-returns when `atom_count() == 0`, because doing so would skip collective MPI calls and cause `MPI_ERR_TRUNCATE`.
+- **`ClassicalForceProvider::compute()`** (`src/force/classical_force_provider.cpp`) — virial `MPI_Allreduce` moved outside the early-return path so that ranks with zero atoms still participate in the collective call.
+- **`BondedForceProvider::compute()`** (`src/force/bonded_force_provider.cpp`) — added virial `MPI_Allreduce` for global bonded virial, also placed unconditionally after the computation block.
+- **`EwaldForceProvider`** (`src/force/ewald_force_provider.cpp`):
+  - `compute_reciprocal()` — structure factor S(k) built from local atoms only, then allreduced to obtain the global value; forces computed on local atoms only.
+  - `compute_self_correction()` — q²_sum and Q_net computed from local atoms only, then allreduced.
+  - `compute_real_space()` — added pair deduplication via atom_tag comparison for ghost-atom boundary pairs (same pattern as `ClassicalForceProvider`); outer i-loop limited to local atoms.
+  - `compute()` — refactored `has_charges` early-exit into a coordinated check using `MPI_LOR` allreduce, ensuring all ranks reach the same decision.
+- **`write_global_frame`** (`app/gmd_main.cpp`) — removed redundant `allreduce_scalar` wrapper around `compute_twice_ke`, which already performs its own allreduce. Previously this double-allreduced the kinetic energy in MPI builds.
+
+### Changed
+
+- `Simulation` gains `set_mpi_communicator()` and `set_domain_decomposition()`; `step()` now performs ghost exchange before force evaluation and reverse force accumulation afterward, with allreduce on potential energy.
+- `ClassicalForceProvider::compute()` respects `num_local_atoms()` — only local atoms are iterated as primary index `i`; ghost atoms `j` still participate in pair evaluation.
+- `VerletNeighborBuilder::rebuild()` builds neighbor lists for local atoms only; ghost atoms are included as secondary partners.
+- `BondedForceProvider::compute()` uses owner-rank resolution for bonded terms spanning process boundaries.
+- `app/gmd_main.cpp` initializes `MpiEnvironment`, distributes atoms via `keep_rank_local_atoms()`, sets up `DomainDecomposition`, and uses rank-gated logging throughout.
+
+### Compatibility Notes
+
+- All existing serial workflows are unaffected. Omitting `-DGMD_ENABLE_MPI=ON` produces an identical binary to previous releases.
+- MPI and non-MPI builds share the same input file format; no input changes are required to run in parallel.
+- The `--np N` flag is optional and only validated when MPI is active.
+
+---
+
 ## [v2.0] - 2026-04-20
 
 ### Added

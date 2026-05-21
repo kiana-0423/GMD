@@ -2,11 +2,16 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <numbers>
 
 #include "gmd/boundary/minimum_image.hpp"
 #include "gmd/system/box.hpp"
 #include "gmd/system/system.hpp"
+
+#ifdef GMD_ENABLE_MPI
+#include <mpi.h>
+#endif
 
 namespace gmd {
 
@@ -33,6 +38,32 @@ void accumulate_coordinate_virial(const std::span<const Coordinate3D> coordinate
         virial[8] += r[2] * f[2];
     }
 }
+
+#ifdef GMD_ENABLE_MPI
+bool mpi_is_available() noexcept {
+    int is_initialized = 0;
+    int is_finalized = 0;
+    MPI_Initialized(&is_initialized);
+    MPI_Finalized(&is_finalized);
+    return is_initialized != 0 && is_finalized == 0;
+}
+
+void allreduce_complex_sum(double& re, double& im) noexcept {
+    if (!mpi_is_available()) return;
+    double buf[2] = {re, im};
+    double global[2] = {0.0, 0.0};
+    MPI_Allreduce(buf, global, 2, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+    re = global[0];
+    im = global[1];
+}
+
+double allreduce_scalar_ewald(double local) noexcept {
+    if (!mpi_is_available()) return local;
+    double global = 0.0;
+    MPI_Allreduce(&local, &global, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+    return global;
+}
+#endif
 
 }  // namespace
 
@@ -94,27 +125,44 @@ void EwaldForceProvider::compute(const ForceRequest& req,
     res.virial = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
     res.virial_valid = true;
 
-    if (n == 0 || req.box == nullptr || req.system == nullptr) return;
-
-    const auto charges = req.system->charges();
-    if (charges.size() != n) {
-        res.virial_valid = false;
-        return;
+    // Determine whether this rank can meaningfully contribute.
+    // (n may be zero on ranks with no atoms in their domain.)
+    bool can_compute = (n > 0 && req.box != nullptr && req.system != nullptr);
+    if (can_compute) {
+        const auto charges = req.system->charges();
+        if (charges.size() != n) {
+            res.virial_valid = false;
+            can_compute = false;
+        }
     }
 
-    // Early exit when all charges are zero.
+    // Coordinated charge-existence check — MPI_Allreduce ensures every rank
+    // reaches the same decision, even ranks with zero atoms.
     bool has_charges = false;
-    for (std::size_t i = 0; i < n; ++i) {
-        if (charges[i] != 0.0) { has_charges = true; break; }
+    if (can_compute) {
+        const std::size_t num_local = req.system->num_local_atoms();
+        const auto charges = req.system->charges();
+        for (std::size_t i = 0; i < num_local; ++i) {
+            if (charges[i] != 0.0) { has_charges = true; break; }
+        }
     }
-    if (!has_charges) return;
+#ifdef GMD_ENABLE_MPI
+    {
+        int local_has = has_charges ? 1 : 0;
+        int global_has = 0;
+        MPI_Allreduce(&local_has, &global_has, 1, MPI_INT, MPI_LOR, MPI_COMM_WORLD);
+        has_charges = global_has != 0;
+    }
+#endif
 
-    resolve_params(*req.box);
+    if (can_compute && has_charges) {
+        resolve_params(*req.box);
 
-    compute_real_space(req, res);
-    compute_reciprocal(req, res);
-    compute_self_correction(req, res);
-    accumulate_coordinate_virial(req.coordinates, res.forces, res.virial);
+        compute_real_space(req, res);
+        compute_reciprocal(req, res);
+        compute_self_correction(req, res);
+        accumulate_coordinate_virial(req.coordinates, res.forces, res.virial);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -140,6 +188,19 @@ void EwaldForceProvider::compute_real_space(const ForceRequest& req,
     auto eval_pair = [&](std::size_t i, std::size_t j) {
         const double qi = charges[i], qj = charges[j];
         if (qi == 0.0 && qj == 0.0) return;
+
+        // In MPI mode, a local/ghost boundary pair can exist on both ranks.
+        // Use global tags to evaluate exactly once.
+        if (req.system != nullptr) {
+            const std::size_t num_local = req.system->num_local_atoms();
+            const bool i_is_local = i < num_local;
+            const bool j_is_local = j < num_local;
+            if (i_is_local && !j_is_local) {
+                if (req.system->atom_tag(i) > req.system->atom_tag(j)) return;
+            } else if (!i_is_local && j_is_local) {
+                if (req.system->atom_tag(j) < req.system->atom_tag(i)) return;
+            }
+        }
 
         Force3D dr = {coords[i][0] - coords[j][0],
                       coords[i][1] - coords[j][1],
@@ -170,7 +231,9 @@ void EwaldForceProvider::compute_real_space(const ForceRequest& req,
 
     if (req.neighbor_list != nullptr && req.neighbor_list->valid) {
         const NeighborList& nl = *req.neighbor_list;
-        for (std::size_t i = 0; i < n; ++i) {
+        const std::size_t num_local = req.system != nullptr
+            ? req.system->num_local_atoms() : n;
+        for (std::size_t i = 0; i < num_local; ++i) {
             const int start = nl.offsets[i];
             const int count = nl.counts[i];
             for (int k = 0; k < count; ++k)
@@ -204,6 +267,8 @@ void EwaldForceProvider::compute_reciprocal(const ForceRequest& req,
     const auto  charges = req.system->charges();
     const Box&  box     = *req.box;
     const std::size_t n = coords.size();
+    const std::size_t num_local = req.system != nullptr
+        ? req.system->num_local_atoms() : n;
 
     const double Lx = box.lengths[0], Ly = box.lengths[1], Lz = box.lengths[2];
     const double V  = Lx * Ly * Lz;
@@ -228,9 +293,9 @@ void EwaldForceProvider::compute_reciprocal(const ForceRequest& req,
                                      / (V * k2)
                                      * std::exp(-k2 * inv_4a2);
 
-                // Structure factor S(k).
+                // Local structure factor S_local(k) — only local atoms.
                 double S_re = 0.0, S_im = 0.0;
-                for (std::size_t j = 0; j < n; ++j) {
+                for (std::size_t j = 0; j < num_local; ++j) {
                     const double phi = kx*coords[j][0]
                                      + ky*coords[j][1]
                                      + kz*coords[j][2];
@@ -238,11 +303,15 @@ void EwaldForceProvider::compute_reciprocal(const ForceRequest& req,
                     S_im += charges[j] * std::sin(phi);
                 }
 
+#ifdef GMD_ENABLE_MPI
+                allreduce_complex_sum(S_re, S_im);
+#endif
+
                 // Energy: ½ · gfactor · |S|²
                 res.potential_energy += 0.5 * gfactor * (S_re*S_re + S_im*S_im);
 
-                // Force on each atom.
-                for (std::size_t i = 0; i < n; ++i) {
+                // Force on each local atom.
+                for (std::size_t i = 0; i < num_local; ++i) {
                     if (charges[i] == 0.0) continue;
                     const double phi = kx*coords[i][0]
                                      + ky*coords[i][1]
@@ -257,6 +326,21 @@ void EwaldForceProvider::compute_reciprocal(const ForceRequest& req,
             }
         }
     }
+
+    // Reciprocal-space virial via coordinate-force outer product.
+    for (std::size_t i = 0; i < num_local; ++i) {
+        const auto& r = coords[i];
+        const auto& f = res.forces[i];
+        res.virial[0] += r[0] * f[0];
+        res.virial[1] += r[0] * f[1];
+        res.virial[2] += r[0] * f[2];
+        res.virial[3] += r[1] * f[0];
+        res.virial[4] += r[1] * f[1];
+        res.virial[5] += r[1] * f[2];
+        res.virial[6] += r[2] * f[0];
+        res.virial[7] += r[2] * f[1];
+        res.virial[8] += r[2] * f[2];
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -269,13 +353,19 @@ void EwaldForceProvider::compute_reciprocal(const ForceRequest& req,
 void EwaldForceProvider::compute_self_correction(const ForceRequest& req,
                                                   ForceResult& res) const {
     const auto charges = req.system->charges();
-    const std::size_t n = charges.size();
+    const std::size_t num_local = req.system != nullptr
+        ? req.system->num_local_atoms() : charges.size();
 
     double q2_sum = 0.0, Q_net = 0.0;
-    for (std::size_t i = 0; i < n; ++i) {
+    for (std::size_t i = 0; i < num_local; ++i) {
         q2_sum += charges[i] * charges[i];
         Q_net  += charges[i];
     }
+
+#ifdef GMD_ENABLE_MPI
+    q2_sum = allreduce_scalar_ewald(q2_sum);
+    Q_net  = allreduce_scalar_ewald(Q_net);
+#endif
 
     res.potential_energy -=
         kEwaldCoulomb * (alpha_ / std::sqrt(std::numbers::pi)) * q2_sum;

@@ -2,6 +2,10 @@
 
 #include "gmd/system/system.hpp"
 
+#ifdef GMD_ENABLE_MPI
+#include <mpi.h>
+#endif
+
 namespace gmd {
 
 double compute_twice_ke(const System& system) noexcept {
@@ -13,6 +17,19 @@ double compute_twice_ke(const System& system) noexcept {
         const auto&  v = velocities[i];
         twice_ke += m * (v[0]*v[0] + v[1]*v[1] + v[2]*v[2]);
     }
+
+#ifdef GMD_ENABLE_MPI
+    int is_initialized = 0;
+    int is_finalized = 0;
+    MPI_Initialized(&is_initialized);
+    MPI_Finalized(&is_finalized);
+    if (is_initialized != 0 && is_finalized == 0) {
+        double global_twice_ke = 0.0;
+        MPI_Allreduce(&twice_ke, &global_twice_ke, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+        twice_ke = global_twice_ke;
+    }
+#endif
+
     return twice_ke;
 }
 

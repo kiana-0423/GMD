@@ -8,6 +8,10 @@
 #include "gmd/system/box.hpp"
 #include "gmd/system/system.hpp"
 
+#ifdef GMD_ENABLE_MPI
+#include <mpi.h>
+#endif
+
 namespace gmd {
 
 namespace {
@@ -24,6 +28,16 @@ LjEval lj_eval(double r2, double eps4, double sig2) noexcept {
     const double force_factor = eps4 * (12.0 * s12 - 6.0 * s6) / r2;
     return {energy, force_factor};
 }
+
+#ifdef GMD_ENABLE_MPI
+bool mpi_is_available() noexcept {
+    int is_initialized = 0;
+    int is_finalized = 0;
+    MPI_Initialized(&is_initialized);
+    MPI_Finalized(&is_finalized);
+    return is_initialized != 0 && is_finalized == 0;
+}
+#endif
 }  // namespace
 
 ClassicalForceProvider::ClassicalForceProvider(double epsilon,
@@ -76,82 +90,130 @@ void ClassicalForceProvider::compute(const ForceRequest& request,
     (void)runtime;
 
     const std::size_t n = request.coordinates.size();
+    const std::size_t local_atom_count = request.system != nullptr
+        ? request.system->num_local_atoms()
+        : n;
     result.success = true;
     result.potential_energy = 0.0;
     result.forces.assign(n, Force3D{0.0, 0.0, 0.0});
     result.virial = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
     result.virial_valid = true;
 
-    if (n == 0 || request.box == nullptr) {
-        return;
-    }
+    // Force computation (skipped on ranks with no atoms/box).
+    if (n != 0 && local_atom_count != 0 && request.box != nullptr) {
+        const Box& box = *request.box;
+        double total_pe = 0.0;
 
-    const Box& box = *request.box;
-    double total_pe = 0.0;
+        // Determine if we have per-atom type information.
+        const bool multi_element = pair_table_.size() > 1
+                                   && request.system != nullptr
+                                   && request.system->atom_types().size() == n;
 
-    // Determine if we have per-atom type information.
-    const bool multi_element = pair_table_.size() > 1
-                               && request.system != nullptr
-                               && request.system->atom_types().size() == n;
+        // Evaluate one half-pair (i, j) and accumulate.
+        auto eval_pair = [&](std::size_t i, std::size_t j) {
+            const int atom_i = static_cast<int>(i);
+            const int atom_j = static_cast<int>(j);
+            const bool evaluate_pair = request.system != nullptr
+                ? should_evaluate_pair(*request.system, atom_i, atom_j)
+                : should_evaluate_pair(atom_i, atom_j);
+            if (!evaluate_pair) {
+                return;
+            }
 
-    // Evaluate one half-pair (i, j) and accumulate.
-    auto eval_pair = [&](std::size_t i, std::size_t j) {
-        Force3D dr = {
-            request.coordinates[i][0] - request.coordinates[j][0],
-            request.coordinates[i][1] - request.coordinates[j][1],
-            request.coordinates[i][2] - request.coordinates[j][2]
+            Force3D dr = {
+                request.coordinates[i][0] - request.coordinates[j][0],
+                request.coordinates[i][1] - request.coordinates[j][1],
+                request.coordinates[i][2] - request.coordinates[j][2]
+            };
+            apply_minimum_image(dr, box);
+
+            const double r2 = dr[0]*dr[0] + dr[1]*dr[1] + dr[2]*dr[2];
+            if (r2 >= cutoff_sq_ || r2 < 1e-12) return;
+
+            // Select pair cache by atom types.
+            const PairCache& pc = multi_element
+                ? pair_table_[static_cast<std::size_t>(request.system->atom_types()[i])]
+                             [static_cast<std::size_t>(request.system->atom_types()[j])]
+                : pair_table_[0][0];
+
+            const auto [energy, ff] = lj_eval(r2, pc.eps4, pc.sig2);
+            total_pe += energy - pc.energy_shift;
+
+            result.forces[i][0] += ff * dr[0];
+            result.forces[i][1] += ff * dr[1];
+            result.forces[i][2] += ff * dr[2];
+            result.forces[j][0] -= ff * dr[0];
+            result.forces[j][1] -= ff * dr[1];
+            result.forces[j][2] -= ff * dr[2];
+
+            // Pair virial tensor contribution W_ab = r_a * F_b.
+            result.virial[0] += dr[0] * (ff * dr[0]);
+            result.virial[1] += dr[0] * (ff * dr[1]);
+            result.virial[2] += dr[0] * (ff * dr[2]);
+            result.virial[3] += dr[1] * (ff * dr[0]);
+            result.virial[4] += dr[1] * (ff * dr[1]);
+            result.virial[5] += dr[1] * (ff * dr[2]);
+            result.virial[6] += dr[2] * (ff * dr[0]);
+            result.virial[7] += dr[2] * (ff * dr[1]);
+            result.virial[8] += dr[2] * (ff * dr[2]);
         };
-        apply_minimum_image(dr, box);
 
-        const double r2 = dr[0]*dr[0] + dr[1]*dr[1] + dr[2]*dr[2];
-        if (r2 >= cutoff_sq_ || r2 < 1e-12) return;
-
-        // Select pair cache by atom types.
-        const PairCache& pc = multi_element
-            ? pair_table_[static_cast<std::size_t>(request.system->atom_types()[i])]
-                         [static_cast<std::size_t>(request.system->atom_types()[j])]
-            : pair_table_[0][0];
-
-        const auto [energy, ff] = lj_eval(r2, pc.eps4, pc.sig2);
-        total_pe += energy - pc.energy_shift;
-
-        result.forces[i][0] += ff * dr[0];
-        result.forces[i][1] += ff * dr[1];
-        result.forces[i][2] += ff * dr[2];
-        result.forces[j][0] -= ff * dr[0];
-        result.forces[j][1] -= ff * dr[1];
-        result.forces[j][2] -= ff * dr[2];
-
-        // Pair virial tensor contribution W_ab = r_a * F_b.
-        result.virial[0] += dr[0] * (ff * dr[0]);
-        result.virial[1] += dr[0] * (ff * dr[1]);
-        result.virial[2] += dr[0] * (ff * dr[2]);
-        result.virial[3] += dr[1] * (ff * dr[0]);
-        result.virial[4] += dr[1] * (ff * dr[1]);
-        result.virial[5] += dr[1] * (ff * dr[2]);
-        result.virial[6] += dr[2] * (ff * dr[0]);
-        result.virial[7] += dr[2] * (ff * dr[1]);
-        result.virial[8] += dr[2] * (ff * dr[2]);
-    };
-
-    if (request.neighbor_list != nullptr && request.neighbor_list->valid) {
-        const NeighborList& nl = *request.neighbor_list;
-        for (std::size_t i = 0; i < n; ++i) {
-            const int start = nl.offsets[i];
-            const int count = nl.counts[i];
-            for (int k = 0; k < count; ++k) {
-                eval_pair(i, static_cast<std::size_t>(nl.neighbors[start + k]));
+        if (request.neighbor_list != nullptr && request.neighbor_list->valid) {
+            const NeighborList& nl = *request.neighbor_list;
+            for (std::size_t i = 0; i < local_atom_count; ++i) {
+                const int start = nl.offsets[i];
+                const int count = nl.counts[i];
+                for (int k = 0; k < count; ++k) {
+                    eval_pair(i, static_cast<std::size_t>(nl.neighbors[start + k]));
+                }
+            }
+        } else {
+            for (std::size_t i = 0; i < local_atom_count; ++i) {
+                for (std::size_t j = i + 1; j < n; ++j) {
+                    eval_pair(i, j);
+                }
             }
         }
-    } else {
-        for (std::size_t i = 0; i < n - 1; ++i) {
-            for (std::size_t j = i + 1; j < n; ++j) {
-                eval_pair(i, j);
-            }
-        }
+
+        result.potential_energy = total_pe;
     }
 
-    result.potential_energy = total_pe;
+    // MPI: virial allreduce — always called on all ranks because MPI_Allreduce
+    // is a collective operation that must be matched by every rank in the
+    // communicator, even those with zero atoms.
+#ifdef GMD_ENABLE_MPI
+    if (mpi_is_available()) {
+        auto local_virial = result.virial;
+        MPI_Allreduce(local_virial.data(),
+                      result.virial.data(),
+                      static_cast<int>(result.virial.size()),
+                      MPI_DOUBLE,
+                      MPI_SUM,
+                      MPI_COMM_WORLD);
+    }
+#endif
+}
+
+bool ClassicalForceProvider::should_evaluate_pair(int i, int j) const noexcept {
+    return i >= 0 && j > i;
+}
+
+bool ClassicalForceProvider::should_evaluate_pair(const System& system,
+                                                 int i,
+                                                 int j) const noexcept {
+    if (!should_evaluate_pair(i, j)) {
+        return false;
+    }
+
+    const auto atom_i = static_cast<std::size_t>(i);
+    const auto atom_j = static_cast<std::size_t>(j);
+    if (system.is_local_atom(atom_j)) {
+        return true;
+    }
+
+    // A local/ghost boundary pair can exist on both ranks. Global tags choose
+    // the rank that owns the lower-tagged local side for energy and virial.
+    return system.atom_tag(atom_i) < system.atom_tag(atom_j);
 }
 
 void ClassicalForceProvider::finalize(RuntimeContext& runtime) {

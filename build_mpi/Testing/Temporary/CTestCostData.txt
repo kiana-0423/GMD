@@ -1,0 +1,8 @@
+gmd_smoke_mpi_lj_2proc 3 0.357558
+gmd_smoke_mpi_lj_consistency 2 1.06725
+gmd_smoke_inline_lj 1 1.02359
+gmd_smoke_ewald 1 1.03392
+gmd_smoke_pme 1 1.04538
+gmd_smoke_mc_barostat 1 1.03655
+gmd_smoke_molecular 1 1.0379
+---

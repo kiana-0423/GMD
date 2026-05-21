@@ -93,7 +93,7 @@ void VelocityVerletIntegrator::step(System& system,
     auto velocities = system.mutable_velocities();
 
     // First half-kick (v += 0.5*a*dt) + full position update.
-    for (std::size_t atom_index = 0; atom_index < system.atom_count(); ++atom_index) {
+    for (std::size_t atom_index = 0; atom_index < system.num_local_atoms(); ++atom_index) {
         if (masses[atom_index] <= 0.0) {
             throw std::runtime_error("VelocityVerletIntegrator requires strictly positive masses");
         }
@@ -116,7 +116,7 @@ void VelocityVerletIntegrator::step(System& system,
     }
 
     // Second half-kick.
-    for (std::size_t atom_index = 0; atom_index < system.atom_count(); ++atom_index) {
+    for (std::size_t atom_index = 0; atom_index < system.num_local_atoms(); ++atom_index) {
         const double inverse_mass = 1.0 / masses[atom_index];
         for (std::size_t dim = 0; dim < 3; ++dim) {
             velocities[atom_index][dim] += 0.5 * next_force.forces[atom_index][dim] * inverse_mass * dt;

@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "gmd/force/force_provider.hpp"
+#include "gmd/parallel/pme_parallel.hpp"
 
 namespace gmd {
 
@@ -56,6 +57,9 @@ private:
 
     // Working charge/potential mesh (size K1*K2*K3).
     std::vector<std::complex<double>> mesh_;
+
+    // Describes the x-pencil ownership ranges used by distributed PME.
+    PmeParallelDecomposition parallel_decomposition_;
 
     // B-spline DFT modulus corrections b_α²(m) for each dimension.
     std::array<std::vector<double>, 3> bmod_sq_;

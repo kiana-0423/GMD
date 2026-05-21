@@ -1,0 +1,15 @@
+velocity 300.0
+time_step 1.0
+run 10
+velocity_init random
+remove_com_velocity true
+
+force_field lj
+cutoff 8.0
+type 1  H  mass 1.008  epsilon 0.00774  sigma 2.500  charge 0.4
+
+coulomb pme
+pme_alpha 0.3
+pme_cutoff 8.0
+pme_order 4
+pme_grid 16 16 16

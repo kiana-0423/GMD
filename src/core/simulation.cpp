@@ -6,6 +6,9 @@
 #include "gmd/force/force_provider.hpp"
 #include "gmd/integrator/integrator.hpp"
 #include "gmd/neighbor/neighbor_builder.hpp"
+#include "gmd/neighbor/verlet_neighbor_builder.hpp"
+#include "gmd/parallel/domain_decomposition.hpp"
+#include "gmd/parallel/mpi_communicator.hpp"
 #include "gmd/runtime/runtime_context.hpp"
 #include "gmd/system/initializer.hpp"
 #include "gmd/system/system.hpp"
@@ -18,6 +21,8 @@ public:
     std::shared_ptr<ForceProvider> force_provider;
     std::shared_ptr<NeighborBuilder> neighbor_builder;
     std::shared_ptr<Integrator> integrator;
+    std::shared_ptr<MpiCommunicator> mpi_comm;
+    std::shared_ptr<DomainDecomposition> domain_decomposition;
     std::shared_ptr<VelocityInitializer> velocity_initializer;
     VelocityInitMode velocity_init_mode = VelocityInitMode::Random;
     bool remove_center_of_mass_velocity = true;
@@ -50,10 +55,30 @@ void Simulation::set_force_provider(std::shared_ptr<ForceProvider> provider) noe
 
 void Simulation::set_neighbor_builder(std::shared_ptr<NeighborBuilder> builder) noexcept {
     impl_->neighbor_builder = std::move(builder);
+    if (impl_->domain_decomposition != nullptr) {
+        auto verlet_builder =
+            std::dynamic_pointer_cast<VerletNeighborBuilder>(impl_->neighbor_builder);
+        if (verlet_builder != nullptr) {
+            verlet_builder->set_domain_decomposition(impl_->domain_decomposition);
+        }
+    }
 }
 
 void Simulation::set_integrator(std::shared_ptr<Integrator> integrator) noexcept {
     impl_->integrator = std::move(integrator);
+}
+
+void Simulation::set_mpi_communicator(std::shared_ptr<MpiCommunicator> comm) noexcept {
+    impl_->mpi_comm = std::move(comm);
+}
+
+void Simulation::set_domain_decomposition(std::shared_ptr<DomainDecomposition> dd) noexcept {
+    impl_->domain_decomposition = std::move(dd);
+    auto verlet_builder =
+        std::dynamic_pointer_cast<VerletNeighborBuilder>(impl_->neighbor_builder);
+    if (verlet_builder != nullptr) {
+        verlet_builder->set_domain_decomposition(impl_->domain_decomposition);
+    }
 }
 
 void Simulation::set_velocity_initializer(std::shared_ptr<VelocityInitializer> initializer) noexcept {
@@ -134,12 +159,28 @@ void Simulation::step(RuntimeContext& runtime) {
         throw std::runtime_error("Simulation is not ready to step");
     }
 
+    if (impl_->mpi_comm != nullptr && impl_->domain_decomposition != nullptr) {
+        impl_->mpi_comm->exchange_ghost_coordinates(
+            *impl_->system, *impl_->domain_decomposition);
+    }
+
     if (impl_->neighbor_builder != nullptr && impl_->neighbor_builder->needs_rebuild(*impl_->system, impl_->step)) {
         impl_->neighbor_builder->rebuild(*impl_->system, runtime, nullptr);
     }
 
     const IntegratorStepContext step_context{.step = impl_->step, .dt = impl_->time_step};
     impl_->integrator->step(*impl_->system, *impl_->force_provider, step_context, runtime);
+
+    if (impl_->mpi_comm != nullptr && impl_->domain_decomposition != nullptr) {
+        impl_->mpi_comm->reverse_accumulate_ghost_forces(
+            *impl_->system, *impl_->domain_decomposition);
+    }
+
+    if (impl_->mpi_comm != nullptr) {
+        impl_->system->set_potential_energy(
+            impl_->mpi_comm->allreduce_scalar(impl_->system->potential_energy()));
+    }
+
     ++impl_->step;
 }
 

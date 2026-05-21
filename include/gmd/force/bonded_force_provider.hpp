@@ -10,6 +10,8 @@
 
 namespace gmd {
 
+class System;
+
 // ---------------------------------------------------------------------------
 // Unit-conversion helpers
 // ---------------------------------------------------------------------------
@@ -67,6 +69,21 @@ private:
     std::vector<AngleParams>    angle_types_;
     std::vector<DihedralParams> dihedral_types_;
     std::vector<ImproperParams> improper_types_;
+
+    // Valid while compute() is executing. These keep the ownership helpers
+    // tied to the System metadata without exposing MPI headers here.
+    const System* compute_system_ = nullptr;
+    int compute_rank_ = 0;
+
+    int compute_owner(const BondTerm& term) const;
+    int compute_owner(const AngleTerm& term) const;
+    int compute_owner(const DihedralTerm& term) const;
+    int compute_owner(const ImproperTerm& term) const;
+
+    bool should_compute(const BondTerm& term) const;
+    bool should_compute(const AngleTerm& term) const;
+    bool should_compute(const DihedralTerm& term) const;
+    bool should_compute(const ImproperTerm& term) const;
 
     // Internal compute kernels (each accumulates into result).
     void compute_bonds    (const ForceRequest& req, ForceResult& result) const;

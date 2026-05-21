@@ -1,6 +1,6 @@
-# GMD — Good Molecular Dynamics  `v1.1`
+# GMD — Good Molecular Dynamics  `v2.1`
 
-Release history is tracked in [CHANGELOG.md](CHANGELOG.md). The current documented release is `v1.1` from `2026-04-20`.
+Release history is tracked in [CHANGELOG.md](CHANGELOG.md). The current documented release is `v2.1` from `2026-05-22`.
 
 GMD is a C++20 molecular dynamics engine built around a small set of composable runtime abstractions:
 
@@ -9,6 +9,31 @@ GMD is a C++20 molecular dynamics engine built around a small set of composable 
 - `NeighborBuilder` — Verlet-list construction with skin-distance rebuild check
 - `Integrator` — velocity-Verlet time stepping with optional thermostat / barostat hooks
 - `Simulation` — orchestrator that wires everything together
+
+---
+
+## What's New in v2.1
+
+| Feature | Files |
+|---|---|
+| **MPI spatial domain decomposition** — 1D domain splitting along x, ghost-atom coordinate exchange, reverse force accumulation, allreduce for scalars/vectors | `include/gmd/parallel/domain_decomposition.hpp` `include/gmd/parallel/mpi_communicator.hpp` `include/gmd/parallel/mpi_environment.hpp` `src/parallel/` |
+| **PME pencil decomposition** — 2D process grid (Py × Pz) with transpose collectives; currently replicated mesh with infrastructure ready for distributed FFT | `include/gmd/parallel/pme_parallel.hpp` `src/parallel/pme_parallel.cpp` |
+| **`GMD_ENABLE_MPI` CMake option** — opt-in MPI build with `find_package(MPI REQUIRED)`, `MPI::MPI_CXX` linkage, and `GMD_ENABLE_MPI` compile definition | `CMakeLists.txt` `cmake/MPIOptions.cmake` |
+| **MPI smoke tests** — 2-process LJ run and serial-vs-parallel energy consistency check | `tests/smoke_mpi_lj.xyz` `tests/smoke_mpi_lj.run` `tests/compare_energy_logs.cpp` `cmake/RunMpiLJConsistency.cmake` |
+| **CLI `--np N` flag** — validates expected process count against MPI world size | `app/gmd_main.cpp` |
+| **Rank-aware I/O** — only rank 0 writes trajectory/log files; global coordinate gather for output frames | `app/gmd_main.cpp` |
+
+---
+
+## What's New in v2.0
+
+| Feature | Files |
+|---|---|
+| **ML force provider integration** via TorchScript (LibTorch) — loads `.pt` models, reads `local_cutoff`, calls `forward(species, positions, edge_index, edge_shift)` | `include/gmd/ml/torchscript_adapter.hpp` `include/gmd/ml/ml_force_provider.hpp` `src/ml/` |
+| **`edge_index` and `edge_shift` tensors** — `NeighborList::image_flags` stores per-pair integer shift vectors; `VerletNeighborBuilder` computes them | `include/gmd/system/system.hpp` `src/neighbor/verlet_neighbor_builder.cpp` |
+| **Atomic numbers (`Z`)** — populated per atom during XYZ loading via built-in element table; forwarded to ML models | `include/gmd/system/system.hpp` `src/io/config_loader.cpp` |
+| **`GMD_ENABLE_TORCH` CMake option** — opt-in LibTorch linkage; `force_field ml` and `model_path` directives in run files | `CMakeLists.txt` `app/gmd_main.cpp` |
+| **PME smoke test** — validates Particle-Mesh Ewald path | `tests/smoke_pme.run` |
 
 ---
 
@@ -40,7 +65,7 @@ GMD is a C++20 molecular dynamics engine built around a small set of composable 
 Implemented:
 
 - periodic boundary conditions and minimum-image convention
-- cell-list Verlet neighbor lists with skin-distance rebuild check
+- cell-list Verlet neighbor lists with skin-distance rebuild check and per-pair image shift vectors
 - shifted Lennard-Jones pair interactions (multi-element, selectable mixing rules, explicit pair overrides that take priority over mixing)
 - **harmonic bonds** (`V = k(r − r₀)²`)
 - **harmonic angles** (`V = k(θ − θ₀)²`)
@@ -48,23 +73,29 @@ Implemented:
 - **harmonic improper dihedrals** (`V = k(φ − φ₀)²`)
 - Velocity Verlet integration
 - velocity-rescaling thermostat
-- Nosé-Hoover thermostat
-- Berendsen barostat
-- long-range Coulomb via Ewald and PME
-- extended XYZ trajectory output and energy logging
+- Nosé-Hoover thermostat (VVNH splitting)
+- Berendsen barostat (weak-coupling, requires virial)
+- **Monte Carlo barostat** (isotropic NPT, Metropolis criterion, no virial required, adaptive step-size)
+- long-range Coulomb via Ewald and PME (self-contained 3D FFT, B-spline orders 4/6)
+- **ML force provider** — TorchScript backend (`GMD_ENABLE_TORCH=ON`), SE3-GNN compatible, reads `local_cutoff` from model
+- **MPI spatial domain decomposition** — 1D x-splitting, ghost-atom exchange, reverse force accumulation, allreduce collectives (`GMD_ENABLE_MPI=ON`)
+- **PME pencil decomposition** — 2D process grid infrastructure for distributed FFT
+- extended XYZ trajectory output and energy logging (rank-0 I/O with global coordinate gather in MPI mode)
 - inline `run.in` LJ force-field definitions
 - external `.ff` files (LJ and molecular; molecular runs default to bonded-only)
 - external `.top` topology files
+- atomic numbers (`Z`) populated from element symbols during XYZ loading
 
 Not yet implemented:
 
 - 1-2 / 1-3 nonbonded exclusion lists for molecular systems
 - SHAKE / RATTLE bond constraints
-- CUDA compute backend
-- usable ML force-field runtime
+- CUDA compute backend (CMake option present but CPU-only)
 - checkpoint / restart
 - Python bindings
 - full unit / regression test coverage
+- 3D domain decomposition (currently 1D x-only)
+- distributed PME FFT (infrastructure ready, currently replicated mesh)
 
 ---
 
@@ -92,6 +123,24 @@ Available CMake options:
 | `CMAKE_BUILD_TYPE` | `Release` | `Release` / `Debug` |
 | `GMD_ENABLE_CUDA` | `OFF` | Enable CUDA language (runtime still CPU-only) |
 | `GMD_BUILD_PYTHON` | `OFF` | Python bindings stub |
+| `GMD_ENABLE_TORCH` | `OFF` | Enable TorchScript ML force provider (requires LibTorch) |
+| `GMD_ENABLE_MPI` | `OFF` | Enable MPI spatial domain decomposition (requires MPI) |
+
+MPI build example:
+
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DGMD_ENABLE_MPI=ON
+cmake --build build --parallel
+```
+
+Torch + MPI build example:
+
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+      -DGMD_ENABLE_TORCH=ON -DCMAKE_PREFIX_PATH=/path/to/libtorch \
+      -DGMD_ENABLE_MPI=ON
+cmake --build build --parallel
+```
 
 ---
 
@@ -105,6 +154,36 @@ Output files:
 
 - `output.xyz` — extended XYZ trajectory
 - `output.log` — tabular energy / temperature log
+
+---
+
+## MPI Parallel Run
+
+Build with MPI enabled:
+
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DGMD_ENABLE_MPI=ON
+cmake --build build --parallel
+```
+
+Run with multiple processes:
+
+```bash
+mpirun -np 4 ./build/gmd tests/smoke_mpi_lj.xyz tests/smoke_mpi_lj.run
+```
+
+The `--np N` CLI flag validates that the MPI world size matches expectations:
+
+```bash
+mpirun -np 4 ./build/gmd --np 4 input.xyz run.in
+```
+
+In MPI mode:
+- Atoms are distributed across ranks via 1D x-axis domain decomposition
+- Ghost atoms are exchanged each step based on the neighbor-list cutoff + skin
+- Forces on ghost atoms are reverse-accumulated back to their home ranks
+- Only rank 0 writes trajectory and energy log files
+- Global coordinates are gathered for output frames
 
 ---
 
@@ -251,6 +330,15 @@ barostat_tau 2000.0
 compressibility 4.5e-5
 ```
 
+or `barostat monte_carlo`:
+
+```ini
+barostat monte_carlo
+pressure 1.0
+mc_frequency 25
+mc_volume_step 0.01
+```
+
 Long-range Coulomb (Ewald or PME):
 
 ```ini
@@ -266,6 +354,13 @@ pme_alpha 0.3
 pme_cutoff 10.0
 pme_order 4
 pme_grid 32 32 32
+```
+
+ML force field (requires `GMD_ENABLE_TORCH=ON`):
+
+```ini
+force_field ml
+model_path /path/to/model.pt
 ```
 
 ### `molecule.ff` — molecular force field
@@ -374,23 +469,32 @@ gmd::deg_to_rad           // = π / 180
 ## Testing
 
 ```bash
+# Non-MPI tests
 cd build
+ctest --output-on-failure
+
+# MPI tests (requires GMD_ENABLE_MPI=ON)
+ctest --output-on-failure -L mpi
+
+# All tests
 ctest --output-on-failure
 ```
 
-Currently runs a small set of bundled smoke/integration tests covering inline
-LJ, Ewald electrostatics, Monte Carlo barostat, and the molecular FF/topology
-path. The rest of `tests/` is still reserved for future unit and regression
-cases.
+All **12 tests pass** (5 non-MPI + 5 MPI serial + 2 MPI parallel) across
+both `Release` builds with no failures. The MPI consistency test validates
+that a 2-process LJ run produces bit-identical energy logs to a serial run
+(PE tolerance 1e-6, total-energy tolerance 1e-3, temperature tolerance 1e-6).
 
-Current smoke tests registered with CTest:
 
 | Test name | Exercises |
 |---|---|
 | `gmd_smoke_inline_lj` | inline LJ force field, NVT |
 | `gmd_smoke_ewald` | Ewald electrostatics, NVT |
+| `gmd_smoke_pme` | PME electrostatics, NVT |
 | `gmd_smoke_mc_barostat` | MC barostat NPT, Nosé-Hoover |
 | `gmd_smoke_molecular` | molecular FF (`.ff` + `.top`), bonded forces, explicit unsafe LJ opt-in / pair override path |
+| `gmd_smoke_mpi_lj_2proc` | 2-process MPI LJ NVT run (verifies execution does not crash) |
+| `gmd_smoke_mpi_lj_consistency` | serial vs 2-process MPI energy consistency check (verifies numerical equivalence) |
 
 ---
 
@@ -398,8 +502,8 @@ Current smoke tests registered with CTest:
 
 ```
 GMD/
-├── app/gmd_main.cpp               CLI entry point (LJ / Ewald / PME workflow)
-├── cmake/                         Build helper scripts
+├── app/gmd_main.cpp               CLI entry point (LJ / Ewald / PME / ML / MPI workflow)
+├── cmake/                         Build helper scripts (CompilerOptions, CUDAOptions, MPIOptions, …)
 ├── examples/
 │   └── ethane_demo/               Complete molecular FF example
 │       ├── ethane_demo.cpp        Standalone demo driver
@@ -410,6 +514,7 @@ GMD/
 ├── include/gmd/
 │   ├── boundary/                  PBC & minimum-image
 │   ├── core/                      Simulation orchestrator
+│   ├── cuda/                      CUDA backend (reserved)
 │   ├── force/
 │   │   ├── force_provider.hpp         abstract interface
 │   │   ├── composite_force_provider.hpp
@@ -420,12 +525,18 @@ GMD/
 │   │   └── pme_force_provider.hpp
 │   ├── integrator/                VV + thermostat + barostat
 │   ├── io/                        ConfigLoader (xyz/run/ff/top), TrajectoryWriter
-│   ├── ml/                        ML force provider (placeholder)
+│   ├── ml/                        ML force provider + TorchScript adapter
 │   ├── neighbor/                  VerletNeighborBuilder
+│   ├── parallel/                  MPI domain decomposition + communication
+│   │   ├── domain_decomposition.hpp
+│   │   ├── mpi_communicator.hpp
+│   │   ├── mpi_environment.hpp
+│   │   └── pme_parallel.hpp
 │   ├── runtime/                   RuntimeContext
-│   └── system/                    System, Box, Topology
+│   ├── system/                    System, Box, Topology
+│   └── utils/                     Utilities (reserved)
 ├── src/                           Implementation (mirrors include/gmd/)
-├── tests/                         Unit / regression tests (reserved)
+├── tests/                         Smoke / integration / MPI consistency tests
 ├── run_ethane_demo.sh             One-command build + run for ethane demo
 └── CMakeLists.txt
 ```
@@ -436,16 +547,17 @@ GMD/
 
 ```
 ConfigLoader ─────────────────────────────────────────────────┐
-  load_xyz()          → System (coords, masses, types)         │
+  load_xyz()          → System (coords, masses, types, Z)      │
   load_run()          → RunConfig                              │
   load_molecular_ff() → MolecularForceFieldConfig              ├──► Simulation
   load_topology()     → Topology                               │       │
-                                                               │  NeighborBuilder::rebuild()
-ForceProvider (interface)                                      │  ForceProvider::compute()
-  ClassicalForceProvider   (LJ non-bonded)                     │  Integrator::step()
-  BondedForceProvider      (bonds/angles/dihedrals/impropers)  │       │
-  EwaldForceProvider       (k-space Coulomb)                   │  TrajectoryWriter::write_frame()
-  PMEForceProvider         (mesh Ewald)                        │
+                                                               │  DomainDecomposition (MPI)
+ForceProvider (interface)                                      │  MpiCommunicator (MPI)
+  ClassicalForceProvider   (LJ non-bonded)                     │  NeighborBuilder::rebuild()
+  BondedForceProvider      (bonds/angles/dihedrals/impropers)  │  ForceProvider::compute()
+  EwaldForceProvider       (k-space Coulomb)                   │  Integrator::step()
+  PMEForceProvider         (mesh Ewald)                        │       │
+  MLForceProvider          (TorchScript)                       │  TrajectoryWriter::write_frame()
   CompositeForceProvider   (sums all above) ───────────────────┘
 ```
 
@@ -456,9 +568,13 @@ ForceProvider (interface)                                      │  ForceProvide
 - No 1-2 / 1-3 nonbonded exclusion lists — molecular CLI therefore defaults to bonded-only, and `molecular_nonbonded lj_unsafe` remains explicitly unsafe
 - No SHAKE / RATTLE bond constraints
 - No GPU execution (CUDA option present but CPU-only)
-- No working ML inference backend
 - No checkpoint / restart
-- Berendsen barostat requires virial from every active force term; current `Ewald` and `PME` paths provide it via a coordinate-virial approximation
+- Berendsen barostat requires virial from every active force term; current `Ewald` and `PME` paths provide it via a coordinate-virial approximation; barostat pressure is computed with MPI-allreduced kinetic energy and virial (correct)
+- MPI domain decomposition is 1D (x-axis only); 3D decomposition not yet implemented
+- PME mesh is replicated across MPI ranks (pencil decomposition infrastructure ready, distributed FFT not yet active)
+- ML force provider requires `GMD_ENABLE_TORCH=ON` and a compatible TorchScript model
+- NVT and NPT ensembles are fully supported in MPI mode — kinetic energy, virial, and degrees of freedom are globally synchronized via MPI_Allreduce at every step
+- NVE (microcanonical) simulations in MPI mode reproduce serial results bit-identically (verified by `gmd_smoke_mpi_lj_consistency`)
 - Limited automated test coverage
 
 ---

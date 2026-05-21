@@ -1,0 +1,7 @@
+{
+	"InstallScripts" : 
+	[
+		"/Users/guo/Documents/workspace/GMD/build_mpi/cmake_install.cmake"
+	],
+	"Parallel" : false
+}

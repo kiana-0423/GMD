@@ -5,11 +5,25 @@
 
 #include "gmd/system/system.hpp"
 
+#ifdef GMD_ENABLE_MPI
+#include <mpi.h>
+#endif
+
 namespace gmd {
 
 namespace {
 
 constexpr double kBoltzmannConstant = 8.617343e-5;
+
+#ifdef GMD_ENABLE_MPI
+bool mpi_is_available() noexcept {
+    int is_initialized = 0;
+    int is_finalized = 0;
+    MPI_Initialized(&is_initialized);
+    MPI_Finalized(&is_finalized);
+    return is_initialized != 0 && is_finalized == 0;
+}
+#endif
 
 }  // namespace
 
@@ -68,6 +82,25 @@ void VelocityInitializer::remove_center_of_mass_velocity(System& system) const {
         center_of_mass_velocity[2] += masses[atom_index] * velocity[2];
     }
 
+#ifdef GMD_ENABLE_MPI
+    if (mpi_is_available()) {
+        double global_mass = 0.0;
+        MPI_Allreduce(&total_mass, &global_mass, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+        total_mass = global_mass;
+
+        double momentum[3] = {
+            center_of_mass_velocity[0],
+            center_of_mass_velocity[1],
+            center_of_mass_velocity[2]
+        };
+        double global_momentum[3] = {0.0, 0.0, 0.0};
+        MPI_Allreduce(momentum, global_momentum, 3, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+        center_of_mass_velocity[0] = global_momentum[0];
+        center_of_mass_velocity[1] = global_momentum[1];
+        center_of_mass_velocity[2] = global_momentum[2];
+    }
+#endif
+
     if (total_mass <= 0.0) {
         throw std::runtime_error("Total system mass must be positive before velocity initialization");
     }
@@ -94,12 +127,26 @@ void VelocityInitializer::rescale_temperature(System& system,
         return;
     }
 
-    const double current_kinetic_energy = kinetic_energy(system);
+    double current_kinetic_energy = kinetic_energy(system);
+    double atom_count = static_cast<double>(system.atom_count());
+
+#ifdef GMD_ENABLE_MPI
+    if (mpi_is_available()) {
+        double global_ke = 0.0;
+        MPI_Allreduce(&current_kinetic_energy, &global_ke, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+        current_kinetic_energy = global_ke;
+
+        long long local_n = static_cast<long long>(system.atom_count());
+        long long global_n = 0;
+        MPI_Allreduce(&local_n, &global_n, 1, MPI_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
+        atom_count = static_cast<double>(global_n);
+    }
+#endif
+
     if (current_kinetic_energy <= 0.0) {
         throw std::runtime_error("Velocity initialization produced zero kinetic energy");
     }
 
-    const auto atom_count = static_cast<double>(system.atom_count());
     const auto dof = center_of_mass_removed ? 3.0 * atom_count - 3.0 : 3.0 * atom_count;
     if (dof <= 0.0) {
         throw std::runtime_error("Not enough degrees of freedom to define a temperature");
@@ -124,8 +171,18 @@ void VelocityInitializer::initialize(System& system,
     if (target_temperature < 0.0) {
         throw std::runtime_error("Target temperature must be non-negative");
     }
+
+    // In MPI mode we must NOT return early when atom_count() == 0, because
+    // other ranks may participate in collective MPI_Allreduce calls inside
+    // remove_center_of_mass_velocity() and rescale_temperature(). Skipping
+    // those calls on this rank would cause MPI_ERR_TRUNCATE.
     if (system.atom_count() == 0) {
+#ifdef GMD_ENABLE_MPI
+        if (!mpi_is_available()) return;
+        // Fall through — participate in allreduces with zero contributions.
+#else
         return;
+#endif
     }
 
     if (mode == VelocityInitMode::Random) {

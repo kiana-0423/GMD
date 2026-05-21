@@ -53,6 +53,10 @@ private:
 
     // Build pair_table_ from an LJForceFieldConfig.
     void build_pair_table(const LJForceFieldConfig& config) noexcept;
+
+    // Pair traversal is half-list based: i is local and j must follow i.
+    bool should_evaluate_pair(int i, int j) const noexcept;
+    bool should_evaluate_pair(const System& system, int i, int j) const noexcept;
 };
 
 }  // namespace gmd

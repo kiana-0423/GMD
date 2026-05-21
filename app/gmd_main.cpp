@@ -1,10 +1,14 @@
+#include <algorithm>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <memory>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <stdexcept>
+#include <vector>
 
 #include "gmd/force/bonded_force_provider.hpp"
 #include "gmd/core/simulation.hpp"
@@ -17,10 +21,14 @@
 #include "gmd/integrator/nose_hoover_thermostat.hpp"
 #include "gmd/integrator/velocity_rescaling_thermostat.hpp"
 #include "gmd/integrator/velocity_verlet_integrator.hpp"
+#include "gmd/integrator/thermostat.hpp"
 #include "gmd/io/config_loader.hpp"
 #include "gmd/io/trajectory_writer.hpp"
 #include "gmd/ml/ml_force_provider.hpp"
 #include "gmd/neighbor/verlet_neighbor_builder.hpp"
+#include "gmd/parallel/domain_decomposition.hpp"
+#include "gmd/parallel/mpi_communicator.hpp"
+#include "gmd/parallel/mpi_environment.hpp"
 #include "gmd/runtime/runtime_context.hpp"
 #include "gmd/system/initializer.hpp"
 #include "gmd/system/system.hpp"
@@ -34,6 +42,128 @@ enum class ForceFieldFileKind {
     LJ,
     Molecular,
 };
+
+struct CommandLine {
+    std::string xyz_path = "xyz.in";
+    std::string run_path = "run.in";
+    std::optional<std::string> ff_path;
+    std::optional<std::string> top_path;
+    std::optional<int> expected_process_count;
+};
+
+CommandLine parse_command_line(int argc, char** argv) {
+    std::vector<std::string> positionals;
+    CommandLine cli;
+
+    for (int arg_index = 1; arg_index < argc; ++arg_index) {
+        const std::string arg = argv[arg_index];
+        if (arg == "--np") {
+            if (arg_index + 1 >= argc) {
+                throw std::runtime_error("--np requires a positive process count");
+            }
+
+            const std::string count_arg = argv[++arg_index];
+            std::size_t parsed_chars = 0;
+            const int count = std::stoi(count_arg, &parsed_chars);
+            if (parsed_chars != count_arg.size() || count <= 0) {
+                throw std::runtime_error("--np requires a positive integer process count");
+            }
+            cli.expected_process_count = count;
+            continue;
+        }
+        if (arg.starts_with("--")) {
+            throw std::runtime_error("Unknown command-line option: " + arg);
+        }
+
+        positionals.push_back(arg);
+    }
+
+    if (positionals.size() > 4) {
+        throw std::runtime_error(
+            "Usage: gmd input.xyz run.in [ff.ff] [top.top] [--np N]");
+    }
+    if (!positionals.empty()) cli.xyz_path = positionals[0];
+    if (positionals.size() > 1) cli.run_path = positionals[1];
+    if (positionals.size() > 2) cli.ff_path = positionals[2];
+    if (positionals.size() > 3) cli.top_path = positionals[3];
+    return cli;
+}
+
+std::string rank_prefix(int rank) {
+    return "[gmd rank " + std::to_string(rank) + "] ";
+}
+
+int owner_rank_for_x(const gmd::Box& box, const gmd::System::Vec3& position, int nprocs) {
+    double x = std::fmod(position[0], box.lengths[0]);
+    if (x < 0.0) {
+        x += box.lengths[0];
+    }
+
+    const double domain_width = box.lengths[0] / static_cast<double>(nprocs);
+    const int owner = static_cast<int>(x / domain_width);
+    return std::min(owner, nprocs - 1);
+}
+
+void keep_rank_local_atoms(gmd::System& system, int my_rank, int nprocs) {
+    const auto box = system.box();
+    const auto masses = system.masses();
+    const auto charges = system.charges();
+    const auto atom_types = system.atom_types();
+    const auto atomic_numbers = system.atomic_numbers();
+    const auto coordinates = system.coordinates();
+    const auto velocities = system.velocities();
+
+    struct LocalAtom {
+        double mass;
+        double charge;
+        int atom_type;
+        int atomic_number;
+        int tag;
+        gmd::System::Vec3 position;
+        gmd::System::Vec3 velocity;
+    };
+
+    std::vector<LocalAtom> local_atoms;
+    local_atoms.reserve(system.atom_count());
+    for (std::size_t atom_index = 0; atom_index < system.atom_count(); ++atom_index) {
+        if (owner_rank_for_x(box, coordinates[atom_index], nprocs) != my_rank) {
+            continue;
+        }
+
+        local_atoms.push_back(LocalAtom{
+            .mass = masses[atom_index],
+            .charge = charges[atom_index],
+            .atom_type = atom_types[atom_index],
+            .atomic_number = atomic_numbers[atom_index],
+            .tag = system.atom_tag(atom_index),
+            .position = coordinates[atom_index],
+            .velocity = velocities[atom_index],
+        });
+    }
+
+    system.resize(local_atoms.size(), local_atoms.size());
+    system.set_box(box);
+    auto local_masses = system.mutable_masses();
+    auto local_charges = system.mutable_charges();
+    auto local_atom_types = system.mutable_atom_types();
+    auto local_atomic_numbers = system.mutable_atomic_numbers();
+    auto local_coordinates = system.mutable_coordinates();
+    auto local_velocities = system.mutable_velocities();
+    auto local_tags = system.mutable_atom_tags();
+    auto local_owners = system.mutable_atom_owners();
+
+    for (std::size_t atom_index = 0; atom_index < local_atoms.size(); ++atom_index) {
+        const LocalAtom& atom = local_atoms[atom_index];
+        local_masses[atom_index] = atom.mass;
+        local_charges[atom_index] = atom.charge;
+        local_atom_types[atom_index] = atom.atom_type;
+        local_atomic_numbers[atom_index] = atom.atomic_number;
+        local_coordinates[atom_index] = atom.position;
+        local_velocities[atom_index] = atom.velocity;
+        local_tags[atom_index] = atom.tag;
+        local_owners[atom_index] = my_rank;
+    }
+}
 
 ForceFieldFileKind detect_force_field_file_kind(const std::filesystem::path& path) {
     std::ifstream input(path);
@@ -68,10 +198,35 @@ ForceFieldFileKind detect_force_field_file_kind(const std::filesystem::path& pat
 
 int main(int argc, char** argv)
 {
-    const char* xyz_path = argc > 1 ? argv[1] : "xyz.in";
-    const char* run_path = argc > 2 ? argv[2] : "run.in";
-    const char* ff_path  = argc > 3 ? argv[3] : nullptr;
-    const char* top_path = argc > 4 ? argv[4] : nullptr;
+#ifdef GMD_ENABLE_MPI
+    gmd::MpiEnvironment mpi_env(argc, argv);
+#endif
+
+    gmd::RuntimeContext runtime;
+    const int my_rank = runtime.rank();
+    const int nprocs = runtime.size();
+    auto mpi_comm = std::make_shared<gmd::MpiCommunicator>();
+    const bool is_root_rank = my_rank == 0;
+    const std::string log_prefix = rank_prefix(my_rank);
+
+    CommandLine cli;
+    try {
+        cli = parse_command_line(argc, argv);
+        if (cli.expected_process_count.has_value() &&
+            *cli.expected_process_count != nprocs) {
+            throw std::runtime_error(
+                "--np " + std::to_string(*cli.expected_process_count) +
+                " does not match the MPI world size " + std::to_string(nprocs));
+        }
+    } catch (const std::exception& error) {
+        std::cerr << log_prefix << "Error: " << error.what() << "\n";
+        return 1;
+    }
+
+    const char* xyz_path = cli.xyz_path.c_str();
+    const char* run_path = cli.run_path.c_str();
+    const char* ff_path = cli.ff_path.has_value() ? cli.ff_path->c_str() : nullptr;
+    const char* top_path = cli.top_path.has_value() ? cli.top_path->c_str() : nullptr;
 
     // Output stem: same directory as xyz input, base name "output".
     const std::filesystem::path output_stem =
@@ -124,8 +279,10 @@ int main(int argc, char** argv)
             active_provider = lj_provider;
             short_range_cutoff = lj_provider->cutoff();
             need_neighbor_builder = true;
-            std::cout << "[gmd] Loaded inline force field from " << run_path
-                      << " (" << ff_config.elements.size() << " element type(s))\n";
+            if (is_root_rank) {
+                std::cout << log_prefix << "Loaded inline force field from " << run_path
+                          << " (" << ff_config.elements.size() << " element type(s))\n";
+            }
         } else if (molecular_ff.has_value()) {
             auto bonded_provider = std::make_shared<gmd::BondedForceProvider>(topology);
             for (const auto& bp : molecular_ff->bond_types) {
@@ -144,13 +301,15 @@ int main(int argc, char** argv)
             active_provider = bonded_provider;
             short_range_cutoff = molecular_ff->lj.cutoff;
 
-            std::cout << "[gmd] Loaded force field from " << ff_path
-                      << " (" << molecular_ff->lj.elements.size() << " atom type(s), "
-                      << topology->bonds.size() << " bond(s), "
-                      << topology->angles.size() << " angle(s), "
-                      << topology->dihedrals.size() << " dihedral(s), "
-                      << topology->impropers.size() << " improper(s))\n";
-            std::cout << "[gmd] Loaded topology from " << top_path << "\n";
+            if (is_root_rank) {
+                std::cout << log_prefix << "Loaded force field from " << ff_path
+                          << " (" << molecular_ff->lj.elements.size() << " atom type(s), "
+                          << topology->bonds.size() << " bond(s), "
+                          << topology->angles.size() << " angle(s), "
+                          << topology->dihedrals.size() << " dihedral(s), "
+                          << topology->impropers.size() << " improper(s))\n";
+                std::cout << log_prefix << "Loaded topology from " << top_path << "\n";
+            }
             if (run_config.molecular_nonbonded_mode == "lj_unsafe") {
                 lj_provider = std::make_shared<gmd::ClassicalForceProvider>(molecular_ff->lj);
                 auto composite = std::make_shared<gmd::CompositeForceProvider>();
@@ -159,12 +318,16 @@ int main(int argc, char** argv)
                 active_provider = composite;
                 short_range_cutoff = lj_provider->cutoff();
                 need_neighbor_builder = true;
-                std::cerr << "[gmd] WARNING: molecular_nonbonded=lj_unsafe enables LJ without 1-2/1-3 exclusions.\n"
-                          << "[gmd]          This is unphysical for most molecular force fields and is intended\n"
-                          << "[gmd]          only for diagnostics until exclusion lists are implemented.\n";
+                if (is_root_rank) {
+                    std::cerr << log_prefix << "WARNING: molecular_nonbonded=lj_unsafe enables LJ without 1-2/1-3 exclusions.\n"
+                              << log_prefix << "         This is unphysical for most molecular force fields and is intended\n"
+                              << log_prefix << "         only for diagnostics until exclusion lists are implemented.\n";
+                }
             } else {
-                std::cout << "[gmd] Molecular non-bonded mode: bonded-only (default).\n"
-                          << "[gmd] Set 'molecular_nonbonded lj_unsafe' in run.in to explicitly enable LJ.\n";
+                if (is_root_rank) {
+                    std::cout << log_prefix << "Molecular non-bonded mode: bonded-only (default).\n"
+                              << log_prefix << "Set 'molecular_nonbonded lj_unsafe' in run.in to explicitly enable LJ.\n";
+                }
             }
         } else if (external_lj_ff.has_value()) {
             const auto& ff_config = external_lj_ff.value();
@@ -172,8 +335,10 @@ int main(int argc, char** argv)
             active_provider = lj_provider;
             short_range_cutoff = lj_provider->cutoff();
             need_neighbor_builder = true;
-            std::cout << "[gmd] Loaded force field from " << ff_path
-                      << " (" << ff_config.elements.size() << " element type(s))\n";
+            if (is_root_rank) {
+                std::cout << log_prefix << "Loaded force field from " << ff_path
+                          << " (" << ff_config.elements.size() << " element type(s))\n";
+            }
         } else if (run_config.force_field_type == "ml") {
 #ifdef GMD_ENABLE_TORCH
             if (run_config.ml_model_path.empty()) {
@@ -193,8 +358,10 @@ int main(int argc, char** argv)
             }
             active_provider = ml_provider;
             need_neighbor_builder = true;
-            std::cout << "[gmd] Loaded ML model from " << run_config.ml_model_path.string()
-                      << "  cutoff=" << short_range_cutoff << " \u00c5\n";
+            if (is_root_rank) {
+                std::cout << log_prefix << "Loaded ML model from " << run_config.ml_model_path.string()
+                          << "  cutoff=" << short_range_cutoff << " \u00c5\n";
+            }
 #else
             throw std::runtime_error(
                 "force_field ml requires GMD to be built with -DGMD_ENABLE_TORCH=ON");
@@ -204,7 +371,9 @@ int main(int argc, char** argv)
             active_provider = lj_provider;
             short_range_cutoff = lj_provider->cutoff();
             need_neighbor_builder = true;
-            std::cout << "[gmd] No force field supplied; using default Ar LJ parameters.\n";
+            if (is_root_rank) {
+                std::cout << log_prefix << "No force field supplied; using default Ar LJ parameters.\n";
+            }
         }
 
         // --- Long-range Coulomb (Ewald or PME) ---
@@ -227,26 +396,46 @@ int main(int argc, char** argv)
                 auto pme = std::make_shared<gmd::PMEForceProvider>(
                     cc.alpha, cc.real_cutoff, cc.pme_order, cc.pme_grid);
                 composite->add(pme);
-                std::cout << "[gmd] Coulomb: PME  order=" << cc.pme_order
-                          << "  grid=" << cc.pme_grid[0] << "x"
-                          << cc.pme_grid[1] << "x" << cc.pme_grid[2] << "\n";
+                if (is_root_rank) {
+                    std::cout << log_prefix << "Coulomb: PME  order=" << cc.pme_order
+                              << "  grid=" << cc.pme_grid[0] << "x"
+                              << cc.pme_grid[1] << "x" << cc.pme_grid[2] << "\n";
+                }
             } else {
                 // Default to Ewald.
                 auto ewald = std::make_shared<gmd::EwaldForceProvider>(
                     cc.alpha, cc.kmax, cc.real_cutoff);
                 composite->add(ewald);
-                std::cout << "[gmd] Coulomb: Ewald  alpha=" << cc.alpha
-                          << "  kmax=" << cc.kmax
-                          << "  r_cut=" << cc.real_cutoff << "\n";
+                if (is_root_rank) {
+                    std::cout << log_prefix << "Coulomb: Ewald  alpha=" << cc.alpha
+                              << "  kmax=" << cc.kmax
+                              << "  r_cut=" << cc.real_cutoff << "\n";
+                }
             }
         }
 
         // --- Neighbor builder (uses the largest active short-range cutoff, r_skin = 2.0 Å) ---
+        constexpr double r_skin = 2.0;
         std::shared_ptr<gmd::VerletNeighborBuilder> neighbor_builder;
         if (need_neighbor_builder) {
-            constexpr double r_skin = 2.0;
             neighbor_builder = std::make_shared<gmd::VerletNeighborBuilder>(
                 short_range_cutoff, r_skin);
+        }
+
+        const std::size_t global_atom_count = system.atom_count();
+        gmd::System output_system;
+        if (is_root_rank) {
+            output_system = system;
+        }
+        std::shared_ptr<gmd::DomainDecomposition> domain_decomposition;
+        if (nprocs > 1) {
+            domain_decomposition = std::make_shared<gmd::DomainDecomposition>();
+            domain_decomposition->create_1d_decomposition(
+                system.box(), nprocs, my_rank, short_range_cutoff, r_skin);
+            keep_rank_local_atoms(system, my_rank, nprocs);
+            std::cout << log_prefix << "Domain decomposition owns "
+                      << system.num_local_atoms() << " of " << global_atom_count
+                      << " atoms before ghost exchange\n";
         }
 
         // --- Integrator ---
@@ -257,11 +446,15 @@ int main(int argc, char** argv)
         if (run_config.thermostat_type == "nose_hoover") {
             auto tstat = std::make_shared<gmd::NoseHooverThermostat>(run_config.thermostat_tau);
             integrator->set_thermostat(tstat);
-            std::cout << "[gmd] Thermostat: Nose-Hoover  tau=" << run_config.thermostat_tau << " fs\n";
+            if (is_root_rank) {
+                std::cout << log_prefix << "Thermostat: Nose-Hoover  tau=" << run_config.thermostat_tau << " fs\n";
+            }
         } else if (run_config.thermostat_type == "velocity_rescaling") {
             auto tstat = std::make_shared<gmd::VelocityRescalingThermostat>();
             integrator->set_thermostat(tstat);
-            std::cout << "[gmd] Thermostat: velocity rescaling\n";
+            if (is_root_rank) {
+                std::cout << log_prefix << "Thermostat: velocity rescaling\n";
+            }
         }
 
         // --- Barostat ---
@@ -270,17 +463,21 @@ int main(int argc, char** argv)
                 run_config.barostat_tau, run_config.compressibility);
             integrator->set_barostat(bstat);
             integrator->set_target_pressure(run_config.target_pressure);
-            std::cout << "[gmd] Barostat: Berendsen  P=" << run_config.target_pressure
-                      << " bar  tau=" << run_config.barostat_tau << " fs\n";
+            if (is_root_rank) {
+                std::cout << log_prefix << "Barostat: Berendsen  P=" << run_config.target_pressure
+                          << " bar  tau=" << run_config.barostat_tau << " fs\n";
+            }
         } else if (run_config.barostat_type == "monte_carlo") {
             auto bstat = std::make_shared<gmd::MCBarostat>(
                 run_config.mc_frequency,
                 run_config.mc_volume_step);
             integrator->set_barostat(bstat);
             integrator->set_target_pressure(run_config.target_pressure);
-            std::cout << "[gmd] Barostat: Monte Carlo NPT  P=" << run_config.target_pressure
-                      << " bar  freq=" << run_config.mc_frequency
-                      << "  max_delta_ln_V=" << run_config.mc_volume_step << "\n";
+            if (is_root_rank) {
+                std::cout << log_prefix << "Barostat: Monte Carlo NPT  P=" << run_config.target_pressure
+                          << " bar  freq=" << run_config.mc_frequency
+                          << "  max_delta_ln_V=" << run_config.mc_volume_step << "\n";
+            }
         }
 
         // --- Velocity initializer ---
@@ -296,6 +493,10 @@ int main(int argc, char** argv)
         simulation.set_remove_center_of_mass_velocity(run_config.remove_center_of_mass_velocity);
         simulation.set_initial_temperature(run_config.temperature);
         simulation.set_force_provider(active_provider);
+        simulation.set_mpi_communicator(mpi_comm);
+        if (domain_decomposition) {
+            simulation.set_domain_decomposition(domain_decomposition);
+        }
         if (neighbor_builder) {
             simulation.set_neighbor_builder(neighbor_builder);
         }
@@ -304,40 +505,96 @@ int main(int argc, char** argv)
 
         // --- Trajectory writer ---
         gmd::TrajectoryWriter writer;
-        writer.open(output_stem);
-        std::cout << "[gmd] Writing trajectory to " << output_stem.string() << ".xyz"
-                  << " and energy log to " << output_stem.string() << ".log\n";
+        if (is_root_rank) {
+            writer.open(output_stem);
+            std::cout << log_prefix << "Writing trajectory to " << output_stem.string() << ".xyz"
+                      << " and energy log to " << output_stem.string() << ".log\n";
+        }
 
         // Degrees of freedom = 3N - 3 (after COM velocity removal).
-        const std::size_t dof = system.atom_count() > 1 ? 3 * system.atom_count() - 3 : 3;
+        const std::size_t dof = global_atom_count > 1 ? 3 * global_atom_count - 3 : 3;
 
-        gmd::RuntimeContext runtime;
         simulation.initialize(runtime);
+        if (nprocs > 1) {
+            system.set_potential_energy(
+                mpi_comm->allreduce_scalar(system.potential_energy()));
+        }
+
+        auto write_global_frame = [&](std::uint64_t step, double time) {
+            // compute_twice_ke already performs MPI_Allreduce internally to
+            // return the global kinetic energy; do NOT double-wrap here.
+            const double twice_ke = gmd::compute_twice_ke(system);
+            if (is_root_rank) {
+                if (nprocs == 1) {
+                    writer.write_frame(system, step, time, twice_ke, dof);
+                }
+            }
+
+            if (nprocs <= 1) {
+                return;
+            }
+
+            std::vector<double> local_coordinates(global_atom_count * 3, 0.0);
+            const auto coordinates = system.coordinates();
+            for (std::size_t atom_index = 0; atom_index < system.num_local_atoms(); ++atom_index) {
+                const int tag = system.atom_tag(atom_index);
+                if (tag < 0 || static_cast<std::size_t>(tag) >= global_atom_count) {
+                    throw std::runtime_error("Local atom tag is outside the output coordinate map");
+                }
+
+                const std::size_t offset = static_cast<std::size_t>(tag) * 3;
+                local_coordinates[offset] = coordinates[atom_index][0];
+                local_coordinates[offset + 1] = coordinates[atom_index][1];
+                local_coordinates[offset + 2] = coordinates[atom_index][2];
+            }
+
+            std::vector<double> global_coordinates;
+            mpi_comm->allreduce_vector(local_coordinates, global_coordinates);
+            if (is_root_rank) {
+                auto frame_coordinates = output_system.mutable_coordinates();
+                for (std::size_t atom_index = 0; atom_index < global_atom_count; ++atom_index) {
+                    const std::size_t offset = atom_index * 3;
+                    frame_coordinates[atom_index] = {
+                        global_coordinates[offset],
+                        global_coordinates[offset + 1],
+                        global_coordinates[offset + 2]
+                    };
+                }
+                output_system.set_potential_energy(system.potential_energy());
+                writer.write_frame(output_system, step, time, twice_ke, dof);
+            }
+        };
 
         // Write t=0 frame.
-        writer.write_frame(system, 0, 0.0, dof);
+        write_global_frame(0, 0.0);
 
-        std::cout << "[gmd] Running " << run_config.num_steps << " steps with "
-                  << system.atom_count() << " atoms...\n";
+        if (is_root_rank) {
+            std::cout << log_prefix << "Running " << run_config.num_steps << " steps with "
+                      << global_atom_count << " atoms...\n";
+        }
 
         for (std::uint64_t s = 1; s <= run_config.num_steps; ++s) {
             simulation.step(runtime);
-            writer.write_frame_if(system, s, s * run_config.time_step_fs, dof, output_interval);
+            if (output_interval == 0 || s % output_interval == 0) {
+                write_global_frame(s, s * run_config.time_step_fs);
+            }
         }
 
         // Always write final frame.
-        if (run_config.num_steps % output_interval != 0) {
-            writer.write_frame(system, run_config.num_steps,
-                               run_config.num_steps * run_config.time_step_fs, dof);
+        if (output_interval != 0 && run_config.num_steps % output_interval != 0) {
+            write_global_frame(run_config.num_steps,
+                               run_config.num_steps * run_config.time_step_fs);
         }
 
-        writer.close();
+        if (is_root_rank) {
+            writer.close();
 
-        std::cout << "[gmd] Done. " << writer.frame_count() << " frames written.\n"
-                  << "      Final PE = " << system.potential_energy() << " eV\n";
+            std::cout << log_prefix << "Done. " << writer.frame_count() << " frames written.\n"
+                      << log_prefix << "Final PE = " << system.potential_energy() << " eV\n";
+        }
 
     } catch (const std::exception& error) {
-        std::cerr << "[gmd] Error: " << error.what() << "\n";
+        std::cerr << log_prefix << "Error: " << error.what() << "\n";
         return 1;
     }
 

@@ -1,0 +1,20 @@
+# CMake generated Testfile for 
+# Source directory: /Users/guo/Documents/workspace/GMD
+# Build directory: /Users/guo/Documents/workspace/GMD/build_mpi
+# 
+# This file includes the relevant testing commands required for 
+# testing this directory and lists subdirectories to be tested as well.
+add_test([=[gmd_smoke_inline_lj]=] "/Users/guo/Documents/workspace/GMD/build_mpi/gmd" "/Users/guo/Documents/workspace/GMD/build_mpi/tests/smoke_xyz.in" "/Users/guo/Documents/workspace/GMD/build_mpi/tests/smoke_run.in")
+set_tests_properties([=[gmd_smoke_inline_lj]=] PROPERTIES  LABELS "smoke;integration" _BACKTRACE_TRIPLES "/Users/guo/Documents/workspace/GMD/CMakeLists.txt;101;add_test;/Users/guo/Documents/workspace/GMD/CMakeLists.txt;0;")
+add_test([=[gmd_smoke_ewald]=] "/Users/guo/Documents/workspace/GMD/build_mpi/gmd" "/Users/guo/Documents/workspace/GMD/build_mpi/tests/smoke_ewald.xyz" "/Users/guo/Documents/workspace/GMD/build_mpi/tests/smoke_ewald.run")
+set_tests_properties([=[gmd_smoke_ewald]=] PROPERTIES  LABELS "smoke;integration" _BACKTRACE_TRIPLES "/Users/guo/Documents/workspace/GMD/CMakeLists.txt;109;add_test;/Users/guo/Documents/workspace/GMD/CMakeLists.txt;0;")
+add_test([=[gmd_smoke_pme]=] "/Users/guo/Documents/workspace/GMD/build_mpi/gmd" "/Users/guo/Documents/workspace/GMD/build_mpi/tests/smoke_ewald.xyz" "/Users/guo/Documents/workspace/GMD/build_mpi/tests/smoke_pme.run")
+set_tests_properties([=[gmd_smoke_pme]=] PROPERTIES  LABELS "smoke;integration" _BACKTRACE_TRIPLES "/Users/guo/Documents/workspace/GMD/CMakeLists.txt;117;add_test;/Users/guo/Documents/workspace/GMD/CMakeLists.txt;0;")
+add_test([=[gmd_smoke_mc_barostat]=] "/Users/guo/Documents/workspace/GMD/build_mpi/gmd" "/Users/guo/Documents/workspace/GMD/build_mpi/tests/smoke_mc_barostat.xyz" "/Users/guo/Documents/workspace/GMD/build_mpi/tests/smoke_mc_barostat.run")
+set_tests_properties([=[gmd_smoke_mc_barostat]=] PROPERTIES  LABELS "smoke;integration" _BACKTRACE_TRIPLES "/Users/guo/Documents/workspace/GMD/CMakeLists.txt;125;add_test;/Users/guo/Documents/workspace/GMD/CMakeLists.txt;0;")
+add_test([=[gmd_smoke_molecular]=] "/Users/guo/Documents/workspace/GMD/build_mpi/gmd" "/Users/guo/Documents/workspace/GMD/build_mpi/tests/smoke_molecular.xyz" "/Users/guo/Documents/workspace/GMD/build_mpi/tests/smoke_molecular.run" "/Users/guo/Documents/workspace/GMD/build_mpi/tests/smoke_molecular.ff" "/Users/guo/Documents/workspace/GMD/build_mpi/tests/smoke_molecular.top")
+set_tests_properties([=[gmd_smoke_molecular]=] PROPERTIES  LABELS "smoke;integration" WORKING_DIRECTORY "/Users/guo/Documents/workspace/GMD/build_mpi" _BACKTRACE_TRIPLES "/Users/guo/Documents/workspace/GMD/CMakeLists.txt;134;add_test;/Users/guo/Documents/workspace/GMD/CMakeLists.txt;0;")
+add_test([=[gmd_smoke_mpi_lj_2proc]=] "/opt/miniconda3/bin/mpiexec" "-n" "2" "/Users/guo/Documents/workspace/GMD/build_mpi/gmd" "/Users/guo/Documents/workspace/GMD/build_mpi/tests/smoke_mpi_lj.xyz" "/Users/guo/Documents/workspace/GMD/build_mpi/tests/smoke_mpi_lj.run")
+set_tests_properties([=[gmd_smoke_mpi_lj_2proc]=] PROPERTIES  LABELS "smoke;integration;mpi" PROCESSORS "2" _BACKTRACE_TRIPLES "/Users/guo/Documents/workspace/GMD/CMakeLists.txt;146;add_test;/Users/guo/Documents/workspace/GMD/CMakeLists.txt;0;")
+add_test([=[gmd_smoke_mpi_lj_consistency]=] "/opt/miniconda3/bin/cmake" "-DGMD_EXECUTABLE=/Users/guo/Documents/workspace/GMD/build_mpi/gmd" "-DGMD_COMPARE_EXECUTABLE=/Users/guo/Documents/workspace/GMD/build_mpi/gmd_compare_energy_logs" "-DMPIEXEC_EXECUTABLE=/opt/miniconda3/bin/mpiexec" "-DMPIEXEC_NUMPROC_FLAG=-n" "-DMPI_LJ_XYZ=/Users/guo/Documents/workspace/GMD/build_mpi/tests/smoke_mpi_lj.xyz" "-DMPI_LJ_RUN=/Users/guo/Documents/workspace/GMD/build_mpi/tests/smoke_mpi_lj.run" "-DMPI_LJ_WORK_ROOT=/Users/guo/Documents/workspace/GMD/build_mpi/tests/mpi_lj_consistency" "-P" "/Users/guo/Documents/workspace/GMD/cmake/RunMpiLJConsistency.cmake")
+set_tests_properties([=[gmd_smoke_mpi_lj_consistency]=] PROPERTIES  LABELS "smoke;integration;mpi" PROCESSORS "2" _BACKTRACE_TRIPLES "/Users/guo/Documents/workspace/GMD/CMakeLists.txt;159;add_test;/Users/guo/Documents/workspace/GMD/CMakeLists.txt;0;")
