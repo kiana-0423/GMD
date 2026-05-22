@@ -74,6 +74,11 @@ private:
     // tied to the System metadata without exposing MPI headers here.
     const System* compute_system_ = nullptr;
     int compute_rank_ = 0;
+    bool compute_use_global_coordinates_ = false;
+    std::size_t compute_global_atom_count_ = 0;
+    const std::vector<Coordinate3D>* compute_global_coordinates_ = nullptr;
+    const std::vector<int>* compute_owner_by_tag_ = nullptr;
+    const std::vector<int>* compute_local_index_by_tag_ = nullptr;
 
     int compute_owner(const BondTerm& term) const;
     int compute_owner(const AngleTerm& term) const;
@@ -84,6 +89,13 @@ private:
     bool should_compute(const AngleTerm& term) const;
     bool should_compute(const DihedralTerm& term) const;
     bool should_compute(const ImproperTerm& term) const;
+    bool counts_global_energy(const BondTerm& term) const;
+    bool counts_global_energy(const AngleTerm& term) const;
+    bool counts_global_energy(const DihedralTerm& term) const;
+    bool counts_global_energy(const ImproperTerm& term) const;
+    const Coordinate3D& coordinate_for_tag(std::span<const Coordinate3D> local_coordinates,
+                                           int tag) const;
+    int force_index_for_tag(int tag) const noexcept;
 
     // Internal compute kernels (each accumulates into result).
     void compute_bonds    (const ForceRequest& req, ForceResult& result) const;

@@ -87,6 +87,8 @@ if(BUILD_TESTING)
     configure_file(tests/smoke_lj.xyz         ${CMAKE_CURRENT_BINARY_DIR}/tests/smoke_xyz.in       COPYONLY)
     configure_file(tests/smoke_lj.run         ${CMAKE_CURRENT_BINARY_DIR}/tests/smoke_run.in       COPYONLY)
     configure_file(tests/smoke_mpi_lj.xyz     ${CMAKE_CURRENT_BINARY_DIR}/tests/smoke_mpi_lj.xyz   COPYONLY)
+    configure_file(tests/smoke_mpi_ewald.xyz  ${CMAKE_CURRENT_BINARY_DIR}/tests/smoke_mpi_ewald.xyz COPYONLY)
+    configure_file(tests/smoke_mpi_molecular.xyz ${CMAKE_CURRENT_BINARY_DIR}/tests/smoke_mpi_molecular.xyz COPYONLY)
     configure_file(tests/smoke_mpi_lj.run     ${CMAKE_CURRENT_BINARY_DIR}/tests/smoke_mpi_lj.run   COPYONLY)
     configure_file(tests/smoke_ewald.xyz      ${CMAKE_CURRENT_BINARY_DIR}/tests/smoke_ewald.xyz    COPYONLY)
     configure_file(tests/smoke_ewald.run      ${CMAKE_CURRENT_BINARY_DIR}/tests/smoke_ewald.run    COPYONLY)
@@ -151,6 +153,45 @@ if(BUILD_TESTING)
                     ${CMAKE_CURRENT_BINARY_DIR}/tests/smoke_mpi_lj.run
         )
         set_tests_properties(gmd_smoke_mpi_lj_2proc
+            PROPERTIES
+                LABELS "smoke;integration;mpi"
+                PROCESSORS 2)
+
+        add_test(
+            NAME gmd_smoke_mpi_ewald_2proc
+            COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 2
+                    $<TARGET_FILE:gmd>
+                    ${CMAKE_CURRENT_BINARY_DIR}/tests/smoke_mpi_ewald.xyz
+                    ${CMAKE_CURRENT_BINARY_DIR}/tests/smoke_ewald.run
+        )
+        set_tests_properties(gmd_smoke_mpi_ewald_2proc
+            PROPERTIES
+                LABELS "smoke;integration;mpi"
+                PROCESSORS 2)
+
+        add_test(
+            NAME gmd_smoke_mpi_pme_2proc
+            COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 2
+                    $<TARGET_FILE:gmd>
+                    ${CMAKE_CURRENT_BINARY_DIR}/tests/smoke_mpi_ewald.xyz
+                    ${CMAKE_CURRENT_BINARY_DIR}/tests/smoke_pme.run
+        )
+        set_tests_properties(gmd_smoke_mpi_pme_2proc
+            PROPERTIES
+                LABELS "smoke;integration;mpi"
+                PROCESSORS 2)
+
+        add_test(
+            NAME gmd_smoke_mpi_molecular_2proc
+            COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 2
+                    $<TARGET_FILE:gmd>
+                    ${CMAKE_CURRENT_BINARY_DIR}/tests/smoke_mpi_molecular.xyz
+                    ${CMAKE_CURRENT_BINARY_DIR}/tests/smoke_molecular.run
+                    ${CMAKE_CURRENT_BINARY_DIR}/tests/smoke_molecular.ff
+                    ${CMAKE_CURRENT_BINARY_DIR}/tests/smoke_molecular.top
+            WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+        )
+        set_tests_properties(gmd_smoke_mpi_molecular_2proc
             PROPERTIES
                 LABELS "smoke;integration;mpi"
                 PROCESSORS 2)

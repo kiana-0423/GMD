@@ -19,6 +19,7 @@ public:
 
     void exchange_ghost_coordinates(System& system, const DomainDecomposition& dd) const;
     void reverse_accumulate_ghost_forces(System& system, const DomainDecomposition& dd) const;
+    void redistribute_atoms(System& system, const DomainDecomposition& dd) const;
 
     int rank() const;
     int size() const;

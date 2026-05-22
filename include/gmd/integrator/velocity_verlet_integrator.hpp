@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <memory>
 
 #include "gmd/integrator/integrator.hpp"
@@ -26,6 +27,15 @@ public:
               ForceProvider& force_provider,
               const IntegratorStepContext& ctx,
               RuntimeContext& runtime) override;
+    void begin_step(System& system, const IntegratorStepContext& ctx);
+    void finish_step(System& system,
+                     const IntegratorStepContext& ctx,
+                     bool virial_valid,
+                     const std::array<double, 9>& virial);
+    void apply_barostat(System& system,
+                        ForceProvider& force_provider,
+                        RuntimeContext& runtime,
+                        const IntegratorStepContext& ctx);
 
     // Returns the configured default time step for this integrator instance.
     double dt() const noexcept;
@@ -40,6 +50,7 @@ public:
     void set_barostat(std::shared_ptr<Barostat> barostat) noexcept;
     void set_target_pressure(double pressure) noexcept;
     double target_pressure() const noexcept { return target_pressure_; }
+    bool has_barostat() const noexcept { return barostat_ != nullptr; }
 
     // Last virial trace computed during force evaluation (used for barostat).
     // Only valid when virial_valid is true in the last ForceResult.

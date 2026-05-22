@@ -340,6 +340,10 @@ int main(int argc, char** argv)
                           << " (" << ff_config.elements.size() << " element type(s))\n";
             }
         } else if (run_config.force_field_type == "ml") {
+            if (nprocs > 1) {
+                throw std::runtime_error(
+                    "ML force provider is not yet supported with MPI domain decomposition");
+            }
 #ifdef GMD_ENABLE_TORCH
             if (run_config.ml_model_path.empty()) {
                 throw std::runtime_error(
@@ -468,6 +472,10 @@ int main(int argc, char** argv)
                           << " bar  tau=" << run_config.barostat_tau << " fs\n";
             }
         } else if (run_config.barostat_type == "monte_carlo") {
+            if (nprocs > 1) {
+                throw std::runtime_error(
+                    "Monte Carlo barostat is not yet supported with MPI domain decomposition");
+            }
             auto bstat = std::make_shared<gmd::MCBarostat>(
                 run_config.mc_frequency,
                 run_config.mc_volume_step);
@@ -515,10 +523,6 @@ int main(int argc, char** argv)
         const std::size_t dof = global_atom_count > 1 ? 3 * global_atom_count - 3 : 3;
 
         simulation.initialize(runtime);
-        if (nprocs > 1) {
-            system.set_potential_energy(
-                mpi_comm->allreduce_scalar(system.potential_energy()));
-        }
 
         auto write_global_frame = [&](std::uint64_t step, double time) {
             // compute_twice_ke already performs MPI_Allreduce internally to

@@ -48,6 +48,13 @@ bool mpi_is_available() noexcept {
     return is_initialized != 0 && is_finalized == 0;
 }
 
+int mpi_size() noexcept {
+    if (!mpi_is_available()) return 1;
+    int size = 1;
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
+    return size;
+}
+
 void allreduce_complex_sum(double& re, double& im) noexcept {
     if (!mpi_is_available()) return;
     double buf[2] = {re, im};
@@ -62,6 +69,21 @@ double allreduce_scalar_ewald(double local) noexcept {
     double global = 0.0;
     MPI_Allreduce(&local, &global, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
     return global;
+}
+
+void allreduce_virial(std::array<double, 9>& virial) noexcept {
+    if (!mpi_is_available()) return;
+    auto local = virial;
+    MPI_Allreduce(local.data(),
+                  virial.data(),
+                  static_cast<int>(virial.size()),
+                  MPI_DOUBLE,
+                  MPI_SUM,
+                  MPI_COMM_WORLD);
+}
+#else
+int mpi_size() noexcept {
+    return 1;
 }
 #endif
 
@@ -163,6 +185,10 @@ void EwaldForceProvider::compute(const ForceRequest& req,
         compute_self_correction(req, res);
         accumulate_coordinate_virial(req.coordinates, res.forces, res.virial);
     }
+
+#ifdef GMD_ENABLE_MPI
+    allreduce_virial(res.virial);
+#endif
 }
 
 // ---------------------------------------------------------------------------
@@ -308,7 +334,9 @@ void EwaldForceProvider::compute_reciprocal(const ForceRequest& req,
 #endif
 
                 // Energy: ½ · gfactor · |S|²
-                res.potential_energy += 0.5 * gfactor * (S_re*S_re + S_im*S_im);
+                res.potential_energy +=
+                    0.5 * gfactor * (S_re*S_re + S_im*S_im)
+                    / static_cast<double>(mpi_size());
 
                 // Force on each local atom.
                 for (std::size_t i = 0; i < num_local; ++i) {
@@ -368,14 +396,16 @@ void EwaldForceProvider::compute_self_correction(const ForceRequest& req,
 #endif
 
     res.potential_energy -=
-        kEwaldCoulomb * (alpha_ / std::sqrt(std::numbers::pi)) * q2_sum;
+        kEwaldCoulomb * (alpha_ / std::sqrt(std::numbers::pi)) * q2_sum
+        / static_cast<double>(mpi_size());
 
     if (Q_net != 0.0) {
         const double V = req.box->lengths[0]
                        * req.box->lengths[1]
                        * req.box->lengths[2];
         res.potential_energy -=
-            kEwaldCoulomb * std::numbers::pi / (2.0 * V * alpha_sq_) * Q_net * Q_net;
+            kEwaldCoulomb * std::numbers::pi / (2.0 * V * alpha_sq_) * Q_net * Q_net
+            / static_cast<double>(mpi_size());
     }
 }
 

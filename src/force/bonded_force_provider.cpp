@@ -1,5 +1,6 @@
 #include "gmd/force/bonded_force_provider.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cassert>
 #include <cmath>
@@ -163,6 +164,25 @@ int min_tag_owner(const System& system, const Term& term, int local_rank) noexce
     return owner;
 }
 
+#ifdef GMD_ENABLE_MPI
+std::size_t infer_global_atom_count(const Topology& topology) noexcept {
+    int max_index = -1;
+    for (const auto& term : topology.bonds) {
+        max_index = std::max(max_index, std::max(term.i, term.j));
+    }
+    for (const auto& term : topology.angles) {
+        max_index = std::max(max_index, std::max({term.i, term.j, term.k}));
+    }
+    for (const auto& term : topology.dihedrals) {
+        max_index = std::max(max_index, std::max({term.i, term.j, term.k, term.l}));
+    }
+    for (const auto& term : topology.impropers) {
+        max_index = std::max(max_index, std::max({term.i, term.j, term.k, term.l}));
+    }
+    return max_index >= 0 ? static_cast<std::size_t>(max_index) + 1 : 0;
+}
+#endif
+
 // -----------------------------------------------------------------------
 // Dihedral geometry: given four positions, compute the torsion angle φ and
 // distribute the generalized force dV/dφ (scalar) onto the four atoms.
@@ -242,10 +262,10 @@ inline void apply_dihedral_forces(ForceResult& result,
     Vec3 fj = add(scale(p - 1.0, fi), scale(-q, fl));
     Vec3 fk = {-(fi[0]+fj[0]+fl[0]), -(fi[1]+fj[1]+fl[1]), -(fi[2]+fj[2]+fl[2])};
 
-    accum_force(result, i, fi);
-    accum_force(result, j, fj);
-    accum_force(result, k, fk);
-    accum_force(result, l, fl);
+    if (i >= 0) accum_force(result, i, fi);
+    if (j >= 0) accum_force(result, j, fj);
+    if (k >= 0) accum_force(result, k, fk);
+    if (l >= 0) accum_force(result, l, fl);
 }
 
 }  // anonymous namespace
@@ -324,26 +344,120 @@ void BondedForceProvider::compute(const ForceRequest& request,
     result.virial_valid = true;
 
     if (topology_) {
-        validate_atom_indices(topology_->bonds, n, "bond");
-        validate_atom_indices(topology_->angles, n, "angle");
-        validate_atom_indices(topology_->dihedrals, n, "dihedral");
-        validate_atom_indices(topology_->impropers, n, "improper");
-
         compute_system_ = request.system;
         compute_rank_ = runtime.rank();
+        compute_use_global_coordinates_ = false;
+        compute_global_atom_count_ = 0;
+        compute_global_coordinates_ = nullptr;
+        compute_owner_by_tag_ = nullptr;
+        compute_local_index_by_tag_ = nullptr;
+
+        std::vector<Coordinate3D> global_coordinates;
+        std::vector<int> owner_by_tag;
+        std::vector<int> local_index_by_tag;
+
+#ifdef GMD_ENABLE_MPI
+        if (request.system != nullptr && runtime.size() > 1) {
+            constexpr int coordinate_record_width = 5;
+            compute_use_global_coordinates_ = true;
+            compute_global_atom_count_ = infer_global_atom_count(*topology_);
+            global_coordinates.assign(compute_global_atom_count_, Coordinate3D{0.0, 0.0, 0.0});
+            owner_by_tag.assign(compute_global_atom_count_, -1);
+            local_index_by_tag.assign(compute_global_atom_count_, -1);
+
+            std::vector<double> local_coordinates;
+            local_coordinates.reserve(
+                request.system->num_local_atoms() * coordinate_record_width);
+            for (std::size_t atom_index = 0;
+                 atom_index < request.system->num_local_atoms();
+                 ++atom_index) {
+                const int tag = request.system->atom_tag(atom_index);
+                if (tag < 0 ||
+                    static_cast<std::size_t>(tag) >= compute_global_atom_count_) {
+                    throw std::runtime_error(
+                        "BondedForceProvider: local atom tag is outside the bonded topology");
+                }
+
+                local_index_by_tag[static_cast<std::size_t>(tag)] =
+                    static_cast<int>(atom_index);
+                local_coordinates.push_back(static_cast<double>(tag));
+                local_coordinates.push_back(request.coordinates[atom_index][0]);
+                local_coordinates.push_back(request.coordinates[atom_index][1]);
+                local_coordinates.push_back(request.coordinates[atom_index][2]);
+                local_coordinates.push_back(static_cast<double>(compute_rank_));
+            }
+
+            const int send_count = static_cast<int>(local_coordinates.size());
+            std::vector<int> recv_counts(static_cast<std::size_t>(runtime.size()), 0);
+            MPI_Allgather(&send_count, 1, MPI_INT, recv_counts.data(), 1, MPI_INT, MPI_COMM_WORLD);
+
+            std::vector<int> displs(static_cast<std::size_t>(runtime.size()), 0);
+            int total_count = 0;
+            for (int index = 0; index < runtime.size(); ++index) {
+                displs[static_cast<std::size_t>(index)] = total_count;
+                total_count += recv_counts[static_cast<std::size_t>(index)];
+            }
+            if (total_count < 0 || total_count % coordinate_record_width != 0) {
+                throw std::runtime_error(
+                    "BondedForceProvider: malformed MPI coordinate gather");
+            }
+
+            std::vector<double> gathered_coordinates(static_cast<std::size_t>(total_count));
+            MPI_Allgatherv(local_coordinates.data(),
+                           send_count,
+                           MPI_DOUBLE,
+                           gathered_coordinates.data(),
+                           recv_counts.data(),
+                           displs.data(),
+                           MPI_DOUBLE,
+                           MPI_COMM_WORLD);
+
+            for (std::size_t offset = 0;
+                 offset < gathered_coordinates.size();
+                 offset += coordinate_record_width) {
+                const int tag = static_cast<int>(gathered_coordinates[offset]);
+                if (tag < 0 ||
+                    static_cast<std::size_t>(tag) >= compute_global_atom_count_) {
+                    throw std::runtime_error(
+                        "BondedForceProvider: gathered atom tag is outside the bonded topology");
+                }
+
+                global_coordinates[static_cast<std::size_t>(tag)] = {
+                    gathered_coordinates[offset + 1],
+                    gathered_coordinates[offset + 2],
+                    gathered_coordinates[offset + 3],
+                };
+                owner_by_tag[static_cast<std::size_t>(tag)] =
+                    static_cast<int>(gathered_coordinates[offset + 4]);
+            }
+
+            compute_global_coordinates_ = &global_coordinates;
+            compute_owner_by_tag_ = &owner_by_tag;
+            compute_local_index_by_tag_ = &local_index_by_tag;
+        }
+#endif
+
+        const std::size_t atom_count_for_validation =
+            compute_use_global_coordinates_ ? compute_global_atom_count_ : n;
+        validate_atom_indices(topology_->bonds, atom_count_for_validation, "bond");
+        validate_atom_indices(topology_->angles, atom_count_for_validation, "angle");
+        validate_atom_indices(topology_->dihedrals, atom_count_for_validation, "dihedral");
+        validate_atom_indices(topology_->impropers, atom_count_for_validation, "improper");
 
         compute_bonds    (request, result);
         compute_angles   (request, result);
         compute_dihedrals(request, result);
         compute_impropers(request, result);
 
-        compute_system_ = nullptr;
-        compute_rank_ = 0;
+        const bool use_global_coordinates = compute_use_global_coordinates_;
 
         // Bonded forces are already accumulated per atom. For internal forces with
         // zero net translation, the configurational virial can be formed from the
         // outer product r_i ⊗ F_i and summed over all atoms.
-        for (std::size_t i = 0; i < n; ++i) {
+        const std::size_t virial_atom_count = use_global_coordinates
+            ? request.system->num_local_atoms()
+            : n;
+        for (std::size_t i = 0; i < virial_atom_count; ++i) {
             const auto& r = request.coordinates[i];
             const auto& f = result.forces[i];
             result.virial[0] += r[0] * f[0];
@@ -356,6 +470,14 @@ void BondedForceProvider::compute(const ForceRequest& request,
             result.virial[7] += r[2] * f[1];
             result.virial[8] += r[2] * f[2];
         }
+
+        compute_system_ = nullptr;
+        compute_rank_ = 0;
+        compute_use_global_coordinates_ = false;
+        compute_global_atom_count_ = 0;
+        compute_global_coordinates_ = nullptr;
+        compute_owner_by_tag_ = nullptr;
+        compute_local_index_by_tag_ = nullptr;
     }
 
 #ifdef GMD_ENABLE_MPI
@@ -378,30 +500,51 @@ void BondedForceProvider::compute(const ForceRequest& request,
 void BondedForceProvider::finalize(RuntimeContext& /*runtime*/) {}
 
 int BondedForceProvider::compute_owner(const BondTerm& term) const {
+    if (compute_owner_by_tag_ != nullptr) {
+        const auto& owner_by_tag = *compute_owner_by_tag_;
+        return owner_by_tag[static_cast<std::size_t>(std::min(term.i, term.j))];
+    }
     return compute_system_ != nullptr
         ? min_tag_owner(*compute_system_, term, compute_rank_)
         : compute_rank_;
 }
 
 int BondedForceProvider::compute_owner(const AngleTerm& term) const {
+    if (compute_owner_by_tag_ != nullptr) {
+        const auto min_tag = std::min({term.i, term.j, term.k});
+        return (*compute_owner_by_tag_)[static_cast<std::size_t>(min_tag)];
+    }
     return compute_system_ != nullptr
         ? min_tag_owner(*compute_system_, term, compute_rank_)
         : compute_rank_;
 }
 
 int BondedForceProvider::compute_owner(const DihedralTerm& term) const {
+    if (compute_owner_by_tag_ != nullptr) {
+        const auto min_tag = std::min({term.i, term.j, term.k, term.l});
+        return (*compute_owner_by_tag_)[static_cast<std::size_t>(min_tag)];
+    }
     return compute_system_ != nullptr
         ? min_tag_owner(*compute_system_, term, compute_rank_)
         : compute_rank_;
 }
 
 int BondedForceProvider::compute_owner(const ImproperTerm& term) const {
+    if (compute_owner_by_tag_ != nullptr) {
+        const auto min_tag = std::min({term.i, term.j, term.k, term.l});
+        return (*compute_owner_by_tag_)[static_cast<std::size_t>(min_tag)];
+    }
     return compute_system_ != nullptr
         ? min_tag_owner(*compute_system_, term, compute_rank_)
         : compute_rank_;
 }
 
 bool BondedForceProvider::should_compute(const BondTerm& term) const {
+    if (compute_local_index_by_tag_ != nullptr) {
+        const auto& local_index_by_tag = *compute_local_index_by_tag_;
+        return local_index_by_tag[static_cast<std::size_t>(term.i)] >= 0 ||
+               local_index_by_tag[static_cast<std::size_t>(term.j)] >= 0;
+    }
     if (compute_system_ == nullptr || all_atoms_local(*compute_system_, term)) {
         return true;
     }
@@ -409,6 +552,12 @@ bool BondedForceProvider::should_compute(const BondTerm& term) const {
 }
 
 bool BondedForceProvider::should_compute(const AngleTerm& term) const {
+    if (compute_local_index_by_tag_ != nullptr) {
+        const auto& local_index_by_tag = *compute_local_index_by_tag_;
+        return local_index_by_tag[static_cast<std::size_t>(term.i)] >= 0 ||
+               local_index_by_tag[static_cast<std::size_t>(term.j)] >= 0 ||
+               local_index_by_tag[static_cast<std::size_t>(term.k)] >= 0;
+    }
     if (compute_system_ == nullptr || all_atoms_local(*compute_system_, term)) {
         return true;
     }
@@ -416,6 +565,13 @@ bool BondedForceProvider::should_compute(const AngleTerm& term) const {
 }
 
 bool BondedForceProvider::should_compute(const DihedralTerm& term) const {
+    if (compute_local_index_by_tag_ != nullptr) {
+        const auto& local_index_by_tag = *compute_local_index_by_tag_;
+        return local_index_by_tag[static_cast<std::size_t>(term.i)] >= 0 ||
+               local_index_by_tag[static_cast<std::size_t>(term.j)] >= 0 ||
+               local_index_by_tag[static_cast<std::size_t>(term.k)] >= 0 ||
+               local_index_by_tag[static_cast<std::size_t>(term.l)] >= 0;
+    }
     if (compute_system_ == nullptr || all_atoms_local(*compute_system_, term)) {
         return true;
     }
@@ -423,10 +579,49 @@ bool BondedForceProvider::should_compute(const DihedralTerm& term) const {
 }
 
 bool BondedForceProvider::should_compute(const ImproperTerm& term) const {
+    if (compute_local_index_by_tag_ != nullptr) {
+        const auto& local_index_by_tag = *compute_local_index_by_tag_;
+        return local_index_by_tag[static_cast<std::size_t>(term.i)] >= 0 ||
+               local_index_by_tag[static_cast<std::size_t>(term.j)] >= 0 ||
+               local_index_by_tag[static_cast<std::size_t>(term.k)] >= 0 ||
+               local_index_by_tag[static_cast<std::size_t>(term.l)] >= 0;
+    }
     if (compute_system_ == nullptr || all_atoms_local(*compute_system_, term)) {
         return true;
     }
     return has_local_atom(*compute_system_, term) && compute_owner(term) == compute_rank_;
+}
+
+bool BondedForceProvider::counts_global_energy(const BondTerm& term) const {
+    return !compute_use_global_coordinates_ || compute_owner(term) == compute_rank_;
+}
+
+bool BondedForceProvider::counts_global_energy(const AngleTerm& term) const {
+    return !compute_use_global_coordinates_ || compute_owner(term) == compute_rank_;
+}
+
+bool BondedForceProvider::counts_global_energy(const DihedralTerm& term) const {
+    return !compute_use_global_coordinates_ || compute_owner(term) == compute_rank_;
+}
+
+bool BondedForceProvider::counts_global_energy(const ImproperTerm& term) const {
+    return !compute_use_global_coordinates_ || compute_owner(term) == compute_rank_;
+}
+
+const Coordinate3D& BondedForceProvider::coordinate_for_tag(
+        std::span<const Coordinate3D> local_coordinates,
+        int tag) const {
+    if (compute_global_coordinates_ != nullptr) {
+        return (*compute_global_coordinates_)[static_cast<std::size_t>(tag)];
+    }
+    return local_coordinates[static_cast<std::size_t>(tag)];
+}
+
+int BondedForceProvider::force_index_for_tag(int tag) const noexcept {
+    if (compute_local_index_by_tag_ != nullptr) {
+        return (*compute_local_index_by_tag_)[static_cast<std::size_t>(tag)];
+    }
+    return tag;
 }
 
 // ---------------------------------------------------------------------------
@@ -446,8 +641,8 @@ void BondedForceProvider::compute_bonds(const ForceRequest& req,
             continue;
         }
 
-        const auto& pi = coords[static_cast<std::size_t>(b.i)];
-        const auto& pj = coords[static_cast<std::size_t>(b.j)];
+        const auto& pi = coordinate_for_tag(coords, b.i);
+        const auto& pj = coordinate_for_tag(coords, b.j);
 
         Vec3 dr = min_image(sub(pj, pi), box);  // vector i→j
         const double r = norm(dr);
@@ -457,7 +652,9 @@ void BondedForceProvider::compute_bonds(const ForceRequest& req,
         const double dev = r - p.r0;
 
         // Energy
-        result.potential_energy += p.k * dev * dev;
+        if (counts_global_energy(b)) {
+            result.potential_energy += p.k * dev * dev;
+        }
 
         // Force magnitude along i→j
         const double f_mag = -2.0 * p.k * dev / r;  // dF/dr component; applied toward i
@@ -465,8 +662,10 @@ void BondedForceProvider::compute_bonds(const ForceRequest& req,
         Vec3 fi = scale(-f_mag, dr);  // force on i (toward j when dev > 0, i.e. pull)
         Vec3 fj = scale( f_mag, dr);  // Newton's 3rd law
 
-        accum_force(result, b.i, fi);
-        accum_force(result, b.j, fj);
+        const int force_i = force_index_for_tag(b.i);
+        const int force_j = force_index_for_tag(b.j);
+        if (force_i >= 0) accum_force(result, force_i, fi);
+        if (force_j >= 0) accum_force(result, force_j, fj);
     }
 }
 
@@ -494,9 +693,9 @@ void BondedForceProvider::compute_angles(const ForceRequest& req,
             continue;
         }
 
-        const auto& pi = coords[static_cast<std::size_t>(a.i)];
-        const auto& pj = coords[static_cast<std::size_t>(a.j)];
-        const auto& pk = coords[static_cast<std::size_t>(a.k)];
+        const auto& pi = coordinate_for_tag(coords, a.i);
+        const auto& pj = coordinate_for_tag(coords, a.j);
+        const auto& pk = coordinate_for_tag(coords, a.k);
 
         Vec3 b_ji = min_image(sub(pi, pj), box);  // j→i
         Vec3 b_jk = min_image(sub(pk, pj), box);  // j→k
@@ -521,7 +720,9 @@ void BondedForceProvider::compute_angles(const ForceRequest& req,
         const double dev = theta - p.theta0;
 
         // Energy
-        result.potential_energy += p.k * dev * dev;
+        if (counts_global_energy(a)) {
+            result.potential_energy += p.k * dev * dev;
+        }
 
         if (sin_theta < 1.0e-12) continue;  // near-linear, skip force
 
@@ -539,9 +740,12 @@ void BondedForceProvider::compute_angles(const ForceRequest& req,
         Vec3 fk = scale(-dV_dtheta, grad_k);
         Vec3 fj = {-(fi[0]+fk[0]), -(fi[1]+fk[1]), -(fi[2]+fk[2])};
 
-        accum_force(result, a.i, fi);
-        accum_force(result, a.j, fj);
-        accum_force(result, a.k, fk);
+        const int force_i = force_index_for_tag(a.i);
+        const int force_j = force_index_for_tag(a.j);
+        const int force_k = force_index_for_tag(a.k);
+        if (force_i >= 0) accum_force(result, force_i, fi);
+        if (force_j >= 0) accum_force(result, force_j, fj);
+        if (force_k >= 0) accum_force(result, force_k, fk);
     }
 }
 
@@ -560,10 +764,10 @@ void BondedForceProvider::compute_dihedrals(const ForceRequest& req,
             continue;
         }
 
-        const auto& pi = coords[static_cast<std::size_t>(d.i)];
-        const auto& pj = coords[static_cast<std::size_t>(d.j)];
-        const auto& pk = coords[static_cast<std::size_t>(d.k)];
-        const auto& pl = coords[static_cast<std::size_t>(d.l)];
+        const auto& pi = coordinate_for_tag(coords, d.i);
+        const auto& pj = coordinate_for_tag(coords, d.j);
+        const auto& pk = coordinate_for_tag(coords, d.k);
+        const auto& pl = coordinate_for_tag(coords, d.l);
 
         const double phi = dihedral_angle(pi, pj, pk, pl, box);
 
@@ -571,13 +775,18 @@ void BondedForceProvider::compute_dihedrals(const ForceRequest& req,
         const double n_phi_delta = static_cast<double>(p.n) * phi - p.delta;
 
         // Energy
-        result.potential_energy += p.k * (1.0 + std::cos(n_phi_delta));
+        if (counts_global_energy(d)) {
+            result.potential_energy += p.k * (1.0 + std::cos(n_phi_delta));
+        }
 
         // dV/dφ = -k n sin(nφ - δ)
         const double dV_dphi = -p.k * static_cast<double>(p.n) * std::sin(n_phi_delta);
 
         apply_dihedral_forces(result,
-                              d.i, d.j, d.k, d.l,
+                              force_index_for_tag(d.i),
+                              force_index_for_tag(d.j),
+                              force_index_for_tag(d.k),
+                              force_index_for_tag(d.l),
                               pi, pj, pk, pl,
                               dV_dphi, box);
     }
@@ -599,10 +808,10 @@ void BondedForceProvider::compute_impropers(const ForceRequest& req,
             continue;
         }
 
-        const auto& pi = coords[static_cast<std::size_t>(ip.i)];
-        const auto& pj = coords[static_cast<std::size_t>(ip.j)];
-        const auto& pk = coords[static_cast<std::size_t>(ip.k)];
-        const auto& pl = coords[static_cast<std::size_t>(ip.l)];
+        const auto& pi = coordinate_for_tag(coords, ip.i);
+        const auto& pj = coordinate_for_tag(coords, ip.j);
+        const auto& pk = coordinate_for_tag(coords, ip.k);
+        const auto& pl = coordinate_for_tag(coords, ip.l);
 
         const double phi = dihedral_angle(pi, pj, pk, pl, box);
 
@@ -610,13 +819,18 @@ void BondedForceProvider::compute_impropers(const ForceRequest& req,
         const double dev = phi - p.phi0;
 
         // Energy
-        result.potential_energy += p.k * dev * dev;
+        if (counts_global_energy(ip)) {
+            result.potential_energy += p.k * dev * dev;
+        }
 
         // dV/dφ = 2k (φ - φ0)
         const double dV_dphi = 2.0 * p.k * dev;
 
         apply_dihedral_forces(result,
-                              ip.i, ip.j, ip.k, ip.l,
+                              force_index_for_tag(ip.i),
+                              force_index_for_tag(ip.j),
+                              force_index_for_tag(ip.k),
+                              force_index_for_tag(ip.l),
                               pi, pj, pk, pl,
                               dV_dphi, box);
     }

@@ -1,0 +1,9 @@
+velocity 300.0
+time_step 1.0
+run 20
+velocity_init random
+remove_com_velocity true
+molecular_nonbonded lj_unsafe
+
+thermostat nose_hoover
+thermostat_tau 100.0

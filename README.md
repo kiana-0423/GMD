@@ -180,6 +180,7 @@ mpirun -np 4 ./build/gmd --np 4 input.xyz run.in
 
 In MPI mode:
 - Atoms are distributed across ranks via 1D x-axis domain decomposition
+- Atoms that cross domain boundaries are redistributed to their owning rank after each drift step
 - Ghost atoms are exchanged each step based on the neighbor-list cutoff + skin
 - Forces on ghost atoms are reverse-accumulated back to their home ranks
 - Only rank 0 writes trajectory and energy log files
@@ -480,10 +481,10 @@ ctest --output-on-failure -L mpi
 ctest --output-on-failure
 ```
 
-All **12 tests pass** (5 non-MPI + 5 MPI serial + 2 MPI parallel) across
-both `Release` builds with no failures. The MPI consistency test validates
-that a 2-process LJ run produces bit-identical energy logs to a serial run
-(PE tolerance 1e-6, total-energy tolerance 1e-3, temperature tolerance 1e-6).
+When `GMD_ENABLE_MPI=ON`, CTest additionally registers MPI smoke tests for LJ,
+Ewald, PME, and the minimal bonded molecular path, plus a serial-vs-MPI LJ
+consistency check. The consistency test validates the full logged trajectory
+row-by-row as well as the final energy drift.
 
 
 | Test name | Exercises |
@@ -494,6 +495,9 @@ that a 2-process LJ run produces bit-identical energy logs to a serial run
 | `gmd_smoke_mc_barostat` | MC barostat NPT, Nosé-Hoover |
 | `gmd_smoke_molecular` | molecular FF (`.ff` + `.top`), bonded forces, explicit unsafe LJ opt-in / pair override path |
 | `gmd_smoke_mpi_lj_2proc` | 2-process MPI LJ NVT run (verifies execution does not crash) |
+| `gmd_smoke_mpi_ewald_2proc` | 2-process MPI Ewald smoke run on a true cross-rank charged system |
+| `gmd_smoke_mpi_pme_2proc` | 2-process MPI PME smoke run on a true cross-rank charged system |
+| `gmd_smoke_mpi_molecular_2proc` | 2-process MPI bonded molecular smoke run across a rank boundary |
 | `gmd_smoke_mpi_lj_consistency` | serial vs 2-process MPI energy consistency check (verifies numerical equivalence) |
 
 ---
@@ -572,8 +576,8 @@ ForceProvider (interface)                                      │  MpiCommunica
 - Berendsen barostat requires virial from every active force term; current `Ewald` and `PME` paths provide it via a coordinate-virial approximation; barostat pressure is computed with MPI-allreduced kinetic energy and virial (correct)
 - MPI domain decomposition is 1D (x-axis only); 3D decomposition not yet implemented
 - PME mesh is replicated across MPI ranks (pencil decomposition infrastructure ready, distributed FFT not yet active)
-- ML force provider requires `GMD_ENABLE_TORCH=ON` and a compatible TorchScript model
-- NVT and NPT ensembles are fully supported in MPI mode — kinetic energy, virial, and degrees of freedom are globally synchronized via MPI_Allreduce at every step
+- ML force provider requires `GMD_ENABLE_TORCH=ON` and a compatible TorchScript model; MPI domain decomposition is not yet supported for the ML path
+- MPI NVE/NVT is supported for the implemented classical force paths; Berendsen NPT is also supported, but the Monte Carlo barostat is currently serial-only
 - NVE (microcanonical) simulations in MPI mode reproduce serial results bit-identically (verified by `gmd_smoke_mpi_lj_consistency`)
 - Limited automated test coverage
 

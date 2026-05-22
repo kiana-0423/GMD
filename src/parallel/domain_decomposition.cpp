@@ -64,6 +64,28 @@ bool DomainDecomposition::is_local(const std::array<double, 3>& pos) const {
     return true;
 }
 
+int DomainDecomposition::owner_rank(const Box& box,
+                                    const std::array<double, 3>& pos) const {
+    validate_box(box);
+    const int nprocs = info_.proc_grid[0];
+    if (nprocs <= 0) {
+        throw std::runtime_error("Domain decomposition is not initialized");
+    }
+
+    double x = std::fmod(pos[0], box.lengths[0]);
+    if (x < 0.0) {
+        x += box.lengths[0];
+    }
+
+    const double domain_width = box.lengths[0] / static_cast<double>(nprocs);
+    const int owner = static_cast<int>(x / domain_width);
+    return std::min(owner, nprocs - 1);
+}
+
+void DomainDecomposition::refresh(const Box& box) {
+    create_1d_decomposition(box, info_.proc_grid[0], info_.proc_coord[0]);
+}
+
 const DomainInfo& DomainDecomposition::info() const {
     return info_;
 }

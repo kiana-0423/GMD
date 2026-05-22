@@ -26,6 +26,8 @@ public:
                                  double skin);
 
     bool is_local(const std::array<double, 3>& pos) const;
+    int owner_rank(const Box& box, const std::array<double, 3>& pos) const;
+    void refresh(const Box& box);
     const DomainInfo& info() const;
     double ghost_width() const noexcept;
 

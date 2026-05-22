@@ -4,9 +4,11 @@
 #include <array>
 #include <cmath>
 #include <span>
+#include <stdexcept>
 #include <vector>
 
 #include "gmd/force/force_provider.hpp"
+#include "gmd/integrator/thermostat.hpp"
 #include "gmd/runtime/runtime_context.hpp"
 #include "gmd/system/system.hpp"
 
@@ -38,11 +40,16 @@ void MCBarostat::apply(System& system,
                        double target_pressure,
                        double /*virial_trace*/)
 {
+    if (runtime.size() > 1) {
+        throw std::runtime_error(
+            "MCBarostat does not yet support MPI domain decomposition");
+    }
+
     // Only attempt a volume move every `frequency_` steps.
     if (frequency_ == 0 || (step % static_cast<std::uint64_t>(frequency_) != 0))
         return;
 
-    const std::size_t n = system.atom_count();
+    const std::size_t n = system.num_local_atoms();
     if (n == 0) return;
 
     // --- Physical constants for this move ---
@@ -57,7 +64,9 @@ void MCBarostat::apply(System& system,
 
     // Copy positions.
     const std::span<const std::array<double,3>> coords_view = system.coordinates();
-    const std::vector<std::array<double,3>> old_coords(coords_view.begin(), coords_view.end());
+    const std::vector<std::array<double,3>> old_coords(
+        coords_view.begin(),
+        coords_view.begin() + static_cast<std::ptrdiff_t>(system.num_local_atoms()));
 
     const double U_old = system.potential_energy();
     const bool   nl_valid_old = system.neighbor_list().valid;
@@ -78,10 +87,10 @@ void MCBarostat::apply(System& system,
     // Scale all coordinates.
     {
         auto coords = system.mutable_coordinates();
-        for (auto& c : coords) {
-            c[0] *= mu;
-            c[1] *= mu;
-            c[2] *= mu;
+        for (std::size_t atom_index = 0; atom_index < system.num_local_atoms(); ++atom_index) {
+            coords[atom_index][0] *= mu;
+            coords[atom_index][1] *= mu;
+            coords[atom_index][2] *= mu;
         }
     }
 

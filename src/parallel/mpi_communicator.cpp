@@ -26,6 +26,7 @@ bool mpi_is_available() {
 
 constexpr int ghost_record_width = 7;
 constexpr int reverse_force_record_width = 13;
+constexpr int atom_state_record_width = 11;
 
 #ifdef GMD_ENABLE_MPI
 void validate_1d_rank_grid(const DomainDecomposition& dd, int mpi_rank, int mpi_size) {
@@ -244,6 +245,129 @@ void MpiCommunicator::reverse_accumulate_ghost_forces(
 #endif
 
     system.clear_ghost_atoms();
+}
+
+void MpiCommunicator::redistribute_atoms(System& system,
+                                         const DomainDecomposition& dd) const {
+#ifdef GMD_ENABLE_MPI
+    if (!mpi_is_available() || size() <= 1) {
+        return;
+    }
+
+    const int mpi_size = size();
+    const int mpi_rank = rank();
+    validate_1d_rank_grid(dd, mpi_rank, mpi_size);
+
+    std::vector<double> local_state;
+    local_state.reserve(system.num_local_atoms() * atom_state_record_width);
+
+    const auto masses = system.masses();
+    const auto charges = system.charges();
+    const auto atom_types = system.atom_types();
+    const auto atomic_numbers = system.atomic_numbers();
+    const auto coordinates = system.coordinates();
+    const auto velocities = system.velocities();
+    for (std::size_t atom_index = 0; atom_index < system.num_local_atoms(); ++atom_index) {
+        local_state.push_back(masses[atom_index]);
+        local_state.push_back(charges[atom_index]);
+        local_state.push_back(static_cast<double>(atom_types[atom_index]));
+        local_state.push_back(static_cast<double>(atomic_numbers[atom_index]));
+        local_state.push_back(static_cast<double>(system.atom_tag(atom_index)));
+        local_state.push_back(coordinates[atom_index][0]);
+        local_state.push_back(coordinates[atom_index][1]);
+        local_state.push_back(coordinates[atom_index][2]);
+        local_state.push_back(velocities[atom_index][0]);
+        local_state.push_back(velocities[atom_index][1]);
+        local_state.push_back(velocities[atom_index][2]);
+    }
+
+    const int send_count = static_cast<int>(local_state.size());
+    std::vector<int> recv_counts(static_cast<std::size_t>(mpi_size), 0);
+    MPI_Allgather(&send_count, 1, MPI_INT, recv_counts.data(), 1, MPI_INT, MPI_COMM_WORLD);
+
+    std::vector<int> displs(static_cast<std::size_t>(mpi_size), 0);
+    int total_count = 0;
+    for (int index = 0; index < mpi_size; ++index) {
+        displs[static_cast<std::size_t>(index)] = total_count;
+        total_count += recv_counts[static_cast<std::size_t>(index)];
+    }
+    if (total_count < 0 || total_count % atom_state_record_width != 0) {
+        throw std::runtime_error("MPI atom redistribution received a malformed atom-state buffer");
+    }
+
+    std::vector<double> global_state(static_cast<std::size_t>(total_count));
+    MPI_Allgatherv(local_state.data(),
+                   send_count,
+                   MPI_DOUBLE,
+                   global_state.data(),
+                   recv_counts.data(),
+                   displs.data(),
+                   MPI_DOUBLE,
+                   MPI_COMM_WORLD);
+
+    struct AtomState {
+        double mass;
+        double charge;
+        int atom_type;
+        int atomic_number;
+        int tag;
+        System::Vec3 coordinate;
+        System::Vec3 velocity;
+    };
+
+    std::vector<AtomState> local_atoms;
+    local_atoms.reserve(global_state.size() / atom_state_record_width);
+    for (std::size_t offset = 0; offset < global_state.size(); offset += atom_state_record_width) {
+        const AtomState atom{
+            .mass = global_state[offset],
+            .charge = global_state[offset + 1],
+            .atom_type = static_cast<int>(global_state[offset + 2]),
+            .atomic_number = static_cast<int>(global_state[offset + 3]),
+            .tag = static_cast<int>(global_state[offset + 4]),
+            .coordinate = {
+                global_state[offset + 5],
+                global_state[offset + 6],
+                global_state[offset + 7],
+            },
+            .velocity = {
+                global_state[offset + 8],
+                global_state[offset + 9],
+                global_state[offset + 10],
+            },
+        };
+        if (dd.owner_rank(system.box(), atom.coordinate) != mpi_rank) {
+            continue;
+        }
+        local_atoms.push_back(atom);
+    }
+
+    const Box box = system.box();
+    system.resize(local_atoms.size(), local_atoms.size());
+    system.set_box(box);
+
+    auto local_masses = system.mutable_masses();
+    auto local_charges = system.mutable_charges();
+    auto local_atom_types = system.mutable_atom_types();
+    auto local_atomic_numbers = system.mutable_atomic_numbers();
+    auto local_coordinates = system.mutable_coordinates();
+    auto local_velocities = system.mutable_velocities();
+    auto local_tags = system.mutable_atom_tags();
+    auto local_owners = system.mutable_atom_owners();
+    for (std::size_t atom_index = 0; atom_index < local_atoms.size(); ++atom_index) {
+        const AtomState& atom = local_atoms[atom_index];
+        local_masses[atom_index] = atom.mass;
+        local_charges[atom_index] = atom.charge;
+        local_atom_types[atom_index] = atom.atom_type;
+        local_atomic_numbers[atom_index] = atom.atomic_number;
+        local_coordinates[atom_index] = atom.coordinate;
+        local_velocities[atom_index] = atom.velocity;
+        local_tags[atom_index] = atom.tag;
+        local_owners[atom_index] = mpi_rank;
+    }
+#else
+    (void)system;
+    (void)dd;
+#endif
 }
 
 std::vector<double> MpiCommunicator::pack_send_buffer(const System& system,

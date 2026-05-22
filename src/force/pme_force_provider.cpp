@@ -89,6 +89,20 @@ static void allreduce_mesh(std::vector<std::complex<double>>& mesh) {
         mesh[index] = {packed[index * 2], packed[index * 2 + 1]};
     }
 }
+
+static void allreduce_virial(std::array<double, 9>& virial) {
+    if (!mpi_is_available()) {
+        return;
+    }
+
+    auto local = virial;
+    MPI_Allreduce(local.data(),
+                  virial.data(),
+                  static_cast<int>(virial.size()),
+                  MPI_DOUBLE,
+                  MPI_SUM,
+                  MPI_COMM_WORLD);
+}
 #else
 static int mpi_size() noexcept {
     return 1;
@@ -103,6 +117,8 @@ static double allreduce_scalar(double local_value) noexcept {
 }
 
 static void allreduce_mesh(std::vector<std::complex<double>>&) {}
+
+static void allreduce_virial(std::array<double, 9>&) {}
 #endif
 
 // ---------------------------------------------------------------------------
@@ -332,6 +348,7 @@ void PMEForceProvider::compute(const ForceRequest& req,
         res.virial[7] += r[2] * f[1];
         res.virial[8] += r[2] * f[2];
     }
+    allreduce_virial(res.virial);
     // virial_valid was set true at the top of compute(); no need to repeat.
 }
 

@@ -1,10 +1,13 @@
 #include "gmd/core/simulation.hpp"
 
+#include <algorithm>
+#include <memory>
 #include <stdexcept>
 #include <utility>
 
 #include "gmd/force/force_provider.hpp"
 #include "gmd/integrator/integrator.hpp"
+#include "gmd/integrator/velocity_verlet_integrator.hpp"
 #include "gmd/neighbor/neighbor_builder.hpp"
 #include "gmd/neighbor/verlet_neighbor_builder.hpp"
 #include "gmd/parallel/domain_decomposition.hpp"
@@ -29,6 +32,79 @@ public:
     double initial_temperature = 0.0;
     double time_step = 0.0;
     std::uint64_t step = 0;
+
+    void sync_domain_box() {
+        if (domain_decomposition != nullptr && system != nullptr) {
+            domain_decomposition->refresh(system->box());
+        }
+    }
+
+    void redistribute_owned_atoms() {
+        if (system == nullptr || mpi_comm == nullptr || domain_decomposition == nullptr) {
+            return;
+        }
+
+        sync_domain_box();
+        mpi_comm->redistribute_atoms(*system, *domain_decomposition);
+    }
+
+    void prepare_force_evaluation(RuntimeContext& runtime, std::uint64_t force_step) {
+        if (system == nullptr) {
+            throw std::runtime_error("Simulation force evaluation requires a System");
+        }
+
+        if (mpi_comm != nullptr && domain_decomposition != nullptr) {
+            sync_domain_box();
+            mpi_comm->exchange_ghost_coordinates(*system, *domain_decomposition);
+        }
+
+        if (neighbor_builder != nullptr &&
+            (!system->neighbor_list().valid || neighbor_builder->needs_rebuild(*system, force_step))) {
+            neighbor_builder->rebuild(*system, runtime, nullptr);
+        }
+    }
+
+    ForceResult evaluate_force(std::uint64_t force_step,
+                               double force_time,
+                               RuntimeContext& runtime) {
+        prepare_force_evaluation(runtime, force_step);
+
+        ForceResult result;
+        const auto coordinates = system->coordinates();
+        const NeighborList& neighbor_list = system->neighbor_list();
+        ForceRequest request{
+            .system = system,
+            .box = &system->box(),
+            .step = force_step,
+            .time = force_time,
+            .coordinates = std::span<const Coordinate3D>(coordinates.data(), coordinates.size()),
+            .neighbor_list = neighbor_list.valid ? &neighbor_list : nullptr,
+        };
+        force_provider->compute(request, result, runtime);
+        if (!result.success) {
+            throw std::runtime_error("Force provider reported an unsuccessful force evaluation");
+        }
+
+        auto system_forces = system->mutable_forces();
+        const auto copy_count = std::min(system_forces.size(), result.forces.size());
+        for (std::size_t index = 0; index < copy_count; ++index) {
+            system_forces[index] = result.forces[index];
+        }
+        for (std::size_t index = copy_count; index < system_forces.size(); ++index) {
+            system_forces[index] = {0.0, 0.0, 0.0};
+        }
+        system->set_potential_energy(result.potential_energy);
+
+        if (mpi_comm != nullptr && domain_decomposition != nullptr) {
+            mpi_comm->reverse_accumulate_ghost_forces(*system, *domain_decomposition);
+        }
+        if (mpi_comm != nullptr) {
+            system->set_potential_energy(
+                mpi_comm->allreduce_scalar(system->potential_energy()));
+        }
+
+        return result;
+    }
 };
 
 Simulation::Simulation() noexcept
@@ -117,9 +193,6 @@ void Simulation::initialize(RuntimeContext& runtime) {
                                                 impl_->remove_center_of_mass_velocity);
     }
 
-    if (impl_->neighbor_builder != nullptr) {
-        impl_->neighbor_builder->initialize(*impl_->system, runtime);
-    }
     if (impl_->force_provider != nullptr) {
         impl_->force_provider->initialize(runtime);
     }
@@ -127,28 +200,9 @@ void Simulation::initialize(RuntimeContext& runtime) {
         impl_->integrator->initialize(*impl_->system, runtime);
     }
 
-    // Compute initial forces at t=0 so that the first Velocity Verlet
-    // half-kick uses real forces rather than the zero-initialised arrays.
+    // Compute initial forces at t=0 so the first half-kick uses the current state.
     if (impl_->force_provider != nullptr) {
-        const System* sys = impl_->system;
-        ForceRequest req;
-        req.system         = sys;
-        req.box            = &sys->box();
-        req.step           = 0;
-        req.time           = 0.0;
-        req.coordinates    = sys->coordinates();
-        req.neighbor_list  = sys->neighbor_list().valid ? &sys->neighbor_list() : nullptr;
-
-        ForceResult res;
-        impl_->force_provider->compute(req, res, runtime);
-
-        if (res.success) {
-            auto forces = impl_->system->mutable_forces();
-            for (std::size_t i = 0; i < forces.size(); ++i) {
-                forces[i] = res.forces[i];
-            }
-            impl_->system->set_potential_energy(res.potential_energy);
-        }
+        impl_->evaluate_force(0, 0.0, runtime);
     }
 
     impl_->step = 0;
@@ -159,26 +213,45 @@ void Simulation::step(RuntimeContext& runtime) {
         throw std::runtime_error("Simulation is not ready to step");
     }
 
-    if (impl_->mpi_comm != nullptr && impl_->domain_decomposition != nullptr) {
-        impl_->mpi_comm->exchange_ghost_coordinates(
-            *impl_->system, *impl_->domain_decomposition);
-    }
-
-    if (impl_->neighbor_builder != nullptr && impl_->neighbor_builder->needs_rebuild(*impl_->system, impl_->step)) {
-        impl_->neighbor_builder->rebuild(*impl_->system, runtime, nullptr);
-    }
-
     const IntegratorStepContext step_context{.step = impl_->step, .dt = impl_->time_step};
-    impl_->integrator->step(*impl_->system, *impl_->force_provider, step_context, runtime);
+    auto velocity_verlet =
+        std::dynamic_pointer_cast<VelocityVerletIntegrator>(impl_->integrator);
+    if (velocity_verlet == nullptr) {
+        if (impl_->mpi_comm != nullptr &&
+            impl_->domain_decomposition != nullptr &&
+            impl_->mpi_comm->size() > 1) {
+            throw std::runtime_error(
+                "MPI execution currently requires VelocityVerletIntegrator");
+        }
 
-    if (impl_->mpi_comm != nullptr && impl_->domain_decomposition != nullptr) {
-        impl_->mpi_comm->reverse_accumulate_ghost_forces(
-            *impl_->system, *impl_->domain_decomposition);
+        if (impl_->neighbor_builder != nullptr &&
+            (!impl_->system->neighbor_list().valid ||
+             impl_->neighbor_builder->needs_rebuild(*impl_->system, impl_->step))) {
+            impl_->neighbor_builder->rebuild(*impl_->system, runtime, nullptr);
+        }
+        impl_->integrator->step(*impl_->system, *impl_->force_provider, step_context, runtime);
+        ++impl_->step;
+        return;
     }
 
-    if (impl_->mpi_comm != nullptr) {
-        impl_->system->set_potential_energy(
-            impl_->mpi_comm->allreduce_scalar(impl_->system->potential_energy()));
+    velocity_verlet->begin_step(*impl_->system, step_context);
+    impl_->redistribute_owned_atoms();
+
+    const double next_time = static_cast<double>(impl_->step + 1) * impl_->time_step;
+    const ForceResult next_force = impl_->evaluate_force(impl_->step + 1, next_time, runtime);
+    velocity_verlet->finish_step(*impl_->system,
+                                 step_context,
+                                 next_force.virial_valid,
+                                 next_force.virial);
+
+    if (velocity_verlet->has_barostat()) {
+        velocity_verlet->apply_barostat(*impl_->system,
+                                        *impl_->force_provider,
+                                        runtime,
+                                        step_context);
+        impl_->redistribute_owned_atoms();
+        impl_->system->mutable_neighbor_list().valid = false;
+        impl_->evaluate_force(impl_->step + 1, next_time, runtime);
     }
 
     ++impl_->step;

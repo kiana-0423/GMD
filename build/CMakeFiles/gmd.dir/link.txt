@@ -1,0 +1,1 @@
+/usr/bin/c++ -O3 -DNDEBUG -Wl,--dependency-file=CMakeFiles/gmd.dir/link.d CMakeFiles/gmd.dir/app/gmd_main.cpp.o -o gmd  libgmd_core.a

@@ -75,6 +75,19 @@ void VelocityVerletIntegrator::step(System& system,
                                     ForceProvider& force_provider,
                                     const IntegratorStepContext& ctx,
                                     RuntimeContext& runtime) {
+    begin_step(system, ctx);
+    ForceResult next_force = evaluate_force(system,
+                                            force_provider,
+                                            ctx.step + 1,
+                                            (ctx.step + 1) * (ctx.dt > 0.0 ? ctx.dt : dt_),
+                                            runtime);
+    copy_forces_to_system(system, next_force);
+    finish_step(system, ctx, next_force.virial_valid, next_force.virial);
+    apply_barostat(system, force_provider, runtime, ctx);
+}
+
+void VelocityVerletIntegrator::begin_step(System& system,
+                                          const IntegratorStepContext& ctx) {
     const double dt = ctx.dt > 0.0 ? ctx.dt : dt_;
     if (dt <= 0.0) {
         throw std::runtime_error("VelocityVerletIntegrator requires a positive time step");
@@ -85,10 +98,8 @@ void VelocityVerletIntegrator::step(System& system,
         thermostat_->apply_half_kick(system, 0.5 * dt, target_temperature_);
     }
 
-    ForceResult current_force = evaluate_force(system, force_provider, ctx.step, ctx.step * dt, runtime);
-    copy_forces_to_system(system, current_force);
-
     const auto masses = system.masses();
+    const auto forces = system.forces();
     auto coordinates = system.mutable_coordinates();
     auto velocities = system.mutable_velocities();
 
@@ -100,26 +111,37 @@ void VelocityVerletIntegrator::step(System& system,
 
         const double inverse_mass = 1.0 / masses[atom_index];
         for (std::size_t dim = 0; dim < 3; ++dim) {
-            velocities[atom_index][dim] += 0.5 * current_force.forces[atom_index][dim] * inverse_mass * dt;
+            velocities[atom_index][dim] += 0.5 * forces[atom_index][dim] * inverse_mass * dt;
             coordinates[atom_index][dim] += velocities[atom_index][dim] * dt;
         }
         wrap_position(coordinates[atom_index], system.box());
     }
+}
 
-    ForceResult next_force = evaluate_force(system, force_provider, ctx.step + 1, (ctx.step + 1) * dt, runtime);
-    copy_forces_to_system(system, next_force);
+void VelocityVerletIntegrator::finish_step(System& system,
+                                           const IntegratorStepContext& ctx,
+                                           bool virial_valid,
+                                           const std::array<double, 9>& virial) {
+    const double dt = ctx.dt > 0.0 ? ctx.dt : dt_;
+    if (dt <= 0.0) {
+        throw std::runtime_error("VelocityVerletIntegrator requires a positive time step");
+    }
 
     // Cache virial trace for barostat (uses full virial tensor if available).
-    last_virial_valid_ = next_force.virial_valid;
+    last_virial_valid_ = virial_valid;
     if (last_virial_valid_) {
-        last_virial_trace_ = next_force.virial[0] + next_force.virial[4] + next_force.virial[8];
+        last_virial_trace_ = virial[0] + virial[4] + virial[8];
     }
+
+    const auto masses = system.masses();
+    const auto forces = system.forces();
+    auto velocities = system.mutable_velocities();
 
     // Second half-kick.
     for (std::size_t atom_index = 0; atom_index < system.num_local_atoms(); ++atom_index) {
         const double inverse_mass = 1.0 / masses[atom_index];
         for (std::size_t dim = 0; dim < 3; ++dim) {
-            velocities[atom_index][dim] += 0.5 * next_force.forces[atom_index][dim] * inverse_mass * dt;
+            velocities[atom_index][dim] += 0.5 * forces[atom_index][dim] * inverse_mass * dt;
         }
     }
 
@@ -129,10 +151,17 @@ void VelocityVerletIntegrator::step(System& system,
         thermostat_->apply(system, dt, target_temperature_);
     }
 
-    // --- Barostat (end of step) ---
-    // MCBarostat works unconditionally (no virial required).
-    // BerendsenBarostat is guarded: skip when virial is unavailable so that
-    // pressure is not driven by a zero-virial (incorrect) estimate.
+}
+
+void VelocityVerletIntegrator::apply_barostat(System& system,
+                                              ForceProvider& force_provider,
+                                              RuntimeContext& runtime,
+                                              const IntegratorStepContext& ctx) {
+    const double dt = ctx.dt > 0.0 ? ctx.dt : dt_;
+    if (dt <= 0.0) {
+        throw std::runtime_error("VelocityVerletIntegrator requires a positive time step");
+    }
+
     if (barostat_) {
         const bool can_run = !barostat_->requires_virial() || last_virial_valid_;
         if (can_run) {

@@ -40,6 +40,7 @@ public:
 
 // Returns 2 * KE = sum_i  m_i * v_i^2  (mass-weighted velocity squared sum).
 double compute_twice_ke(const System& system) noexcept;
+std::size_t global_atom_count(const System& system) noexcept;
 
 // Returns the instantaneous temperature for a system with `dof` degrees of
 // freedom.  kB is in units consistent with the rest of the code (eV/K).

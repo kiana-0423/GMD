@@ -1,0 +1,6 @@
+gmd_smoke_inline_lj 4 0.00126565
+gmd_smoke_ewald 4 0.00175658
+gmd_smoke_pme 4 0.0029324
+gmd_smoke_mc_barostat 4 0.00100947
+gmd_smoke_molecular 4 0.000830193
+---
