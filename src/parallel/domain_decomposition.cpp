@@ -45,13 +45,28 @@ void DomainDecomposition::create_1d_decomposition(const Box& box,
                                                   int nprocs,
                                                   int my_rank,
                                                   double cutoff,
-                                                  double skin) {
-    if (!std::isfinite(cutoff) || !std::isfinite(skin) || cutoff < 0.0 || skin < 0.0) {
-        throw std::invalid_argument("Domain decomposition ghost distances must be non-negative");
-    }
+ double skin,
+ bool periodic_x) {
+ if (!std::isfinite(cutoff) || !std::isfinite(skin) || cutoff < 0.0 || skin < 0.0) {
+ throw std::invalid_argument("Domain decomposition ghost distances must be non-negative");
+ }
 
-    ghost_width_ = cutoff + skin;
-    create_1d_decomposition(box, nprocs, my_rank);
+ ghost_width_ = cutoff + skin;
+ info_.periodic_x = periodic_x;
+ create_1d_decomposition(box, nprocs, my_rank);
+}
+
+void DomainDecomposition::create_1d_decomposition(const Box& box,
+ int nprocs,
+ int my_rank,
+ double cutoff,
+ double skin) {
+ if (!std::isfinite(cutoff) || !std::isfinite(skin) || cutoff < 0.0 || skin < 0.0) {
+ throw std::invalid_argument("Domain decomposition ghost distances must be non-negative");
+ }
+
+ ghost_width_ = cutoff + skin;
+ create_1d_decomposition(box, nprocs, my_rank);
 }
 
 bool DomainDecomposition::is_local(const std::array<double, 3>& pos) const {
@@ -83,15 +98,23 @@ int DomainDecomposition::owner_rank(const Box& box,
 }
 
 void DomainDecomposition::refresh(const Box& box) {
-    create_1d_decomposition(box, info_.proc_grid[0], info_.proc_coord[0]);
+ // Preserve the current periodic_x flag and ghost_width when refreshing.
+ const bool saved_periodic = info_.periodic_x;
+ const double saved_ghost = ghost_width_;
+ create_1d_decomposition(box, info_.proc_grid[0], info_.proc_coord[0],
+ saved_ghost, 0.0, saved_periodic);
 }
 
 const DomainInfo& DomainDecomposition::info() const {
-    return info_;
+ return info_;
 }
 
 double DomainDecomposition::ghost_width() const noexcept {
-    return ghost_width_;
+ return ghost_width_;
+}
+
+bool DomainDecomposition::periodic_x() const noexcept {
+ return info_.periodic_x;
 }
 
 }  // namespace gmd

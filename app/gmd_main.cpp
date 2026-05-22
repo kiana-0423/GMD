@@ -423,7 +423,7 @@ int main(int argc, char** argv)
         std::shared_ptr<gmd::VerletNeighborBuilder> neighbor_builder;
         if (need_neighbor_builder) {
             neighbor_builder = std::make_shared<gmd::VerletNeighborBuilder>(
-                short_range_cutoff, r_skin);
+                short_range_cutoff, r_skin, true);
         }
 
         const std::size_t global_atom_count = system.atom_count();
@@ -435,7 +435,7 @@ int main(int argc, char** argv)
         if (nprocs > 1) {
             domain_decomposition = std::make_shared<gmd::DomainDecomposition>();
             domain_decomposition->create_1d_decomposition(
-                system.box(), nprocs, my_rank, short_range_cutoff, r_skin);
+                system.box(), nprocs, my_rank, short_range_cutoff, r_skin, true);
             keep_rank_local_atoms(system, my_rank, nprocs);
             std::cout << log_prefix << "Domain decomposition owns "
                       << system.num_local_atoms() << " of " << global_atom_count

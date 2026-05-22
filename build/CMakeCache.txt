@@ -14,8 +14,8 @@
 # EXTERNAL cache entries
 ########################
 
-//Build the testing tree.
-BUILD_TESTING:BOOL=ON
+//No help, variable specified on the command line.
+BUILD_TESTING:UNINITIALIZED=ON
 
 //Path to a program.
 CMAKE_ADDR2LINE:FILEPATH=/usr/bin/addr2line
@@ -235,8 +235,8 @@ GMD_BUILD_PYTHON:BOOL=OFF
 //Enable CUDA language support
 GMD_ENABLE_CUDA:BOOL=OFF
 
-//Enable MPI parallel support
-GMD_ENABLE_MPI:BOOL=OFF
+//No help, variable specified on the command line.
+GMD_ENABLE_MPI:UNINITIALIZED=ON
 
 //Enable TorchScript ML force provider (requires LibTorch)
 GMD_ENABLE_TORCH:BOOL=OFF
@@ -282,8 +282,6 @@ CMAKE_COLOR_MAKEFILE-ADVANCED:INTERNAL=1
 CMAKE_COMMAND:INTERNAL=/usr/bin/cmake
 //Path to cpack program executable.
 CMAKE_CPACK_COMMAND:INTERNAL=/usr/bin/cpack
-//ADVANCED property for variable: CMAKE_CTEST_COMMAND
-CMAKE_CTEST_COMMAND-ADVANCED:INTERNAL=1
 //Path to ctest program executable.
 CMAKE_CTEST_COMMAND:INTERNAL=/usr/bin/ctest
 //ADVANCED property for variable: CMAKE_CXX_COMPILER

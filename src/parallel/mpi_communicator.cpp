@@ -1,5 +1,6 @@
 #include "gmd/parallel/mpi_communicator.hpp"
 
+#include <cmath>
 #include <limits>
 #include <stdexcept>
 
@@ -115,226 +116,275 @@ void MpiCommunicator::exchange_ghost_coordinates(System& system,
     const DomainInfo& domain = dd.info();
     const int nprocs = domain.proc_grid[0];
     const int my_x_coord = domain.proc_coord[0];
-    const double ghost_width = dd.ghost_width();
-    const double domain_width = system.box().lengths[0] / static_cast<double>(nprocs);
-    const double owned_lo_x = domain_width * static_cast<double>(my_x_coord);
-    const double owned_hi_x = my_x_coord == nprocs - 1
-        ? system.box().lengths[0]
-        : domain_width * static_cast<double>(my_x_coord + 1);
+ const bool periodic = domain.periodic_x;
+ const double ghost_width = dd.ghost_width();
+ const double domain_width = system.box().lengths[0] / static_cast<double>(nprocs);
+ const double owned_lo_x = domain_width * static_cast<double>(my_x_coord);
+ const double owned_hi_x = my_x_coord == nprocs - 1
+ ? system.box().lengths[0]
+ : domain_width * static_cast<double>(my_x_coord + 1);
 
-    auto exchange_boundary = [&](int neighbor,
-                                 double send_lo_x,
-                                 double send_hi_x) {
-        const std::vector<double> send_buffer =
-            pack_send_buffer(system, send_lo_x, send_hi_x);
-        if (send_buffer.size() > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
-            throw std::overflow_error("Ghost exchange buffer is too large for MPI_Sendrecv");
-        }
+ auto exchange_boundary = [&](int neighbor,
+ double send_lo_x,
+ double send_hi_x,
+ double shift_x) {
+ std::vector<double> send_buffer =
+ pack_send_buffer(system, send_lo_x, send_hi_x);
 
-        const int send_count = static_cast<int>(send_buffer.size());
-        int recv_count = 0;
-        MPI_Sendrecv(&send_count,
-                     1,
-                     MPI_INT,
-                     neighbor,
-                     110,
-                     &recv_count,
-                     1,
-                     MPI_INT,
-                     neighbor,
-                     110,
-                     MPI_COMM_WORLD,
-                     MPI_STATUS_IGNORE);
-        if (recv_count < 0 || recv_count % ghost_record_width != 0) {
-            throw std::runtime_error("Ghost exchange received a malformed buffer size");
-        }
+ // Apply periodic shift to outgoing ghost positions so that the
+ // receiving rank sees them at the correct (nearby) coordinate.
+ if (std::abs(shift_x) > 0.0) {
+ for (std::size_t i = 0; i < send_buffer.size(); i += ghost_record_width) {
+ send_buffer[i] += shift_x; // x-coordinate is the first field
+ }
+ }
 
-        std::vector<double> recv_buffer(static_cast<std::size_t>(recv_count));
-        MPI_Sendrecv(send_buffer.data(),
-                     send_count,
-                     MPI_DOUBLE,
-                     neighbor,
-                     111,
-                     recv_buffer.data(),
-                     recv_count,
-                     MPI_DOUBLE,
-                     neighbor,
-                     111,
-                     MPI_COMM_WORLD,
-                     MPI_STATUS_IGNORE);
-        unpack_recv_buffer(system, recv_buffer, neighbor);
-    };
+ if (send_buffer.size() > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
+ throw std::overflow_error("Ghost exchange buffer is too large for MPI_Sendrecv");
+ }
 
-    if (my_x_coord > 0) {
-        exchange_boundary(my_rank - 1, owned_lo_x, owned_lo_x + ghost_width);
-    }
-    if (my_x_coord + 1 < nprocs) {
-        exchange_boundary(my_rank + 1, owned_hi_x - ghost_width, owned_hi_x);
-    }
+ const int send_count = static_cast<int>(send_buffer.size());
+ int recv_count = 0;
+ MPI_Sendrecv(&send_count,
+ 1,
+ MPI_INT,
+ neighbor,
+ 110,
+ &recv_count,
+ 1,
+ MPI_INT,
+ neighbor,
+ 110,
+ MPI_COMM_WORLD,
+ MPI_STATUS_IGNORE);
+ if (recv_count < 0 || recv_count % ghost_record_width != 0) {
+ throw std::runtime_error("Ghost exchange received a malformed buffer size");
+ }
+
+ std::vector<double> recv_buffer(static_cast<std::size_t>(recv_count));
+ MPI_Sendrecv(send_buffer.data(),
+ send_count,
+ MPI_DOUBLE,
+ neighbor,
+ 111,
+ recv_buffer.data(),
+ recv_count,
+ MPI_DOUBLE,
+ neighbor,
+ 111,
+ MPI_COMM_WORLD,
+ MPI_STATUS_IGNORE);
+ unpack_recv_buffer(system, recv_buffer, neighbor);
+ };
+
+ // Left neighbor (rank-1). With periodic x, rank 0's left neighbor is rank nprocs-1.
+ const bool has_left = (my_x_coord > 0) || periodic;
+ if (has_left) {
+ const int left_neighbor = (my_x_coord > 0) ? my_rank - 1 : nprocs - 1;
+ // Send atoms in [owned_lo_x, owned_lo_x + ghost_width) to the left neighbor.
+ // Those atoms become the left neighbor's right-side ghosts.
+ // When crossing the periodic boundary (rank 0 -> rank nprocs-1),
+ // shift positions by -Lx so they appear near the right edge of the box.
+ const double shift = (my_x_coord == 0) ? -system.box().lengths[0] : 0.0;
+ exchange_boundary(left_neighbor, owned_lo_x, owned_lo_x + ghost_width, shift);
+ }
+
+ // Right neighbor (rank+1). With periodic x, rank nprocs-1's right neighbor is rank 0.
+ const bool has_right = (my_x_coord + 1 < nprocs) || periodic;
+ if (has_right) {
+ const int right_neighbor = (my_x_coord + 1 < nprocs) ? my_rank + 1 : 0;
+ const double shift = (my_x_coord == nprocs - 1) ? system.box().lengths[0] : 0.0;
+ exchange_boundary(right_neighbor, owned_hi_x - ghost_width, owned_hi_x, shift);
+ }
 #else
-    (void)dd;
+ (void)dd;
 #endif
 }
 
 void MpiCommunicator::reverse_accumulate_ghost_forces(
-        System& system,
-        const DomainDecomposition& dd) const {
-    system.clear_reverse_ghost_virial();
+ System& system,
+ const DomainDecomposition& dd) const {
+ system.clear_reverse_ghost_virial();
 
 #ifdef GMD_ENABLE_MPI
-    if (!mpi_is_available() || size() <= 1) {
-        system.clear_ghost_atoms();
-        return;
-    }
+ if (!mpi_is_available() || size() <= 1) {
+ system.clear_ghost_atoms();
+ return;
+ }
 
-    const int my_rank = rank();
-    validate_1d_rank_grid(dd, my_rank, size());
+ const int my_rank = rank();
+ validate_1d_rank_grid(dd, my_rank, size());
 
-    const DomainInfo& domain = dd.info();
-    const int nprocs = domain.proc_grid[0];
-    const int my_x_coord = domain.proc_coord[0];
+ const DomainInfo& domain = dd.info();
+ const int nprocs = domain.proc_grid[0];
+ const int my_x_coord = domain.proc_coord[0];
+ const bool periodic = domain.periodic_x;
 
-    auto exchange_forces = [&](int neighbor) {
-        const std::vector<double> send_buffer = pack_reverse_force_buffer(system, neighbor);
-        if (send_buffer.size() > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
-            throw std::overflow_error("Reverse force exchange buffer is too large for MPI_Sendrecv");
-        }
+ auto exchange_forces = [&](int neighbor) {
+ const std::vector<double> send_buffer = pack_reverse_force_buffer(system, neighbor);
+ if (send_buffer.size() > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
+ throw std::overflow_error("Reverse force exchange buffer is too large for MPI_Sendrecv");
+ }
 
-        const int send_count = static_cast<int>(send_buffer.size());
-        int recv_count = 0;
-        MPI_Sendrecv(&send_count,
-                     1,
-                     MPI_INT,
-                     neighbor,
-                     120,
-                     &recv_count,
-                     1,
-                     MPI_INT,
-                     neighbor,
-                     120,
-                     MPI_COMM_WORLD,
-                     MPI_STATUS_IGNORE);
-        if (recv_count < 0 || recv_count % reverse_force_record_width != 0) {
-            throw std::runtime_error("Reverse force exchange received a malformed buffer size");
-        }
+ const int send_count = static_cast<int>(send_buffer.size());
+ int recv_count = 0;
+ MPI_Sendrecv(&send_count,
+ 1,
+ MPI_INT,
+ neighbor,
+ 120,
+ &recv_count,
+ 1,
+ MPI_INT,
+ neighbor,
+ 120,
+ MPI_COMM_WORLD,
+ MPI_STATUS_IGNORE);
+ if (recv_count < 0 || recv_count % reverse_force_record_width != 0) {
+ throw std::runtime_error("Reverse force exchange received a malformed buffer size");
+ }
 
-        std::vector<double> recv_buffer(static_cast<std::size_t>(recv_count));
-        MPI_Sendrecv(send_buffer.data(),
-                     send_count,
-                     MPI_DOUBLE,
-                     neighbor,
-                     121,
-                     recv_buffer.data(),
-                     recv_count,
-                     MPI_DOUBLE,
-                     neighbor,
-                     121,
-                     MPI_COMM_WORLD,
-                     MPI_STATUS_IGNORE);
-        unpack_reverse_force_buffer(system, recv_buffer);
-    };
+ std::vector<double> recv_buffer(static_cast<std::size_t>(recv_count));
+ MPI_Sendrecv(send_buffer.data(),
+ send_count,
+ MPI_DOUBLE,
+ neighbor,
+ 121,
+ recv_buffer.data(),
+ recv_count,
+ MPI_DOUBLE,
+ neighbor,
+ 121,
+ MPI_COMM_WORLD,
+ MPI_STATUS_IGNORE);
+ unpack_reverse_force_buffer(system, recv_buffer);
+ };
 
-    if (my_x_coord > 0) {
-        exchange_forces(my_rank - 1);
-    }
-    if (my_x_coord + 1 < nprocs) {
-        exchange_forces(my_rank + 1);
-    }
+ // Left neighbor. With periodic x, rank 0 sends reverse forces to rank nprocs-1.
+ const bool has_left = (my_x_coord > 0) || periodic;
+ if (has_left) {
+ const int left_neighbor = (my_x_coord > 0) ? my_rank - 1 : nprocs - 1;
+ exchange_forces(left_neighbor);
+ }
+
+ // Right neighbor. With periodic x, rank nprocs-1 sends reverse forces to rank 0.
+ const bool has_right = (my_x_coord + 1 < nprocs) || periodic;
+ if (has_right) {
+ const int right_neighbor = (my_x_coord + 1 < nprocs) ? my_rank + 1 : 0;
+ exchange_forces(right_neighbor);
+ }
 #else
-    (void)dd;
+ (void)dd;
 #endif
 
-    system.clear_ghost_atoms();
+ system.clear_ghost_atoms();
 }
 
 void MpiCommunicator::redistribute_atoms(System& system,
-                                         const DomainDecomposition& dd) const {
+ const DomainDecomposition& dd) const {
 #ifdef GMD_ENABLE_MPI
-    if (!mpi_is_available() || size() <= 1) {
-        return;
-    }
+ if (!mpi_is_available() || size() <= 1) {
+ return;
+ }
 
-    const int mpi_size = size();
-    const int mpi_rank = rank();
-    validate_1d_rank_grid(dd, mpi_rank, mpi_size);
+ const int mpi_size = size();
+ const int mpi_rank = rank();
+ validate_1d_rank_grid(dd, mpi_rank, mpi_size);
 
-    std::vector<double> local_state;
-    local_state.reserve(system.num_local_atoms() * atom_state_record_width);
+ const DomainInfo& domain = dd.info();
+ const int nprocs = domain.proc_grid[0];
+ const int my_x_coord = domain.proc_coord[0];
+ const bool periodic = domain.periodic_x;
+ const double Lx = system.box().lengths[0];
+ const double domain_width = Lx / static_cast<double>(nprocs);
 
-    const auto masses = system.masses();
-    const auto charges = system.charges();
-    const auto atom_types = system.atom_types();
-    const auto atomic_numbers = system.atomic_numbers();
-    const auto coordinates = system.coordinates();
-    const auto velocities = system.velocities();
-    for (std::size_t atom_index = 0; atom_index < system.num_local_atoms(); ++atom_index) {
-        local_state.push_back(masses[atom_index]);
-        local_state.push_back(charges[atom_index]);
-        local_state.push_back(static_cast<double>(atom_types[atom_index]));
-        local_state.push_back(static_cast<double>(atomic_numbers[atom_index]));
-        local_state.push_back(static_cast<double>(system.atom_tag(atom_index)));
-        local_state.push_back(coordinates[atom_index][0]);
-        local_state.push_back(coordinates[atom_index][1]);
-        local_state.push_back(coordinates[atom_index][2]);
-        local_state.push_back(velocities[atom_index][0]);
-        local_state.push_back(velocities[atom_index][1]);
-        local_state.push_back(velocities[atom_index][2]);
-    }
+ std::vector<double> local_state;
+ local_state.reserve(system.num_local_atoms() * atom_state_record_width);
 
-    const int send_count = static_cast<int>(local_state.size());
-    std::vector<int> recv_counts(static_cast<std::size_t>(mpi_size), 0);
-    MPI_Allgather(&send_count, 1, MPI_INT, recv_counts.data(), 1, MPI_INT, MPI_COMM_WORLD);
+ const auto masses = system.masses();
+ const auto charges = system.charges();
+ const auto atom_types = system.atom_types();
+ const auto atomic_numbers = system.atomic_numbers();
+ const auto coordinates = system.coordinates();
+ const auto velocities = system.velocities();
+ for (std::size_t atom_index = 0; atom_index < system.num_local_atoms(); ++atom_index) {
+ local_state.push_back(masses[atom_index]);
+ local_state.push_back(charges[atom_index]);
+ local_state.push_back(static_cast<double>(atom_types[atom_index]));
+ local_state.push_back(static_cast<double>(atomic_numbers[atom_index]));
+ local_state.push_back(static_cast<double>(system.atom_tag(atom_index)));
+ local_state.push_back(coordinates[atom_index][0]);
+ local_state.push_back(coordinates[atom_index][1]);
+ local_state.push_back(coordinates[atom_index][2]);
+ local_state.push_back(velocities[atom_index][0]);
+ local_state.push_back(velocities[atom_index][1]);
+ local_state.push_back(velocities[atom_index][2]);
+ }
 
-    std::vector<int> displs(static_cast<std::size_t>(mpi_size), 0);
-    int total_count = 0;
-    for (int index = 0; index < mpi_size; ++index) {
-        displs[static_cast<std::size_t>(index)] = total_count;
-        total_count += recv_counts[static_cast<std::size_t>(index)];
-    }
-    if (total_count < 0 || total_count % atom_state_record_width != 0) {
-        throw std::runtime_error("MPI atom redistribution received a malformed atom-state buffer");
-    }
+ const int send_count = static_cast<int>(local_state.size());
+ std::vector<int> recv_counts(static_cast<std::size_t>(mpi_size), 0);
+ MPI_Allgather(&send_count, 1, MPI_INT, recv_counts.data(), 1, MPI_INT, MPI_COMM_WORLD);
 
-    std::vector<double> global_state(static_cast<std::size_t>(total_count));
-    MPI_Allgatherv(local_state.data(),
-                   send_count,
-                   MPI_DOUBLE,
-                   global_state.data(),
-                   recv_counts.data(),
-                   displs.data(),
-                   MPI_DOUBLE,
-                   MPI_COMM_WORLD);
+ std::vector<int> displs(static_cast<std::size_t>(mpi_size), 0);
+ int total_count = 0;
+ for (int index = 0; index < mpi_size; ++index) {
+ displs[static_cast<std::size_t>(index)] = total_count;
+ total_count += recv_counts[static_cast<std::size_t>(index)];
+ }
+ if (total_count < 0 || total_count % atom_state_record_width != 0) {
+ throw std::runtime_error("MPI atom redistribution received a malformed atom-state buffer");
+ }
 
-    struct AtomState {
-        double mass;
-        double charge;
-        int atom_type;
-        int atomic_number;
-        int tag;
-        System::Vec3 coordinate;
-        System::Vec3 velocity;
-    };
+ std::vector<double> global_state(static_cast<std::size_t>(total_count));
+ MPI_Allgatherv(local_state.data(),
+ send_count,
+ MPI_DOUBLE,
+ global_state.data(),
+ recv_counts.data(),
+ displs.data(),
+ MPI_DOUBLE,
+ MPI_COMM_WORLD);
 
-    std::vector<AtomState> local_atoms;
-    local_atoms.reserve(global_state.size() / atom_state_record_width);
-    for (std::size_t offset = 0; offset < global_state.size(); offset += atom_state_record_width) {
-        const AtomState atom{
-            .mass = global_state[offset],
-            .charge = global_state[offset + 1],
-            .atom_type = static_cast<int>(global_state[offset + 2]),
-            .atomic_number = static_cast<int>(global_state[offset + 3]),
-            .tag = static_cast<int>(global_state[offset + 4]),
-            .coordinate = {
-                global_state[offset + 5],
-                global_state[offset + 6],
-                global_state[offset + 7],
-            },
-            .velocity = {
-                global_state[offset + 8],
-                global_state[offset + 9],
-                global_state[offset + 10],
-            },
-        };
+ struct AtomState {
+ double mass;
+ double charge;
+ int atom_type;
+ int atomic_number;
+ int tag;
+ System::Vec3 coordinate;
+ System::Vec3 velocity;
+ };
+
+ std::vector<AtomState> local_atoms;
+ local_atoms.reserve(global_state.size() / atom_state_record_width);
+ for (std::size_t offset = 0; offset < global_state.size(); offset += atom_state_record_width) {
+ AtomState atom{
+ .mass = global_state[offset],
+ .charge = global_state[offset + 1],
+ .atom_type = static_cast<int>(global_state[offset + 2]),
+ .atomic_number = static_cast<int>(global_state[offset + 3]),
+ .tag = static_cast<int>(global_state[offset + 4]),
+ .coordinate = {
+ global_state[offset + 5],
+ global_state[offset + 6],
+ global_state[offset + 7],
+ },
+ .velocity = {
+ global_state[offset + 8],
+ global_state[offset + 9],
+ global_state[offset + 10],
+ },
+ };
+
+ // Apply periodic x wrapping before determining the owner rank.
+ if (periodic) {
+ if (atom.coordinate[0] < 0.0) {
+ atom.coordinate[0] += Lx;
+ } else if (atom.coordinate[0] >= Lx) {
+ atom.coordinate[0] -= Lx;
+ }
+ }
+
         if (dd.owner_rank(system.box(), atom.coordinate) != mpi_rank) {
             continue;
         }
