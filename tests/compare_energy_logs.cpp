@@ -156,7 +156,7 @@ int main(int argc, char** argv) {
                       parse_tolerance(argv[5], "NVE energy drift"),
                       "NVE energy drift");
     } catch (const std::exception& error) {
-        std::cerr << "MPI LJ consistency check failed: " << error.what() << '\n';
+        std::cerr << "MPI consistency check failed: " << error.what() << '\n';
         return 1;
     }
 

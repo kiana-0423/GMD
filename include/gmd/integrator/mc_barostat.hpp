@@ -18,8 +18,9 @@ namespace gmd {
 // where kT = k_B * temperature, P_ext is the target pressure, and the ln term
 // accounts for the change in translational phase-space volume.
 //
-// This formulation does NOT require the virial and therefore works correctly
-// with any combination of force providers (LJ, Ewald, PME, bonded, ML).
+// This formulation does NOT require the virial. In the current implementation
+// the trial move is serial-only; MPI domain decomposition requires a
+// coordinated trial state and accept/reject decision that are not implemented.
 //
 // Step-size adaptation: every `adjust_interval` attempts, the maximum
 // ln-volume displacement is scaled to drive the acceptance rate toward 50 %.

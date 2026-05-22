@@ -1,7 +1,7 @@
 velocity 300.0
 time_step 2.0
 run 20
-velocity_init random
+velocity_init input
 remove_com_velocity true
 
 force_field lj

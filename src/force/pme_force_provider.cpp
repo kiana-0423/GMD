@@ -311,7 +311,9 @@ void PMEForceProvider::compute(const ForceRequest& req,
     res.virial = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
     res.virial_valid = true;   // zero Coulomb → zero virial; still a valid result
 
-    if (n == 0 || req.box == nullptr || req.system == nullptr) return;
+    // Empty local domains are valid in MPI. They still must join the charge
+    // and replicated-mesh collectives issued by ranks that own charged atoms.
+    if (req.box == nullptr || req.system == nullptr) return;
 
     const auto charges = req.system->charges();
     if (charges.size() != n) return;

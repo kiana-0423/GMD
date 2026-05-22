@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <vector>
 
 namespace gmd {
@@ -26,8 +27,8 @@ public:
 
 private:
     std::vector<double> pack_send_buffer(const System& system,
-                                         double boundary_lo_x,
-                                         double boundary_hi_x) const;
+                                         const DomainDecomposition& dd,
+                                         const std::array<int, 3>& offset) const;
     void unpack_recv_buffer(System& system,
                             const std::vector<double>& recv_buffer,
                             int owner) const;

@@ -42,7 +42,9 @@ void MCBarostat::apply(System& system,
 {
     if (runtime.size() > 1) {
         throw std::runtime_error(
-            "MCBarostat does not yet support MPI domain decomposition");
+            "MCBarostat does not support MPI domain decomposition: trial volume "
+            "moves need coordinated ghost refresh, global trial energy, and one "
+            "accept/reject decision");
     }
 
     // Only attempt a volume move every `frequency_` steps.

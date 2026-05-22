@@ -90,6 +90,8 @@ if(BUILD_TESTING)
     configure_file(tests/smoke_mpi_ewald.xyz  ${CMAKE_CURRENT_BINARY_DIR}/tests/smoke_mpi_ewald.xyz COPYONLY)
     configure_file(tests/smoke_mpi_molecular.xyz ${CMAKE_CURRENT_BINARY_DIR}/tests/smoke_mpi_molecular.xyz COPYONLY)
     configure_file(tests/smoke_mpi_lj.run     ${CMAKE_CURRENT_BINARY_DIR}/tests/smoke_mpi_lj.run   COPYONLY)
+    configure_file(tests/smoke_mpi_ewald_consistency.run ${CMAKE_CURRENT_BINARY_DIR}/tests/smoke_mpi_ewald_consistency.run COPYONLY)
+    configure_file(tests/smoke_mpi_pme_consistency.run ${CMAKE_CURRENT_BINARY_DIR}/tests/smoke_mpi_pme_consistency.run COPYONLY)
  configure_file(tests/smoke_mpi_periodic_lj.xyz ${CMAKE_CURRENT_BINARY_DIR}/tests/smoke_mpi_periodic_lj.xyz COPYONLY)
  configure_file(tests/smoke_mpi_periodic_lj.run ${CMAKE_CURRENT_BINARY_DIR}/tests/smoke_mpi_periodic_lj.run COPYONLY)
  configure_file(tests/smoke_mpi_boundary_migration.xyz ${CMAKE_CURRENT_BINARY_DIR}/tests/smoke_mpi_boundary_migration.xyz COPYONLY)
@@ -149,6 +151,145 @@ if(BUILD_TESTING)
     set_tests_properties(gmd_smoke_molecular PROPERTIES LABELS "smoke;integration")
 
     if(GMD_ENABLE_MPI)
+        add_executable(gmd_mpi_periodic_1d_tests tests/mpi_periodic_1d.cpp)
+        target_link_libraries(gmd_mpi_periodic_1d_tests PRIVATE gmd_core)
+        add_executable(gmd_mpi_domain_decomposition_3d_tests
+            tests/mpi_domain_decomposition_3d.cpp)
+        target_link_libraries(gmd_mpi_domain_decomposition_3d_tests PRIVATE gmd_core)
+        add_executable(gmd_mpi_ghost_exchange_3d_tests
+            tests/mpi_ghost_exchange_3d.cpp)
+        target_link_libraries(gmd_mpi_ghost_exchange_3d_tests PRIVATE gmd_core)
+
+        add_test(
+            NAME gmd_mpi_periodic_1d_ghost_exchange_2proc
+            COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 2
+                    $<TARGET_FILE:gmd_mpi_periodic_1d_tests> ghost
+        )
+        set_tests_properties(gmd_mpi_periodic_1d_ghost_exchange_2proc
+            PROPERTIES
+                LABELS "mpi;parallel"
+                PROCESSORS 2)
+
+        add_test(
+            NAME gmd_mpi_periodic_1d_force_consistency_2proc
+            COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 2
+                    $<TARGET_FILE:gmd_mpi_periodic_1d_tests> force
+        )
+        set_tests_properties(gmd_mpi_periodic_1d_force_consistency_2proc
+            PROPERTIES
+                LABELS "mpi;parallel"
+                PROCESSORS 2)
+
+        add_test(
+            NAME gmd_mpi_periodic_1d_migration_2proc
+            COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 2
+                    $<TARGET_FILE:gmd_mpi_periodic_1d_tests> migration
+        )
+        set_tests_properties(gmd_mpi_periodic_1d_migration_2proc
+            PROPERTIES
+                LABELS "mpi;parallel"
+                PROCESSORS 2)
+
+        add_test(
+            NAME gmd_mpi_domain_decomposition_3d_grid_4proc
+            COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 4
+                    $<TARGET_FILE:gmd_mpi_domain_decomposition_3d_tests> grid4
+        )
+        set_tests_properties(gmd_mpi_domain_decomposition_3d_grid_4proc
+            PROPERTIES
+                LABELS "mpi;parallel"
+                PROCESSORS 4)
+
+        add_test(
+            NAME gmd_mpi_domain_decomposition_3d_migration_8proc
+            COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 8
+                    $<TARGET_FILE:gmd_mpi_domain_decomposition_3d_tests> migrate8
+        )
+        set_tests_properties(gmd_mpi_domain_decomposition_3d_migration_8proc
+            PROPERTIES
+                LABELS "mpi;parallel"
+                PROCESSORS 8)
+
+        add_test(
+            NAME gmd_mpi_ghost_exchange_3d_face_8proc
+            COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 8
+                    $<TARGET_FILE:gmd_mpi_ghost_exchange_3d_tests> face
+        )
+        set_tests_properties(gmd_mpi_ghost_exchange_3d_face_8proc
+            PROPERTIES
+                LABELS "mpi;parallel"
+                PROCESSORS 8)
+
+        add_test(
+            NAME gmd_mpi_ghost_exchange_3d_edge_8proc
+            COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 8
+                    $<TARGET_FILE:gmd_mpi_ghost_exchange_3d_tests> edge
+        )
+        set_tests_properties(gmd_mpi_ghost_exchange_3d_edge_8proc
+            PROPERTIES
+                LABELS "mpi;parallel"
+                PROCESSORS 8)
+
+        add_test(
+            NAME gmd_mpi_ghost_exchange_3d_corner_8proc
+            COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 8
+                    $<TARGET_FILE:gmd_mpi_ghost_exchange_3d_tests> corner
+        )
+        set_tests_properties(gmd_mpi_ghost_exchange_3d_corner_8proc
+            PROPERTIES
+                LABELS "mpi;parallel"
+                PROCESSORS 8)
+
+        add_test(
+            NAME gmd_mpi_ghost_exchange_3d_periodic_8proc
+            COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 8
+                    $<TARGET_FILE:gmd_mpi_ghost_exchange_3d_tests> periodic
+        )
+        set_tests_properties(gmd_mpi_ghost_exchange_3d_periodic_8proc
+            PROPERTIES
+                LABELS "mpi;parallel"
+                PROCESSORS 8)
+
+        add_test(
+            NAME gmd_mpi_reverse_force_3d_face_8proc
+            COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 8
+                    $<TARGET_FILE:gmd_mpi_ghost_exchange_3d_tests> reverse-face
+        )
+        set_tests_properties(gmd_mpi_reverse_force_3d_face_8proc
+            PROPERTIES
+                LABELS "mpi;parallel"
+                PROCESSORS 8)
+
+        add_test(
+            NAME gmd_mpi_reverse_force_3d_edge_8proc
+            COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 8
+                    $<TARGET_FILE:gmd_mpi_ghost_exchange_3d_tests> reverse-edge
+        )
+        set_tests_properties(gmd_mpi_reverse_force_3d_edge_8proc
+            PROPERTIES
+                LABELS "mpi;parallel"
+                PROCESSORS 8)
+
+        add_test(
+            NAME gmd_mpi_reverse_force_3d_corner_8proc
+            COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 8
+                    $<TARGET_FILE:gmd_mpi_ghost_exchange_3d_tests> reverse-corner
+        )
+        set_tests_properties(gmd_mpi_reverse_force_3d_corner_8proc
+            PROPERTIES
+                LABELS "mpi;parallel"
+                PROCESSORS 8)
+
+        add_test(
+            NAME gmd_mpi_lj_3d_periodic_consistency_8proc
+            COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 8
+                    $<TARGET_FILE:gmd_mpi_ghost_exchange_3d_tests> lj
+        )
+        set_tests_properties(gmd_mpi_lj_3d_periodic_consistency_8proc
+            PROPERTIES
+                LABELS "mpi;parallel"
+                PROCESSORS 8)
+
         add_test(
             NAME gmd_smoke_mpi_lj_2proc
             COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 2
@@ -217,5 +358,49 @@ if(BUILD_TESTING)
             PROPERTIES
                 LABELS "smoke;integration;mpi"
                 PROCESSORS 2)
+
+        add_test(
+            NAME gmd_smoke_mpi_ewald_consistency_8proc
+            COMMAND ${CMAKE_COMMAND}
+                    -DGMD_EXECUTABLE=$<TARGET_FILE:gmd>
+                    -DGMD_COMPARE_EXECUTABLE=$<TARGET_FILE:gmd_compare_energy_logs>
+                    -DMPIEXEC_EXECUTABLE=${MPIEXEC_EXECUTABLE}
+                    -DMPIEXEC_NUMPROC_FLAG=${MPIEXEC_NUMPROC_FLAG}
+                    -DMPI_CASE_NAME=ewald
+                    -DMPI_PROCESS_COUNT=8
+                    -DMPI_PROC_GRID_X=2
+                    -DMPI_PROC_GRID_Y=2
+                    -DMPI_PROC_GRID_Z=2
+                    -DMPI_XYZ=${CMAKE_CURRENT_BINARY_DIR}/tests/smoke_mpi_lj.xyz
+                    -DMPI_RUN=${CMAKE_CURRENT_BINARY_DIR}/tests/smoke_mpi_ewald_consistency.run
+                    -DMPI_WORK_ROOT=${CMAKE_CURRENT_BINARY_DIR}/tests/mpi_consistency
+                    -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/RunMpiConsistency.cmake
+        )
+        set_tests_properties(gmd_smoke_mpi_ewald_consistency_8proc
+            PROPERTIES
+                LABELS "smoke;integration;mpi"
+                PROCESSORS 8)
+
+        add_test(
+            NAME gmd_smoke_mpi_pme_consistency_8proc
+            COMMAND ${CMAKE_COMMAND}
+                    -DGMD_EXECUTABLE=$<TARGET_FILE:gmd>
+                    -DGMD_COMPARE_EXECUTABLE=$<TARGET_FILE:gmd_compare_energy_logs>
+                    -DMPIEXEC_EXECUTABLE=${MPIEXEC_EXECUTABLE}
+                    -DMPIEXEC_NUMPROC_FLAG=${MPIEXEC_NUMPROC_FLAG}
+                    -DMPI_CASE_NAME=pme
+                    -DMPI_PROCESS_COUNT=8
+                    -DMPI_PROC_GRID_X=2
+                    -DMPI_PROC_GRID_Y=2
+                    -DMPI_PROC_GRID_Z=2
+                    -DMPI_XYZ=${CMAKE_CURRENT_BINARY_DIR}/tests/smoke_mpi_lj.xyz
+                    -DMPI_RUN=${CMAKE_CURRENT_BINARY_DIR}/tests/smoke_mpi_pme_consistency.run
+                    -DMPI_WORK_ROOT=${CMAKE_CURRENT_BINARY_DIR}/tests/mpi_consistency
+                    -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/RunMpiConsistency.cmake
+        )
+        set_tests_properties(gmd_smoke_mpi_pme_consistency_8proc
+            PROPERTIES
+                LABELS "smoke;integration;mpi"
+                PROCESSORS 8)
     endif()
 endif()

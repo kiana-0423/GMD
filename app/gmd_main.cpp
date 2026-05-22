@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
@@ -49,7 +50,17 @@ struct CommandLine {
     std::optional<std::string> ff_path;
     std::optional<std::string> top_path;
     std::optional<int> expected_process_count;
+    std::optional<std::array<int, 3>> process_grid;
 };
+
+int parse_positive_int_arg(const std::string& value, const char* name) {
+    std::size_t parsed_chars = 0;
+    const int parsed = std::stoi(value, &parsed_chars);
+    if (parsed_chars != value.size() || parsed <= 0) {
+        throw std::runtime_error(std::string(name) + " requires a positive integer");
+    }
+    return parsed;
+}
 
 CommandLine parse_command_line(int argc, char** argv) {
     std::vector<std::string> positionals;
@@ -62,13 +73,18 @@ CommandLine parse_command_line(int argc, char** argv) {
                 throw std::runtime_error("--np requires a positive process count");
             }
 
-            const std::string count_arg = argv[++arg_index];
-            std::size_t parsed_chars = 0;
-            const int count = std::stoi(count_arg, &parsed_chars);
-            if (parsed_chars != count_arg.size() || count <= 0) {
-                throw std::runtime_error("--np requires a positive integer process count");
+            cli.expected_process_count = parse_positive_int_arg(argv[++arg_index], "--np");
+            continue;
+        }
+        if (arg == "--proc-grid") {
+            if (arg_index + 3 >= argc) {
+                throw std::runtime_error("--proc-grid requires Px Py Pz extents");
             }
-            cli.expected_process_count = count;
+            cli.process_grid = {
+                parse_positive_int_arg(argv[++arg_index], "--proc-grid Px"),
+                parse_positive_int_arg(argv[++arg_index], "--proc-grid Py"),
+                parse_positive_int_arg(argv[++arg_index], "--proc-grid Pz"),
+            };
             continue;
         }
         if (arg.starts_with("--")) {
@@ -80,7 +96,8 @@ CommandLine parse_command_line(int argc, char** argv) {
 
     if (positionals.size() > 4) {
         throw std::runtime_error(
-            "Usage: gmd input.xyz run.in [ff.ff] [top.top] [--np N]");
+            "Usage: gmd input.xyz run.in [ff.ff] [top.top] [--np N]"
+            " [--proc-grid Px Py Pz]");
     }
     if (!positionals.empty()) cli.xyz_path = positionals[0];
     if (positionals.size() > 1) cli.run_path = positionals[1];
@@ -93,18 +110,13 @@ std::string rank_prefix(int rank) {
     return "[gmd rank " + std::to_string(rank) + "] ";
 }
 
-int owner_rank_for_x(const gmd::Box& box, const gmd::System::Vec3& position, int nprocs) {
-    double x = std::fmod(position[0], box.lengths[0]);
-    if (x < 0.0) {
-        x += box.lengths[0];
-    }
-
-    const double domain_width = box.lengths[0] / static_cast<double>(nprocs);
-    const int owner = static_cast<int>(x / domain_width);
-    return std::min(owner, nprocs - 1);
+int process_grid_size(const std::array<int, 3>& grid) {
+    return grid[0] * grid[1] * grid[2];
 }
 
-void keep_rank_local_atoms(gmd::System& system, int my_rank, int nprocs) {
+void keep_rank_local_atoms(gmd::System& system,
+                           const gmd::DomainDecomposition& decomposition,
+                           int my_rank) {
     const auto box = system.box();
     const auto masses = system.masses();
     const auto charges = system.charges();
@@ -126,7 +138,7 @@ void keep_rank_local_atoms(gmd::System& system, int my_rank, int nprocs) {
     std::vector<LocalAtom> local_atoms;
     local_atoms.reserve(system.atom_count());
     for (std::size_t atom_index = 0; atom_index < system.atom_count(); ++atom_index) {
-        if (owner_rank_for_x(box, coordinates[atom_index], nprocs) != my_rank) {
+        if (decomposition.owner_rank(box, coordinates[atom_index]) != my_rank) {
             continue;
         }
 
@@ -342,7 +354,9 @@ int main(int argc, char** argv)
         } else if (run_config.force_field_type == "ml") {
             if (nprocs > 1) {
                 throw std::runtime_error(
-                    "ML force provider is not yet supported with MPI domain decomposition");
+                    "ML force provider cannot run with MPI domain decomposition: "
+                    "local-plus-ghost model energy ownership and message-passing halo depth "
+                    "are not defined");
             }
 #ifdef GMD_ENABLE_TORCH
             if (run_config.ml_model_path.empty()) {
@@ -423,7 +437,7 @@ int main(int argc, char** argv)
         std::shared_ptr<gmd::VerletNeighborBuilder> neighbor_builder;
         if (need_neighbor_builder) {
             neighbor_builder = std::make_shared<gmd::VerletNeighborBuilder>(
-                short_range_cutoff, r_skin, true);
+                short_range_cutoff, r_skin);
         }
 
         const std::size_t global_atom_count = system.atom_count();
@@ -434,12 +448,34 @@ int main(int argc, char** argv)
         std::shared_ptr<gmd::DomainDecomposition> domain_decomposition;
         if (nprocs > 1) {
             domain_decomposition = std::make_shared<gmd::DomainDecomposition>();
-            domain_decomposition->create_1d_decomposition(
-                system.box(), nprocs, my_rank, short_range_cutoff, r_skin, true);
-            keep_rank_local_atoms(system, my_rank, nprocs);
+            const auto proc_grid = cli.process_grid.has_value()
+                ? cli.process_grid
+                : run_config.mpi_grid;
+            if (proc_grid.has_value()) {
+                if (process_grid_size(*proc_grid) != nprocs) {
+                    throw std::runtime_error(
+                        "MPI processor grid product does not match the MPI world size");
+                }
+                domain_decomposition->create_decomposition(system.box(),
+                                                           *proc_grid,
+                                                           my_rank,
+                                                           short_range_cutoff,
+                                                           r_skin,
+                                                           {true, true, true});
+            } else {
+                domain_decomposition->create_decomposition(system.box(),
+                                                           nprocs,
+                                                           my_rank,
+                                                           short_range_cutoff,
+                                                           r_skin,
+                                                           {true, true, true});
+            }
+            keep_rank_local_atoms(system, *domain_decomposition, my_rank);
+            const auto grid = domain_decomposition->info().proc_grid;
             std::cout << log_prefix << "Domain decomposition owns "
                       << system.num_local_atoms() << " of " << global_atom_count
-                      << " atoms before ghost exchange\n";
+                      << " atoms before ghost exchange on grid "
+                      << grid[0] << "x" << grid[1] << "x" << grid[2] << "\n";
         }
 
         // --- Integrator ---
@@ -474,7 +510,9 @@ int main(int argc, char** argv)
         } else if (run_config.barostat_type == "monte_carlo") {
             if (nprocs > 1) {
                 throw std::runtime_error(
-                    "Monte Carlo barostat is not yet supported with MPI domain decomposition");
+                    "Monte Carlo barostat cannot run with MPI domain decomposition: "
+                    "trial volume moves need coordinated ghost refresh, global trial energy, "
+                    "and one accept/reject decision");
             }
             auto bstat = std::make_shared<gmd::MCBarostat>(
                 run_config.mc_frequency,

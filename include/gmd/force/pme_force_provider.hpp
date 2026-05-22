@@ -25,6 +25,10 @@ namespace gmd {
 // The internal FFT implementation uses radix-2 Cooley-Tukey; each mesh
 // dimension must therefore be a power of 2.
 //
+// MPI note: rank-local charge assignment is summed onto a replicated full
+// mesh and every rank executes the same full FFT. This is correct for the
+// current domain decomposition but is not a distributed PME FFT.
+//
 // Physical units: Distances [Å], Energies [eV], Charges [e],
 //   k_e = 14.3996 eV·Å/e².
 //

@@ -16,10 +16,10 @@ GMD is a C++20 molecular dynamics engine built around a small set of composable 
 
 | Feature | Files |
 |---|---|
-| **MPI spatial domain decomposition** — 1D domain splitting along x, ghost-atom coordinate exchange, reverse force accumulation, allreduce for scalars/vectors | `include/gmd/parallel/domain_decomposition.hpp` `include/gmd/parallel/mpi_communicator.hpp` `include/gmd/parallel/mpi_environment.hpp` `src/parallel/` |
-| **PME pencil decomposition** — 2D process grid (Py × Pz) with transpose collectives; currently replicated mesh with infrastructure ready for distributed FFT | `include/gmd/parallel/pme_parallel.hpp` `src/parallel/pme_parallel.cpp` |
+| **MPI spatial domain decomposition** — balanced or user-selected 3D process grids, ghost-atom coordinate exchange, reverse force accumulation, migration, and allreduce helpers | `include/gmd/parallel/domain_decomposition.hpp` `include/gmd/parallel/mpi_communicator.hpp` `include/gmd/parallel/mpi_environment.hpp` `src/parallel/` |
+| **Replicated PME under MPI** — PME charge meshes are summed across ranks, then each rank runs the same full 3D FFT; pencil metadata exists but distributed mesh/FFT communication is not implemented | `include/gmd/force/pme_force_provider.hpp` `include/gmd/parallel/pme_parallel.hpp` `src/force/pme_force_provider.cpp` |
 | **`GMD_ENABLE_MPI` CMake option** — opt-in MPI build with `find_package(MPI REQUIRED)`, `MPI::MPI_CXX` linkage, and `GMD_ENABLE_MPI` compile definition | `CMakeLists.txt` `cmake/MPIOptions.cmake` |
-| **MPI smoke tests** — 2-process LJ run and serial-vs-parallel energy consistency check | `tests/smoke_mpi_lj.xyz` `tests/smoke_mpi_lj.run` `tests/compare_energy_logs.cpp` `cmake/RunMpiLJConsistency.cmake` |
+| **MPI smoke tests** — multi-rank LJ/Ewald/PME runs and serial-vs-parallel logged energy consistency checks | `tests/smoke_mpi_lj.xyz` `tests/compare_energy_logs.cpp` `cmake/RunMpiLJConsistency.cmake` `cmake/RunMpiConsistency.cmake` |
 | **CLI `--np N` flag** — validates expected process count against MPI world size | `app/gmd_main.cpp` |
 | **Rank-aware I/O** — only rank 0 writes trajectory/log files; global coordinate gather for output frames | `app/gmd_main.cpp` |
 
@@ -78,8 +78,8 @@ Implemented:
 - **Monte Carlo barostat** (isotropic NPT, Metropolis criterion, no virial required, adaptive step-size)
 - long-range Coulomb via Ewald and PME (self-contained 3D FFT, B-spline orders 4/6)
 - **ML force provider** — TorchScript backend (`GMD_ENABLE_TORCH=ON`), SE3-GNN compatible, reads `local_cutoff` from model
-- **MPI spatial domain decomposition** — 1D x-splitting, ghost-atom exchange, reverse force accumulation, allreduce collectives (`GMD_ENABLE_MPI=ON`)
-- **PME pencil decomposition** — 2D process grid infrastructure for distributed FFT
+- **MPI spatial domain decomposition** — 3D process grids, face/edge/corner ghost-atom exchange, reverse force accumulation, migration, and allreduce collectives (`GMD_ENABLE_MPI=ON`)
+- replicated-mesh PME under MPI with pencil-decomposition metadata reserved for a future distributed FFT
 - extended XYZ trajectory output and energy logging (rank-0 I/O with global coordinate gather in MPI mode)
 - inline `run.in` LJ force-field definitions
 - external `.ff` files (LJ and molecular; molecular runs default to bonded-only)
@@ -94,8 +94,7 @@ Not yet implemented:
 - checkpoint / restart
 - Python bindings
 - full unit / regression test coverage
-- 3D domain decomposition (currently 1D x-only)
-- distributed PME FFT (infrastructure ready, currently replicated mesh)
+- distributed PME mesh and FFT communication (current MPI PME path replicates the full mesh per rank)
 
 ---
 
@@ -179,12 +178,14 @@ mpirun -np 4 ./build/gmd --np 4 input.xyz run.in
 ```
 
 In MPI mode:
-- Atoms are distributed across ranks via 1D x-axis domain decomposition
+- Atoms are distributed across ranks via a balanced 3D process grid; `--proc-grid Px Py Pz` or `mpi_grid Px Py Pz` can request a compatible grid
 - Atoms that cross domain boundaries are redistributed to their owning rank after each drift step
-- Ghost atoms are exchanged each step based on the neighbor-list cutoff + skin
+- Ghost atoms are exchanged across face, edge, and corner neighbors each step based on the neighbor-list cutoff + skin
 - Forces on ghost atoms are reverse-accumulated back to their home ranks
 - Only rank 0 writes trajectory and energy log files
 - Global coordinates are gathered for output frames
+- Ewald and PME run with the 3D domain decomposition. PME currently sums rank-local charge assignment onto a replicated full mesh and performs a full FFT on every rank; it is not distributed PME.
+- TorchScript ML force fields and the Monte Carlo barostat are rejected in multi-rank runs because their distributed ownership/trial-move contracts are not implemented.
 
 ---
 
@@ -482,9 +483,9 @@ ctest --output-on-failure
 ```
 
 When `GMD_ENABLE_MPI=ON`, CTest additionally registers MPI smoke tests for LJ,
-Ewald, PME, and the minimal bonded molecular path, plus a serial-vs-MPI LJ
-consistency check. The consistency test validates the full logged trajectory
-row-by-row as well as the final energy drift.
+Ewald, PME, and the minimal bonded molecular path, plus serial-vs-MPI LJ,
+Ewald, and replicated-PME consistency checks. The consistency checks validate
+the full logged trajectory row-by-row as well as the final energy drift.
 
 
 | Test name | Exercises |
@@ -499,6 +500,8 @@ row-by-row as well as the final energy drift.
 | `gmd_smoke_mpi_pme_2proc` | 2-process MPI PME smoke run on a true cross-rank charged system |
 | `gmd_smoke_mpi_molecular_2proc` | 2-process MPI bonded molecular smoke run across a rank boundary |
 | `gmd_smoke_mpi_lj_consistency` | serial vs 2-process MPI energy consistency check (verifies numerical equivalence) |
+| `gmd_smoke_mpi_ewald_consistency_8proc` | serial vs 8-process Ewald consistency on a 3D process grid |
+| `gmd_smoke_mpi_pme_consistency_8proc` | serial vs 8-process replicated-PME consistency on a 3D process grid, including empty local domains |
 
 ---
 
@@ -573,12 +576,11 @@ ForceProvider (interface)                                      │  MpiCommunica
 - No SHAKE / RATTLE bond constraints
 - No GPU execution (CUDA option present but CPU-only)
 - No checkpoint / restart
-- Berendsen barostat requires virial from every active force term; current `Ewald` and `PME` paths provide it via a coordinate-virial approximation; barostat pressure is computed with MPI-allreduced kinetic energy and virial (correct)
-- MPI domain decomposition is 1D (x-axis only); 3D decomposition not yet implemented
-- PME mesh is replicated across MPI ranks (pencil decomposition infrastructure ready, distributed FFT not yet active)
-- ML force provider requires `GMD_ENABLE_TORCH=ON` and a compatible TorchScript model; MPI domain decomposition is not yet supported for the ML path
-- MPI NVE/NVT is supported for the implemented classical force paths; Berendsen NPT is also supported, but the Monte Carlo barostat is currently serial-only
-- NVE (microcanonical) simulations in MPI mode reproduce serial results bit-identically (verified by `gmd_smoke_mpi_lj_consistency`)
+- Berendsen barostat requires virial from every active force term; current `Ewald` and `PME` paths provide it via a coordinate-virial approximation; barostat pressure is computed with MPI-allreduced kinetic energy and virial
+- PME mesh storage and FFT work are replicated across MPI ranks; pencil-decomposition metadata exists, but distributed PME mesh ownership and FFT transpose communication are not active
+- ML force provider requires `GMD_ENABLE_TORCH=ON` and a compatible TorchScript model; MPI domain decomposition is rejected because local-plus-ghost model energy ownership and message-passing halo depth are not defined
+- MPI NVE/NVT is supported for implemented classical short-range, Ewald, replicated-PME, and current bonded paths; Berendsen NPT is also supported, but the Monte Carlo barostat is serial-only because MPI trial-volume coordination is not implemented
+- The MPI LJ NVE regression tracks serial logged energies and drift within test tolerances (`gmd_smoke_mpi_lj_consistency`)
 - Limited automated test coverage
 
 ---

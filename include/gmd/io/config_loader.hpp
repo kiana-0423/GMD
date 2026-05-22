@@ -123,6 +123,8 @@ struct RunConfig {
 	// nonbonded exclusions are not implemented yet. Set to "lj_unsafe" to
 	// explicitly include molecular LJ anyway.
 	std::string molecular_nonbonded_mode = "none";
+	// Optional MPI Cartesian processor grid override.
+	std::optional<std::array<int, 3>> mpi_grid;
 
 	// Inline force field parameters parsed directly from the run input file.
 	// When present, no separate .ff file is required.

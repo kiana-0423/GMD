@@ -505,6 +505,20 @@ RunConfig ConfigLoader::load_run(const std::filesystem::path& run_path) const {
                     "molecular_nonbonded must be 'none' or 'lj_unsafe'");
             }
             config.molecular_nonbonded_mode = tokens[1];
+        } else if (tokens[0] == "mpi_grid") {
+            if (tokens.size() < 4) {
+                throw std::runtime_error("mpi_grid expects three integers: mpi_grid Px Py Pz");
+            }
+            config.mpi_grid = {
+                parse_int(tokens[1], "mpi_grid_x"),
+                parse_int(tokens[2], "mpi_grid_y"),
+                parse_int(tokens[3], "mpi_grid_z"),
+            };
+            for (int extent : *config.mpi_grid) {
+                if (extent <= 0) {
+                    throw std::runtime_error("mpi_grid extents must be positive");
+                }
+            }
         // ---- Inline force field directives ----
         } else if (tokens[0] == "force_field") {
             if (tokens[1] == "lj") {

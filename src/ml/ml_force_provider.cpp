@@ -1,8 +1,10 @@
 #include "gmd/ml/ml_force_provider.hpp"
 
+#include <stdexcept>
 #include <utility>
 
 #include "gmd/ml/model_runtime_adapter.hpp"
+#include "gmd/runtime/runtime_context.hpp"
 
 namespace gmd {
 
@@ -21,6 +23,13 @@ float MLForceProvider::cutoff() const noexcept {
 }
 
 void MLForceProvider::initialize(RuntimeContext& runtime) {
+    if (runtime.size() > 1) {
+        throw std::runtime_error(
+            "MLForceProvider does not support MPI domain decomposition: "
+            "local-plus-ghost model energy ownership and message-passing halo depth "
+            "are not defined");
+    }
+
     if (!adapter_) {
         adapter_ = CreateUnavailableModelRuntimeAdapter();
     }
@@ -33,6 +42,13 @@ void MLForceProvider::initialize(RuntimeContext& runtime) {
 void MLForceProvider::compute(const ForceRequest& request,
                               ForceResult& result,
                               RuntimeContext& runtime) {
+    if (runtime.size() > 1) {
+        throw std::runtime_error(
+            "MLForceProvider does not support MPI domain decomposition: "
+            "local-plus-ghost model energy ownership and message-passing halo depth "
+            "are not defined");
+    }
+
     result.success = false;
     result.potential_energy = 0.0;
     result.forces.clear();
