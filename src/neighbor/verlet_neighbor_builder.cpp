@@ -198,17 +198,19 @@ void VerletNeighborBuilder::rebuild(System& system,
                     if (!system.is_local_atom(static_cast<std::size_t>(j)) &&
                         domain_decomposition_ != nullptr) {
                         const DomainInfo& domain = domain_decomposition_->info();
-                        double ghost_x = coords[static_cast<std::size_t>(j)][0];
-                        int ghost_x_shift = 0;
-                        while (ghost_x < domain.lo[0]) {
-                            ghost_x += box.lengths[0];
-                            ++ghost_x_shift;
+                        for (int dim = 0; dim < 3; ++dim) {
+                            double ghost_coord = coords[static_cast<std::size_t>(j)][dim];
+                            int ghost_shift = 0;
+                            while (ghost_coord < domain.lo[dim]) {
+                                ghost_coord += box.lengths[dim];
+                                ++ghost_shift;
+                            }
+                            while (ghost_coord >= domain.hi[dim]) {
+                                ghost_coord -= box.lengths[dim];
+                                --ghost_shift;
+                            }
+                            S[dim] = ghost_shift;
                         }
-                        while (ghost_x >= domain.hi[0]) {
-                            ghost_x -= box.lengths[0];
-                            --ghost_x_shift;
-                        }
-                        S[0] = ghost_x_shift;
                     }
                     apply_minimum_image(dr, box);
                     const double r2 = dr[0]*dr[0] + dr[1]*dr[1] + dr[2]*dr[2];

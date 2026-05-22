@@ -1,6 +1,6 @@
-# GMD — Good Molecular Dynamics  `v2.1`
+# GMD — Good Molecular Dynamics  `v2.2`
 
-Release history is tracked in [CHANGELOG.md](CHANGELOG.md). The current documented release is `v2.1` from `2026-05-22`.
+Release history is tracked in [CHANGELOG.md](CHANGELOG.md). The current documented release is `v2.2` from `2026-05-23`.
 
 GMD is a C++20 molecular dynamics engine built around a small set of composable runtime abstractions:
 
@@ -9,6 +9,18 @@ GMD is a C++20 molecular dynamics engine built around a small set of composable 
 - `NeighborBuilder` — Verlet-list construction with skin-distance rebuild check
 - `Integrator` — velocity-Verlet time stepping with optional thermostat / barostat hooks
 - `Simulation` — orchestrator that wires everything together
+
+---
+
+## What's New in v2.2
+
+| Feature | Files |
+|---|---|
+| **3D MPI domain decomposition** — full 3D process grids with face/edge/corner ghost exchange, 3D periodic wraparound, `MPI_Alltoallv` reverse force accumulation, `MPI_Allgatherv` atom redistribution, and per-dimension periodicity control | `include/gmd/parallel/domain_decomposition.hpp` `include/gmd/parallel/mpi_communicator.hpp` `src/parallel/` |
+| **`--proc-grid Px Py Pz` CLI flag** and **`mpi_grid` run.in directive** — user-selectable 3D process grids validated against MPI world size | `app/gmd_main.cpp` `include/gmd/io/config_loader.hpp` |
+| **Comprehensive MPI test suite** — 17+ CTest targets covering 1D periodic ghost exchange/force/migration, 3D face/edge/corner ghost exchange, 3D reverse force, 8-rank LJ/Ewald/PME consistency, and 2-rank smoke tests | `tests/mpi_periodic_1d.cpp` `tests/mpi_ghost_exchange_3d.cpp` `tests/mpi_domain_decomposition_3d.cpp` `CMakeLists.txt` |
+| **3D ghost image flags in Verlet lists** — `S[dim]` computed for all three dimensions, fixing neighbor images in 2D/3D process grids | `src/neighbor/verlet_neighbor_builder.cpp` |
+| **Periodic boundary migration test data** — atoms placed to exercise wraparound ghost exchange and redistribution | `tests/smoke_mpi_periodic_lj.{xyz,run}` `tests/smoke_mpi_boundary_migration.{xyz,run}` |
 
 ---
 
@@ -78,7 +90,7 @@ Implemented:
 - **Monte Carlo barostat** (isotropic NPT, Metropolis criterion, no virial required, adaptive step-size)
 - long-range Coulomb via Ewald and PME (self-contained 3D FFT, B-spline orders 4/6)
 - **ML force provider** — TorchScript backend (`GMD_ENABLE_TORCH=ON`), SE3-GNN compatible, reads `local_cutoff` from model
-- **MPI spatial domain decomposition** — 3D process grids, face/edge/corner ghost-atom exchange, reverse force accumulation, migration, and allreduce collectives (`GMD_ENABLE_MPI=ON`)
+- **MPI spatial domain decomposition** — balanced or user-selected 3D process grids, face/edge/corner ghost-atom exchange, reverse force accumulation via `MPI_Alltoallv`, atom redistribution via `MPI_Allgatherv`, and allreduce collectives (`GMD_ENABLE_MPI=ON`)
 - replicated-mesh PME under MPI with pencil-decomposition metadata reserved for a future distributed FFT
 - extended XYZ trajectory output and energy logging (rank-0 I/O with global coordinate gather in MPI mode)
 - inline `run.in` LJ force-field definitions
@@ -178,10 +190,10 @@ mpirun -np 4 ./build/gmd --np 4 input.xyz run.in
 ```
 
 In MPI mode:
-- Atoms are distributed across ranks via a balanced 3D process grid; `--proc-grid Px Py Pz` or `mpi_grid Px Py Pz` can request a compatible grid
+- Atoms are distributed across ranks via a balanced 3D process grid (computed by `MPI_Dims_create` or a balanced factorisation); `--proc-grid Px Py Pz` or `mpi_grid Px Py Pz` can request a compatible grid
 - Atoms that cross domain boundaries are redistributed to their owning rank after each drift step
 - Ghost atoms are exchanged across face, edge, and corner neighbors each step based on the neighbor-list cutoff + skin
-- Forces on ghost atoms are reverse-accumulated back to their home ranks
+- Forces on ghost atoms are reverse-accumulated back to their home ranks via `MPI_Alltoallv`
 - Only rank 0 writes trajectory and energy log files
 - Global coordinates are gathered for output frames
 - Ewald and PME run with the 3D domain decomposition. PME currently sums rank-local charge assignment onto a replicated full mesh and performs a full FFT on every rank; it is not distributed PME.
@@ -495,6 +507,19 @@ the full logged trajectory row-by-row as well as the final energy drift.
 | `gmd_smoke_pme` | PME electrostatics, NVT |
 | `gmd_smoke_mc_barostat` | MC barostat NPT, Nosé-Hoover |
 | `gmd_smoke_molecular` | molecular FF (`.ff` + `.top`), bonded forces, explicit unsafe LJ opt-in / pair override path |
+| `gmd_mpi_periodic_1d_ghost_exchange_2proc` | 1D periodic wraparound ghost exchange (rank 0 ↔ rank 1) |
+| `gmd_mpi_periodic_1d_force_consistency_2proc` | distributed vs serial LJ force/energy across a periodic x boundary |
+| `gmd_mpi_periodic_1d_migration_2proc` | atom migration across periodic x high→low and low→high boundaries |
+| `gmd_mpi_domain_decomposition_3d_grid_4proc` | 3D process grid creation and coordinate mapping (4 ranks) |
+| `gmd_mpi_domain_decomposition_3d_migration_8proc` | 3D multi-axis atom migration with periodic wrapping (8 ranks) |
+| `gmd_mpi_ghost_exchange_3d_face_8proc` | 3D face ghost exchange (8 ranks) |
+| `gmd_mpi_ghost_exchange_3d_edge_8proc` | 3D edge ghost exchange (8 ranks) |
+| `gmd_mpi_ghost_exchange_3d_corner_8proc` | 3D corner ghost exchange (8 ranks) |
+| `gmd_mpi_ghost_exchange_3d_periodic_8proc` | 3D periodic corner wraparound ghost exchange (8 ranks) |
+| `gmd_mpi_reverse_force_3d_face_8proc` | 3D face reverse force accumulation (8 ranks) |
+| `gmd_mpi_reverse_force_3d_edge_8proc` | 3D edge reverse force accumulation (8 ranks) |
+| `gmd_mpi_reverse_force_3d_corner_8proc` | 3D corner reverse force accumulation (8 ranks) |
+| `gmd_mpi_lj_3d_periodic_consistency_8proc` | 8-rank periodic LJ energy/force vs serial consistency |
 | `gmd_smoke_mpi_lj_2proc` | 2-process MPI LJ NVT run (verifies execution does not crash) |
 | `gmd_smoke_mpi_ewald_2proc` | 2-process MPI Ewald smoke run on a true cross-rank charged system |
 | `gmd_smoke_mpi_pme_2proc` | 2-process MPI PME smoke run on a true cross-rank charged system |
@@ -543,7 +568,12 @@ GMD/
 │   ├── system/                    System, Box, Topology
 │   └── utils/                     Utilities (reserved)
 ├── src/                           Implementation (mirrors include/gmd/)
-├── tests/                         Smoke / integration / MPI consistency tests
+├── tests/                         Smoke / integration / MPI unit / consistency tests
+│   ├── mpi_periodic_1d.cpp            1D periodic MPI unit tests
+│   ├── mpi_ghost_exchange_3d.cpp      3D ghost exchange + reverse force unit tests
+│   ├── mpi_domain_decomposition_3d.cpp 3D grid + migration unit tests
+│   ├── compare_energy_logs.cpp        Serial-vs-MPI energy log comparator
+│   └── smoke_*                        Smoke test inputs and run files
 ├── run_ethane_demo.sh             One-command build + run for ethane demo
 └── CMakeLists.txt
 ```

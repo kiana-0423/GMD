@@ -2,11 +2,53 @@
 
 All notable user-facing changes in GMD are documented here.
 
+## [v2.2] - 2026-05-23
+
+### Added
+
+- **3D MPI domain decomposition** — the 1D x-axis decomposition introduced in v2.1 is now a full 3D process grid.
+  - `DomainDecomposition` supports arbitrary `{Px, Py, Pz}` process grids with face, edge, and corner neighbor communication.
+  - `choose_processor_grid()` uses `MPI_Dims_create` when MPI is available, falling back to a balanced factorisation for non-MPI builds.
+  - `create_1d_decomposition()` remains available for backward compatibility and simple x-only splitting.
+  - `neighbor_rank(offset)` correctly wraps periodic neighbors and returns `no_rank` (-1) for non-periodic boundaries.
+  - `owner_rank(pos)` wraps periodic coordinates before determining the owning process.
+- **`--proc-grid Px Py Pz` CLI flag** — explicitly specify a custom 3D process grid at runtime.
+- **`mpi_grid Px Py Pz` run.in directive** — configure the process grid from the run file.
+- **Comprehensive MPI unit tests** (17+ CTest targets when `GMD_ENABLE_MPI=ON`):
+  - `gmd_mpi_periodic_1d_*` — 1D periodic ghost exchange, force consistency, and atom migration (2 ranks).
+  - `gmd_mpi_domain_decomposition_3d_*` — 3D grid creation, coordinate mapping, and multi-axis atom migration (4/8 ranks).
+  - `gmd_mpi_ghost_exchange_3d_*` — 3D face/edge/corner ghost exchange, periodic corner wrapping, and reverse force accumulation (8 ranks).
+  - `gmd_mpi_lj_3d_periodic_consistency` — 8-rank periodic LJ energy/force consistency vs serial (8 ranks).
+  - `gmd_smoke_mpi_ewald_2proc` / `gmd_smoke_mpi_pme_2proc` — 2-rank Ewald/PME smoke tests on cross-rank charged systems.
+  - `gmd_smoke_mpi_molecular_2proc` — 2-rank bonded molecular smoke test across a rank boundary.
+  - `gmd_smoke_mpi_ewald_consistency_8proc` / `gmd_smoke_mpi_pme_consistency_8proc` — serial vs 8-rank Ewald/PME consistency on 3D process grids.
+- **Periodic 1D MPI boundary migration test data** — `tests/smoke_mpi_periodic_lj.{xyz,run}` and `tests/smoke_mpi_boundary_migration.{xyz,run}` with atoms placed to exercise wraparound ghost exchange and redistribution.
+
+### Changed
+
+- **`MpiCommunicator` ghost exchange now uses 3D neighbor offsets** — `neighbor_offsets()` iterates up to 26 face/edge/corner neighbors, automatically skipping offsets along axes where `proc_grid[dim] == 1`. `periodic_shift()` wraps coordinates for periodic boundaries in all three dimensions.
+- **`MpiCommunicator` reverse force accumulation uses `MPI_Alltoallv`** — forces on ghost atoms are packed per home rank and exchanged in a single all-to-all collective, replacing the previous pair-wise `MPI_Sendrecv` scheme.
+- **`MpiCommunicator` atom redistribution uses `MPI_Allgatherv`** — all atom states are gathered globally, periodic coordinates are normalized, and `owner_rank()` determines the new owning process.
+- **`VerletNeighborBuilder` ghost image flags extended to 3D** — `S[dim]` is now computed for all three dimensions (previously only x), correctly handling ghost atoms that are periodically shifted along y or z in 3D decompositions.
+- **`DomainDecomposition` periodic state stored as `std::array<bool, 3>`** — replaces the previous single `periodic_x` flag, enabling per-dimension periodicity control.
+- **`validate_rank_grid()` added** — verifies that the MPI rank matches the domain process grid coordinate at the start of every collective operation.
+- **`MpiCommunicator` exposes `pack_send_buffer()` and `unpack_recv_buffer()`** as private helpers with clear 3D offset semantics.
+
+### Fixed
+
+- Ghost image shift vectors (`S[dim]`) in `VerletNeighborBuilder` now correctly computed for all three spatial dimensions, fixing incorrect neighbor images in 2D and 3D process grids.
+- `MPI_Allreduce` collectives in force providers (`ClassicalForceProvider`, `EwaldForceProvider`, `PMEForceProvider`, `BondedForceProvider`) are now placed outside early-return paths so ranks with zero atoms still participate.
+- `compute_twice_ke()` and thermostat initializers use globally allreduced atom counts for consistent `dof_` across all ranks.
+- `VelocityInitializer` COM velocity removal and temperature rescaling use `MPI_Allreduce` for consistent scaling factors.
+- Double-allreduce of kinetic energy removed from `write_global_frame` in `gmd_main.cpp`.
+
+---
+
 ## [v2.1] - 2026-05-22
 
 ### Added
 
-- **MPI spatial domain decomposition** for distributed parallel simulations.
+- **MPI spatial domain decomposition** for distributed parallel simulations (initial 1D x-axis release, upgraded to full 3D in v2.2).
   - `DomainDecomposition` (`include/gmd/parallel/domain_decomposition.hpp`, `src/parallel/domain_decomposition.cpp`) provides 1D x-axis box splitting with configurable ghost width derived from cutoff + skin.
   - `MpiCommunicator` (`include/gmd/parallel/mpi_communicator.hpp`, `src/parallel/mpi_communicator.cpp`) encapsulates allreduce (scalar/vector), broadcast, barrier, ghost-atom coordinate exchange, and reverse force accumulation.
   - `MpiEnvironment` (`include/gmd/parallel/mpi_environment.hpp`, `src/parallel/mpi_environment.cpp`) provides RAII-style `MPI_Init`/`MPI_Finalize` with non-MPI fallback.
