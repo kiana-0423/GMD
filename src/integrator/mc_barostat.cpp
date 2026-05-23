@@ -9,7 +9,7 @@
 
 #include "gmd/force/force_provider.hpp"
 #include "gmd/integrator/thermostat.hpp"
-#include "gmd/runtime/runtime_context.hpp"
+#include "gmd/core/runtime_context.hpp"
 #include "gmd/system/system.hpp"
 
 namespace gmd {

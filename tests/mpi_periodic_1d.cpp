@@ -10,7 +10,7 @@
 #include "gmd/parallel/domain_decomposition.hpp"
 #include "gmd/parallel/mpi_communicator.hpp"
 #include "gmd/parallel/mpi_environment.hpp"
-#include "gmd/runtime/runtime_context.hpp"
+#include "gmd/core/runtime_context.hpp"
 #include "gmd/system/box.hpp"
 #include "gmd/system/system.hpp"
 

@@ -25,7 +25,7 @@
 #include "gmd/integrator/velocity_verlet_integrator.hpp"
 #include "gmd/io/config_loader.hpp"
 #include "gmd/io/trajectory_writer.hpp"
-#include "gmd/runtime/runtime_context.hpp"
+#include "gmd/core/runtime_context.hpp"
 #include "gmd/system/initializer.hpp"
 #include "gmd/system/system.hpp"
 

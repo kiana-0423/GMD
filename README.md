@@ -19,7 +19,7 @@ GMD is a C++20 molecular dynamics engine built around a small set of composable 
 | **3D MPI domain decomposition** — full 3D process grids with face/edge/corner ghost exchange, 3D periodic wraparound, `MPI_Alltoallv` reverse force accumulation, `MPI_Allgatherv` atom redistribution, and per-dimension periodicity control | `include/gmd/parallel/domain_decomposition.hpp` `include/gmd/parallel/mpi_communicator.hpp` `src/parallel/` |
 | **`--proc-grid Px Py Pz` CLI flag** and **`mpi_grid` run.in directive** — user-selectable 3D process grids validated against MPI world size | `app/gmd_main.cpp` `include/gmd/io/config_loader.hpp` |
 | **Comprehensive MPI test suite** — 17+ CTest targets covering 1D periodic ghost exchange/force/migration, 3D face/edge/corner ghost exchange, 3D reverse force, 8-rank LJ/Ewald/PME consistency, and 2-rank smoke tests | `tests/mpi_periodic_1d.cpp` `tests/mpi_ghost_exchange_3d.cpp` `tests/mpi_domain_decomposition_3d.cpp` `CMakeLists.txt` |
-| **3D ghost image flags in Verlet lists** — `S[dim]` computed for all three dimensions, fixing neighbor images in 2D/3D process grids | `src/neighbor/verlet_neighbor_builder.cpp` |
+| **3D ghost image flags in Verlet lists** — `S[dim]` computed for all three dimensions, fixing neighbor images in 2D/3D process grids | `src/system/verlet_neighbor_builder.cpp` |
 | **Periodic boundary migration test data** — atoms placed to exercise wraparound ghost exchange and redistribution | `tests/smoke_mpi_periodic_lj.{xyz,run}` `tests/smoke_mpi_boundary_migration.{xyz,run}` |
 
 ---
@@ -41,8 +41,8 @@ GMD is a C++20 molecular dynamics engine built around a small set of composable 
 
 | Feature | Files |
 |---|---|
-| **ML force provider integration** via TorchScript (LibTorch) — loads `.pt` models, reads `local_cutoff`, calls `forward(species, positions, edge_index, edge_shift)` | `include/gmd/ml/torchscript_adapter.hpp` `include/gmd/ml/ml_force_provider.hpp` `src/ml/` |
-| **`edge_index` and `edge_shift` tensors** — `NeighborList::image_flags` stores per-pair integer shift vectors; `VerletNeighborBuilder` computes them | `include/gmd/system/system.hpp` `src/neighbor/verlet_neighbor_builder.cpp` |
+| **ML force provider integration** via TorchScript (LibTorch) — loads `.pt` models, reads `local_cutoff`, calls `forward(species, positions, edge_index, edge_shift)` | `include/gmd/force/torchscript_adapter.hpp` `include/gmd/force/ml_force_provider.hpp` `src/force/` |
+| **`edge_index` and `edge_shift` tensors** — `NeighborList::image_flags` stores per-pair integer shift vectors; `VerletNeighborBuilder` computes them | `include/gmd/system/system.hpp` `src/system/verlet_neighbor_builder.cpp` |
 | **Atomic numbers (`Z`)** — populated per atom during XYZ loading via built-in element table; forwarded to ML models | `include/gmd/system/system.hpp` `src/io/config_loader.cpp` |
 | **`GMD_ENABLE_TORCH` CMake option** — opt-in LibTorch linkage; `force_field ml` and `model_path` directives in run files | `CMakeLists.txt` `app/gmd_main.cpp` |
 | **PME smoke test** — validates Particle-Mesh Ewald path | `tests/smoke_pme.run` |

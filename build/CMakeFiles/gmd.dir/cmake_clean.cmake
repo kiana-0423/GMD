@@ -1,5 +1,4 @@
 file(REMOVE_RECURSE
-  "CMakeFiles/gmd.dir/link.d"
   "CMakeFiles/gmd.dir/app/gmd_main.cpp.o"
   "CMakeFiles/gmd.dir/app/gmd_main.cpp.o.d"
   "gmd"

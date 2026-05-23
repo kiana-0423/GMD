@@ -3,7 +3,7 @@
 #include <cmath>
 #include <cstddef>
 
-#include "gmd/boundary/minimum_image.hpp"
+#include "gmd/system/minimum_image.hpp"
 #include "gmd/io/config_loader.hpp"
 #include "gmd/system/box.hpp"
 #include "gmd/system/system.hpp"

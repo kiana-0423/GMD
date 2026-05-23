@@ -2,6 +2,20 @@
 
 All notable user-facing changes in GMD are documented here.
 
+## [v2.3] - 2026-05-23
+
+### Changed
+
+- **Directory restructuring** — merged 12 subdirectories into 6 for better cohesion:
+  - `boundary/` → `system/` (PBC and minimum-image are system geometry properties)
+  - `neighbor/` → `system/` (neighbor lists are part of the system data structure)
+  - `runtime/` → `core/` (runtime context is a simulation-core utility)
+  - `ml/` → `force/` (ML force providers are force-field implementations)
+  - Removed empty `cuda/` and `utils/` placeholder directories.
+- All `#include` paths updated accordingly (e.g. `gmd/boundary/` → `gmd/system/`).
+- `CMakeLists.txt` and `run_ethane_demo.sh` source file lists updated.
+- No code logic or architecture changed — only file locations and include paths.
+
 ## [v2.2] - 2026-05-23
 
 ### Added
@@ -102,7 +116,7 @@ All notable user-facing changes in GMD are documented here.
 ### Added
 
 - **ML force provider integration** via TorchScript (LibTorch) backend.
-  - New `TorchScriptModelRuntimeAdapter` (`include/gmd/ml/torchscript_adapter.hpp`, `src/ml/torchscript_adapter.cpp`) loads a `.pt` model exported by `gmd_se3gnn`, reads the `local_cutoff` attribute, and calls `forward(species, positions, edge_index, edge_shift)`.
+  - New `TorchScriptModelRuntimeAdapter` (`include/gmd/force/torchscript_adapter.hpp`, `src/force/torchscript_adapter.cpp`) loads a `.pt` model exported by `gmd_se3gnn`, reads the `local_cutoff` attribute, and calls `forward(species, positions, edge_index, edge_shift)`.
   - `MLForceProvider` now exposes `float cutoff() const noexcept` (delegated to the adapter) so the correct `VerletNeighborBuilder` cutoff is set automatically.
   - Run files accept two new directives: `force_field ml` and `model_path /path/to/model.pt`.
 - **`edge_index` and `edge_shift` tensors** for periodic-boundary ML models.
@@ -112,7 +126,7 @@ All notable user-facing changes in GMD are documented here.
   - `System` gains an `atomic_numbers_` array with `atomic_numbers()` / `mutable_atomic_numbers()` accessors.
   - `ConfigLoader::load_xyz` resolves element symbols to atomic numbers via a built-in `kElementAtomicNumbers` table and writes them into `System`.
   - `ModelEvaluationRequest` now carries an `atomic_numbers` span and a `neighbor_list` pointer, both forwarded by `MLForceProvider::compute()`.
-- **`GMD_ENABLE_TORCH` CMake option**: when `ON`, `find_package(Torch REQUIRED)` is called, `src/ml/torchscript_adapter.cpp` is compiled into `gmd_core`, and `${TORCH_LIBRARIES}` is linked. Build with `-DGMD_ENABLE_TORCH=ON -DCMAKE_PREFIX_PATH=/path/to/libtorch`.
+- **`GMD_ENABLE_TORCH` CMake option**: when `ON`, `find_package(Torch REQUIRED)` is called, `src/force/torchscript_adapter.cpp` is compiled into `gmd_core`, and `${TORCH_LIBRARIES}` is linked. Build with `-DGMD_ENABLE_TORCH=ON -DCMAKE_PREFIX_PATH=/path/to/libtorch`.
 
 ### Changed
 

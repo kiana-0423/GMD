@@ -8,8 +8,8 @@
 #include <string>
 #include <stdexcept>
 
-#include "gmd/boundary/minimum_image.hpp"
-#include "gmd/runtime/runtime_context.hpp"
+#include "gmd/system/minimum_image.hpp"
+#include "gmd/core/runtime_context.hpp"
 #include "gmd/system/box.hpp"
 #include "gmd/system/system.hpp"
 

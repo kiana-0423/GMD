@@ -10,12 +10,13 @@ mkdir -p "${BUILD_DIR}"
 
 c++ -std=c++20 -I"${ROOT_DIR}/include" \
   "${ROOT_DIR}/examples/ethane_demo/ethane_demo.cpp" \
-  "${ROOT_DIR}/src/boundary/minimum_image.cpp" \
-  "${ROOT_DIR}/src/boundary/periodic_boundary.cpp" \
+  "${ROOT_DIR}/src/core/runtime_context.cpp" \
   "${ROOT_DIR}/src/core/simulation.cpp" \
   "${ROOT_DIR}/src/force/bonded_force_provider.cpp" \
   "${ROOT_DIR}/src/force/classical_force_provider.cpp" \
   "${ROOT_DIR}/src/force/ewald_force_provider.cpp" \
+  "${ROOT_DIR}/src/force/ml_force_provider.cpp" \
+  "${ROOT_DIR}/src/force/model_runtime_adapter.cpp" \
   "${ROOT_DIR}/src/force/pme_force_provider.cpp" \
   "${ROOT_DIR}/src/integrator/thermostat.cpp" \
   "${ROOT_DIR}/src/integrator/velocity_rescaling_thermostat.cpp" \
@@ -25,15 +26,14 @@ c++ -std=c++20 -I"${ROOT_DIR}/include" \
   "${ROOT_DIR}/src/integrator/velocity_verlet_integrator.cpp" \
   "${ROOT_DIR}/src/io/config_loader.cpp" \
   "${ROOT_DIR}/src/io/trajectory_writer.cpp" \
-  "${ROOT_DIR}/src/ml/ml_force_provider.cpp" \
-  "${ROOT_DIR}/src/ml/model_runtime_adapter.cpp" \
-  "${ROOT_DIR}/src/neighbor/verlet_neighbor_builder.cpp" \
   "${ROOT_DIR}/src/parallel/domain_decomposition.cpp" \
   "${ROOT_DIR}/src/parallel/mpi_communicator.cpp" \
   "${ROOT_DIR}/src/parallel/mpi_environment.cpp" \
   "${ROOT_DIR}/src/parallel/pme_parallel.cpp" \
-  "${ROOT_DIR}/src/runtime/runtime_context.cpp" \
   "${ROOT_DIR}/src/system/initializer.cpp" \
+  "${ROOT_DIR}/src/system/minimum_image.cpp" \
+  "${ROOT_DIR}/src/system/periodic_boundary.cpp" \
+  "${ROOT_DIR}/src/system/verlet_neighbor_builder.cpp" \
   -o "${BIN_PATH}"
 
 cp "${ROOT_DIR}/examples/ethane_demo/ethane.xyz" "${BUILD_DIR}/ethane.xyz"

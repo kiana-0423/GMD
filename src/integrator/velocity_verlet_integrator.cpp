@@ -3,11 +3,11 @@
 #include <algorithm>
 #include <stdexcept>
 
-#include "gmd/boundary/periodic_boundary.hpp"
+#include "gmd/system/periodic_boundary.hpp"
 #include "gmd/force/force_provider.hpp"
 #include "gmd/integrator/barostat.hpp"
 #include "gmd/integrator/thermostat.hpp"
-#include "gmd/runtime/runtime_context.hpp"
+#include "gmd/core/runtime_context.hpp"
 #include "gmd/system/system.hpp"
 
 namespace gmd {

@@ -25,16 +25,16 @@
 #include "gmd/integrator/thermostat.hpp"
 #include "gmd/io/config_loader.hpp"
 #include "gmd/io/trajectory_writer.hpp"
-#include "gmd/ml/ml_force_provider.hpp"
-#include "gmd/neighbor/verlet_neighbor_builder.hpp"
+#include "gmd/force/ml_force_provider.hpp"
+#include "gmd/system/verlet_neighbor_builder.hpp"
 #include "gmd/parallel/domain_decomposition.hpp"
 #include "gmd/parallel/mpi_communicator.hpp"
 #include "gmd/parallel/mpi_environment.hpp"
-#include "gmd/runtime/runtime_context.hpp"
+#include "gmd/core/runtime_context.hpp"
 #include "gmd/system/initializer.hpp"
 #include "gmd/system/system.hpp"
 #ifdef GMD_ENABLE_TORCH
-#include "gmd/ml/torchscript_adapter.hpp"
+#include "gmd/force/torchscript_adapter.hpp"
 #endif
 
 namespace {

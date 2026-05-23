@@ -1,0 +1,9 @@
+velocity 300.0
+time_step 2.0
+run 20
+velocity_init random
+remove_com_velocity true
+
+force_field lj
+cutoff 8.5
+type 1 Ar epsilon 0.01032 sigma 3.405 charge 0.0
