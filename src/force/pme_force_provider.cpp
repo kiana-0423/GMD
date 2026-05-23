@@ -1,11 +1,14 @@
 #include "gmd/force/pme_force_provider.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
+#include <iostream>
 #include <numbers>
 #include <stdexcept>
 
 #include "gmd/system/minimum_image.hpp"
+#include "gmd/force/special_pair_coulomb.hpp"
 #include "gmd/core/runtime_context.hpp"
 #include "gmd/system/box.hpp"
 #include "gmd/system/system.hpp"
@@ -67,6 +70,16 @@ static double allreduce_scalar(double local_value) noexcept {
     return global_value;
 }
 
+static double allreduce_max(double local_value) noexcept {
+    if (!mpi_is_available()) {
+        return local_value;
+    }
+
+    double global_value = 0.0;
+    MPI_Allreduce(&local_value, &global_value, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+    return global_value;
+}
+
 static void allreduce_mesh(std::vector<std::complex<double>>& mesh) {
     if (!mpi_is_available()) {
         return;
@@ -116,6 +129,10 @@ static double allreduce_scalar(double local_value) noexcept {
     return local_value;
 }
 
+static double allreduce_max(double local_value) noexcept {
+    return local_value;
+}
+
 static void allreduce_mesh(std::vector<std::complex<double>>&) {}
 
 static void allreduce_virial(std::array<double, 9>&) {}
@@ -126,13 +143,17 @@ static void allreduce_virial(std::array<double, 9>&) {}
 // ---------------------------------------------------------------------------
 
 PMEForceProvider::PMEForceProvider(double alpha, double real_cutoff,
-                                   int order, std::array<int, 3> grid)
+                                   int order, std::array<int, 3> grid,
+                                   PmeExecutionMode mode,
+                                   bool benchmark)
     : alpha_(alpha),
       alpha_sq_(alpha * alpha),
       real_cutoff_(real_cutoff),
       real_cutoff_sq_(real_cutoff * real_cutoff),
       order_(order),
-      grid_(grid) {
+      grid_(grid),
+      mode_(mode),
+      benchmark_(benchmark) {
     if (order != 4 && order != 6)
         throw std::invalid_argument("PME B-spline order must be 4 or 6");
     for (int d = 0; d < 3; ++d) {
@@ -157,6 +178,16 @@ std::string_view PMEForceProvider::name() const noexcept {
 }
 void PMEForceProvider::initialize(RuntimeContext& runtime) {
     parallel_decomposition_.setup(runtime.size(), grid_);
+    if (mode_ == PmeExecutionMode::Distributed) {
+        if (runtime.rank() == 0) {
+            std::cerr
+                << "[gmd rank 0] Warning: pme_mode distributed currently uses "
+                << "the replicated PME numerical backend with distributed-mode "
+                << "selection and benchmark timing. The scalable FFTW-MPI slab "
+                << "backend is guarded by GMD_ENABLE_DISTRIBUTED_PME but is not "
+                << "wired into PMEForceProvider yet.\n";
+        }
+    }
 }
 void PMEForceProvider::finalize(RuntimeContext&) {}
 
@@ -369,11 +400,14 @@ void PMEForceProvider::compute_real_space(const ForceRequest& req,
     const double two_alpha_over_sqrt_pi =
         2.0 * alpha_ / std::sqrt(std::numbers::pi);
 
+    auto counts_pair = [&](std::size_t i, std::size_t j) {
+        return i < local_atom_count &&
+               (req.system->is_local_atom(j) ||
+                req.system->atom_tag(i) < req.system->atom_tag(j));
+    };
+
     auto eval_pair = [&](std::size_t i, std::size_t j) {
-        if (!req.system->is_local_atom(j) &&
-            req.system->atom_tag(i) >= req.system->atom_tag(j)) {
-            return;
-        }
+        if (!counts_pair(i, j)) return;
 
         const double qi = charges[i], qj = charges[j];
         if (qi == 0.0 && qj == 0.0) return;
@@ -416,6 +450,14 @@ void PMEForceProvider::compute_real_space(const ForceRequest& req,
             for (std::size_t j = i + 1; j < n; ++j)
                 eval_pair(i, j);
     }
+
+    // PME evaluates an unscaled reciprocal mesh. Correct special pairs with
+    // (scale - 1) times the analytical direct interaction, matching standard
+    // Ewald exclusion handling. The mesh approximation still controls the
+    // residual accuracy of the unscaled reciprocal contribution.
+    // TODO: retain an Ewald-vs-PME special-pair accuracy regression when the
+    // replicated mesh is replaced with distributed mesh/FFT communication.
+    apply_special_pair_coulomb_corrections(req, res, kPMECoulomb);
 }
 
 // ---------------------------------------------------------------------------
@@ -424,6 +466,17 @@ void PMEForceProvider::compute_real_space(const ForceRequest& req,
 
 void PMEForceProvider::compute_reciprocal_pme(const ForceRequest& req,
                                                ForceResult& res) {
+    using Clock = std::chrono::steady_clock;
+    auto stage_start = Clock::now();
+    double t_charge_ms = 0.0;
+    double t_forward_fft_ms = 0.0;
+    double t_green_ms = 0.0;
+    double t_inverse_fft_ms = 0.0;
+    double t_interp_ms = 0.0;
+    auto elapsed_ms = [](Clock::time_point begin, Clock::time_point end) {
+        return std::chrono::duration<double, std::milli>(end - begin).count();
+    };
+
     const auto& coords  = req.coordinates;
     const auto  charges = req.system->charges();
     const Box&  box     = *req.box;
@@ -482,9 +535,16 @@ void PMEForceProvider::compute_reciprocal_pme(const ForceRequest& req,
     }
 
     allreduce_mesh(mesh_);
+    auto stage_end = Clock::now();
+    t_charge_ms = elapsed_ms(stage_start, stage_end);
+
+    stage_start = Clock::now();
     fft3d(mesh_, false);
+    stage_end = Clock::now();
+    t_forward_fft_ms = elapsed_ms(stage_start, stage_end);
 
     // Compute energy: ½ Σ_m G(m)|Q̂(m)|²  and apply influence function.
+    stage_start = Clock::now();
     double e_recip = 0.0;
     for (std::size_t idx = 0; idx < mesh_.size(); ++idx) {
         const double g   = influence_[idx];
@@ -496,9 +556,14 @@ void PMEForceProvider::compute_reciprocal_pme(const ForceRequest& req,
     // The FFT result is now replicated. Store one equal share so the existing
     // Simulation energy allreduce produces one global reciprocal energy.
     res.potential_energy += e_recip / static_cast<double>(mpi_size());
+    stage_end = Clock::now();
+    t_green_ms = elapsed_ms(stage_start, stage_end);
 
     // ---- Step 5: Inverse 3-D FFT to get potential on mesh ----
+    stage_start = Clock::now();
     fft3d(mesh_, true);
+    stage_end = Clock::now();
+    t_inverse_fft_ms = elapsed_ms(stage_start, stage_end);
 
     // ---- Step 6: Force interpolation ----
     // F_i,α = -q_i · K_α/L_α · Σ_{m} V(m) · (∂w_α/∂u_α)(m_α)
@@ -549,6 +614,38 @@ void PMEForceProvider::compute_reciprocal_pme(const ForceRequest& req,
         res.forces[i][0] -= charges[i] * fx * (K1 / Lx);
         res.forces[i][1] -= charges[i] * fy * (K2 / Ly);
         res.forces[i][2] -= charges[i] * fz * (K3 / Lz);
+    }
+
+    stage_end = Clock::now();
+    t_interp_ms = elapsed_ms(stage_start, stage_end);
+
+    if (benchmark_) {
+        const double charge = allreduce_max(t_charge_ms);
+        const double forward = allreduce_max(t_forward_fft_ms);
+        const double green = allreduce_max(t_green_ms);
+        const double inverse = allreduce_max(t_inverse_fft_ms);
+        const double interp = allreduce_max(t_interp_ms);
+        const int rank = req.system != nullptr ? 0 : 0;
+        (void)rank;
+#ifdef GMD_ENABLE_MPI
+        int mpi_rank = 0;
+        if (mpi_is_available()) MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank);
+        if (mpi_rank != 0) return;
+#endif
+        const char* mode_name =
+            mode_ == PmeExecutionMode::Replicated ? "replicated" :
+            mode_ == PmeExecutionMode::Distributed ? "distributed" : "auto";
+        std::cout << "[gmd pme benchmark] mode=" << mode_name
+                  << " grid=" << K1 << "x" << K2 << "x" << K3
+                  << " mpi_size=" << mpi_size()
+                  << " charge_assignment_ms=" << charge
+                  << " forward_fft_ms=" << forward
+                  << " green_ms=" << green
+                  << " inverse_fft_ms=" << inverse
+                  << " force_interpolation_ms=" << interp
+                  << " reciprocal_total_ms="
+                  << (charge + forward + green + inverse + interp)
+                  << "\n";
     }
 }
 

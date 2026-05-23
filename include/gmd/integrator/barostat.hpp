@@ -1,6 +1,8 @@
 #pragma once
 
 #include <cstdint>
+#include <string>
+#include <string_view>
 
 namespace gmd {
 
@@ -46,6 +48,10 @@ public:
 
     // Optional: reset any internal state (e.g. between equilibration and production).
     virtual void reset() {}
+
+    virtual std::string_view name() const noexcept { return "barostat"; }
+    virtual std::string checkpoint_state() const { return "stateless"; }
+    virtual void load_checkpoint_state(const std::string& /*state*/) {}
 };
 
 }  // namespace gmd

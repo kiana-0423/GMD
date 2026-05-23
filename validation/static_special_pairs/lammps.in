@@ -1,0 +1,11 @@
+units metal
+atom_style full
+boundary p p p
+read_data chain.data
+
+pair_style lj/cut/coul/long 9.0
+pair_modify shift yes
+special_bonds lj/coul 0.0 0.0 0.5 0.0 0.0 0.833333333333
+kspace_style ewald 1.0e-8
+
+run 0

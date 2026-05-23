@@ -1,0 +1,27 @@
+{
+  "energy": {
+    "components": {
+      "bonded": 0.0,
+      "coulomb": -0.702863738905821,
+      "lj": -0.00158822707486287
+    },
+    "total": -0.704451965980684
+  },
+  "force": {
+    "atoms": [
+      [0.00594924501802188, -0.00562862221194311, -0.00562862221194311],
+      [-0.00594924501802188, -0.00562862221194311, -0.00562862221194311],
+      [0.00594924501802188, 0.00562862221194311, -0.00562862221194311],
+      [-0.00594924501802188, 0.00562862221194311, -0.00562862221194311],
+      [0.00594924501802188, -0.00562862221194311, 0.00562862221194311],
+      [-0.00594924501802188, -0.00562862221194311, 0.00562862221194311],
+      [0.00594924501802188, 0.00562862221194311, 0.00562862221194311],
+      [-0.00594924501802188, 0.00562862221194311, 0.00562862221194311]
+    ]
+  },
+  "reference_details": {
+    "description": "Provisional GMD PME regression baseline. This is not an independent scientific reference; replace with LAMMPS PPPM or OpenMM PME output before claiming PME cross-code validation.",
+    "units": "GMD internal units: eV, Angstrom, elementary charge"
+  },
+  "source": "provisional_gmd_baseline_2026-05-23"
+}

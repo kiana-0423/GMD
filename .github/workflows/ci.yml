@@ -1,0 +1,97 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  serial:
+    name: Serial build and tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            cmake \
+            ninja-build \
+            python3
+
+      - name: Configure
+        run: >
+          cmake -S . -B build
+          -G Ninja
+          -DCMAKE_BUILD_TYPE=RelWithDebInfo
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Run serial tests
+        run: ctest --test-dir build --output-on-failure --verbose
+
+      - name: Upload CTest logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: serial-ctest-logs
+          path: |
+            build/Testing/**/*.log
+            build/Testing/**/*.xml
+          if-no-files-found: ignore
+
+  mpi:
+    name: MPI build and small tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            cmake \
+            ninja-build \
+            python3 \
+            openmpi-bin \
+            libopenmpi-dev
+
+      - name: Configure MPI build
+        run: >
+          cmake -S . -B build-mpi
+          -G Ninja
+          -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          -DGMD_ENABLE_MPI=ON
+
+      - name: Build MPI target
+        run: cmake --build build-mpi --parallel
+
+      - name: List registered MPI tests
+        run: ctest --test-dir build-mpi -N
+
+      - name: Run small MPI tests
+        env:
+          OMPI_MCA_rmaps_base_oversubscribe: "1"
+        run: >
+          ctest --test-dir build-mpi --output-on-failure --verbose
+          -R
+          "gmd_mpi_periodic_1d_ghost_exchange_2proc|gmd_mpi_periodic_1d_force_consistency_2proc|gmd_mpi_periodic_1d_migration_2proc|gmd_mpi_special_pair_consistency_2proc|gmd_mpi_constraint_solver_2proc|gmd_mpi_checkpoint_restart_2proc|gmd_mpi_restart_continuity_cli_2proc|gmd_smoke_mpi_lj_2proc|gmd_smoke_mpi_ewald_2proc|gmd_smoke_mpi_pme_2proc|gmd_smoke_mpi_molecular_2proc"
+
+      - name: Upload CTest logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mpi-ctest-logs
+          path: |
+            build-mpi/Testing/**/*.log
+            build-mpi/Testing/**/*.xml
+          if-no-files-found: ignore

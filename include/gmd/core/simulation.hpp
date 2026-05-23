@@ -38,6 +38,8 @@ public:
     void set_remove_center_of_mass_velocity(bool enabled) noexcept;
     void set_initial_temperature(double temperature) noexcept;
     void set_time_step(double time_step) noexcept;
+    void set_current_step(std::uint64_t step) noexcept;
+    std::uint64_t current_step() const noexcept;
 
     // Returns true when the simulation has the minimum components required to step.
     bool ready() const noexcept;

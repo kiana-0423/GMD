@@ -2,6 +2,8 @@
 
 #include <cstdint>
 #include <random>
+#include <string>
+#include <string_view>
 
 #include "gmd/integrator/barostat.hpp"
 
@@ -40,6 +42,8 @@ public:
 
     ~MCBarostat() override = default;
 
+    std::string_view name() const noexcept override { return "monte_carlo"; }
+
     // --- Barostat interface ---
     void apply(System& system,
                ForceProvider& provider,
@@ -54,6 +58,8 @@ public:
     bool requires_virial() const noexcept override { return false; }
 
     void reset() override;
+    std::string checkpoint_state() const override;
+    void load_checkpoint_state(const std::string& state) override;
 
     // --- Diagnostics ---
     std::uint64_t attempts()  const noexcept { return n_attempts_; }

@@ -37,12 +37,19 @@ struct ImproperTerm {
     int type_idx;
 };
 
+struct BondConstraint {
+    int i = 0;       // atom index / stable global tag (0-based)
+    int j = 0;       // atom index / stable global tag (0-based)
+    double target_distance = 0.0;
+};
+
 // Holds the full bonded connectivity for a molecular system.
 struct Topology {
     std::vector<BondTerm>     bonds;
     std::vector<AngleTerm>    angles;
     std::vector<DihedralTerm> dihedrals;
     std::vector<ImproperTerm> impropers;
+    std::vector<BondConstraint> constraints;
 };
 
 }  // namespace gmd

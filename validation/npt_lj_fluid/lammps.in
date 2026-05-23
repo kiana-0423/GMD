@@ -1,0 +1,14 @@
+units metal
+atom_style atomic
+boundary p p p
+read_data lj32.data
+
+pair_style lj/cut 8.5
+pair_coeff 1 1 0.01032 3.405
+pair_modify shift yes
+timestep 0.002
+fix 1 all nvt temp 120.0 120.0 0.1
+fix 2 all press/berendsen iso 1.0 1.0 1.0
+
+thermo 10
+run 2000

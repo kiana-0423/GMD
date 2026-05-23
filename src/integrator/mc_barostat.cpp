@@ -5,6 +5,7 @@
 #include <cmath>
 #include <span>
 #include <stdexcept>
+#include <sstream>
 #include <vector>
 
 #include "gmd/force/force_provider.hpp"
@@ -29,6 +30,38 @@ void MCBarostat::reset() {
     n_accepted_     = 0;
     window_attempts_ = 0;
     window_accepted_ = 0;
+}
+
+std::string MCBarostat::checkpoint_state() const {
+    std::ostringstream out;
+    out.precision(17);
+    out << "frequency " << frequency_
+        << " max_delta_ln_V " << max_delta_ln_V_
+        << " adjust_interval " << adjust_interval_
+        << " attempts " << n_attempts_
+        << " accepted " << n_accepted_
+        << " window_attempts " << window_attempts_
+        << " window_accepted " << window_accepted_
+        << " rng " << rng_;
+    return out.str();
+}
+
+void MCBarostat::load_checkpoint_state(const std::string& state) {
+    if (state.empty() || state == "stateless") {
+        return;
+    }
+    std::istringstream input(state);
+    std::string key;
+    if (!(input >> key) || key != "frequency" || !(input >> frequency_) ||
+        !(input >> key) || key != "max_delta_ln_V" || !(input >> max_delta_ln_V_) ||
+        !(input >> key) || key != "adjust_interval" || !(input >> adjust_interval_) ||
+        !(input >> key) || key != "attempts" || !(input >> n_attempts_) ||
+        !(input >> key) || key != "accepted" || !(input >> n_accepted_) ||
+        !(input >> key) || key != "window_attempts" || !(input >> window_attempts_) ||
+        !(input >> key) || key != "window_accepted" || !(input >> window_accepted_) ||
+        !(input >> key) || key != "rng" || !(input >> rng_)) {
+        throw std::runtime_error("Invalid Monte Carlo barostat checkpoint state");
+    }
 }
 
 void MCBarostat::apply(System& system,

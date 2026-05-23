@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
 
-project(GMD VERSION 0.1.0 LANGUAGES CXX)
+project(GMD VERSION 2.4.0 LANGUAGES CXX)
 
 include(CTest)
 
@@ -8,6 +8,9 @@ option(GMD_ENABLE_CUDA "Enable CUDA language support" OFF)
 option(GMD_BUILD_PYTHON "Build Python bindings" OFF)
 option(GMD_ENABLE_TORCH "Enable TorchScript ML force provider (requires LibTorch)" OFF)
 option(GMD_ENABLE_MPI "Enable MPI parallel support" OFF)
+option(GMD_ENABLE_DISTRIBUTED_PME
+    "Enable optional distributed PME/FFT support (requires MPI and FFTW-MPI)"
+    OFF)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -31,6 +34,22 @@ if(GMD_ENABLE_MPI)
     include(MPIOptions)
 endif()
 
+if(GMD_ENABLE_DISTRIBUTED_PME)
+    if(NOT GMD_ENABLE_MPI)
+        message(FATAL_ERROR "GMD_ENABLE_DISTRIBUTED_PME requires GMD_ENABLE_MPI=ON")
+    endif()
+    find_path(FFTW3_MPI_INCLUDE_DIR fftw3-mpi.h)
+    find_library(FFTW3_MPI_LIBRARY NAMES fftw3_mpi)
+    find_library(FFTW3_LIBRARY NAMES fftw3)
+    if(NOT FFTW3_MPI_INCLUDE_DIR OR NOT FFTW3_MPI_LIBRARY OR NOT FFTW3_LIBRARY)
+        message(FATAL_ERROR
+            "GMD_ENABLE_DISTRIBUTED_PME=ON requires FFTW-MPI. "
+            "Could not find fftw3-mpi.h, libfftw3_mpi, and libfftw3. "
+            "Set FFTW3_MPI_INCLUDE_DIR, FFTW3_MPI_LIBRARY, and FFTW3_LIBRARY "
+            "or disable GMD_ENABLE_DISTRIBUTED_PME.")
+    endif()
+endif()
+
 add_library(gmd_headers INTERFACE)
 target_include_directories(gmd_headers
     INTERFACE
@@ -48,12 +67,14 @@ add_library(gmd_core STATIC
     src/force/ml_force_provider.cpp
     src/force/model_runtime_adapter.cpp
     src/force/pme_force_provider.cpp
+    src/integrator/constraint_solver.cpp
     src/integrator/thermostat.cpp
     src/integrator/velocity_rescaling_thermostat.cpp
     src/integrator/nose_hoover_thermostat.cpp
     src/integrator/berendsen_barostat.cpp
     src/integrator/mc_barostat.cpp
     src/integrator/velocity_verlet_integrator.cpp
+    src/io/checkpoint.cpp
     src/io/config_loader.cpp
     src/io/trajectory_writer.cpp
     src/parallel/domain_decomposition.cpp
@@ -77,12 +98,32 @@ if(GMD_ENABLE_MPI)
     gmd_configure_mpi_target(gmd_core)
 endif()
 
+if(GMD_ENABLE_DISTRIBUTED_PME)
+    target_compile_definitions(gmd_core PUBLIC GMD_ENABLE_DISTRIBUTED_PME)
+    target_include_directories(gmd_core PUBLIC ${FFTW3_MPI_INCLUDE_DIR})
+    target_link_libraries(gmd_core PUBLIC ${FFTW3_MPI_LIBRARY} ${FFTW3_LIBRARY})
+endif()
+
 gmd_apply_default_warnings(gmd_core)
 
 add_executable(gmd app/gmd_main.cpp)
 target_link_libraries(gmd PRIVATE gmd_core)
 
+add_executable(gmd_validate app/gmd_validate_main.cpp)
+target_link_libraries(gmd_validate PRIVATE gmd_core)
+
 if(BUILD_TESTING)
+    find_package(Python3 COMPONENTS Interpreter REQUIRED)
+
+    add_executable(gmd_special_pair_tests tests/special_pair_tests.cpp)
+    target_link_libraries(gmd_special_pair_tests PRIVATE gmd_core)
+    add_executable(gmd_constraint_solver_tests tests/constraint_solver_tests.cpp)
+    target_link_libraries(gmd_constraint_solver_tests PRIVATE gmd_core)
+    add_executable(gmd_checkpoint_restart_tests tests/checkpoint_restart_tests.cpp)
+    target_link_libraries(gmd_checkpoint_restart_tests PRIVATE gmd_core)
+    add_executable(gmd_pme_mode_tests tests/pme_mode_tests.cpp)
+    target_link_libraries(gmd_pme_mode_tests PRIVATE gmd_core)
+
     file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/tests)
     configure_file(tests/smoke_lj.xyz         ${CMAKE_CURRENT_BINARY_DIR}/tests/smoke_xyz.in       COPYONLY)
     configure_file(tests/smoke_lj.run         ${CMAKE_CURRENT_BINARY_DIR}/tests/smoke_run.in       COPYONLY)
@@ -150,6 +191,86 @@ if(BUILD_TESTING)
     )
     set_tests_properties(gmd_smoke_molecular PROPERTIES LABELS "smoke;integration")
 
+    add_test(NAME gmd_special_pair_rules COMMAND gmd_special_pair_tests)
+    set_tests_properties(gmd_special_pair_rules PROPERTIES LABELS "unit;force")
+    add_test(NAME gmd_constraint_solver COMMAND gmd_constraint_solver_tests)
+    set_tests_properties(gmd_constraint_solver PROPERTIES LABELS "unit;integrator")
+    add_test(NAME gmd_checkpoint_restart COMMAND gmd_checkpoint_restart_tests)
+    set_tests_properties(gmd_checkpoint_restart PROPERTIES LABELS "unit;io;restart")
+    add_test(
+        NAME gmd_restart_continuity_cli
+        COMMAND Python3::Interpreter
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/restart_continuity.py
+                --gmd $<TARGET_FILE:gmd>
+                --work-root ${CMAKE_CURRENT_BINARY_DIR}/tests/restart_continuity_serial
+                --np 1
+                --position-tolerance 1e-10
+                --velocity-tolerance 1e-10
+                --energy-tolerance 1e-6
+    )
+    set_tests_properties(gmd_restart_continuity_cli
+        PROPERTIES LABELS "integration;restart")
+    add_test(NAME gmd_pme_modes COMMAND gmd_pme_mode_tests)
+    set_tests_properties(gmd_pme_modes PROPERTIES LABELS "unit;force;pme")
+
+    add_test(
+        NAME gmd_validation_static_lj_cluster
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/validation/run_validation.py
+                --case static_lj_cluster
+                --gmd $<TARGET_FILE:gmd>
+                --gmd-validate $<TARGET_FILE:gmd_validate>
+                --work-root ${CMAKE_CURRENT_BINARY_DIR}/validation
+    )
+    set_tests_properties(gmd_validation_static_lj_cluster
+        PROPERTIES LABELS "validation;unit")
+
+    add_test(
+        NAME gmd_validation_static_special_pairs
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/validation/run_validation.py
+                --case static_special_pairs
+                --gmd $<TARGET_FILE:gmd>
+                --gmd-validate $<TARGET_FILE:gmd_validate>
+                --work-root ${CMAKE_CURRENT_BINARY_DIR}/validation
+    )
+    set_tests_properties(gmd_validation_static_special_pairs
+        PROPERTIES LABELS "validation;unit")
+
+    add_test(
+        NAME gmd_validation_static_coulomb
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/validation/run_validation.py
+                --case static_coulomb
+                --gmd $<TARGET_FILE:gmd>
+                --gmd-validate $<TARGET_FILE:gmd_validate>
+                --work-root ${CMAKE_CURRENT_BINARY_DIR}/validation
+    )
+    set_tests_properties(gmd_validation_static_coulomb
+        PROPERTIES LABELS "validation;unit")
+
+    add_custom_target(gmd_validation_short
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/validation/run_validation.py
+                --case short
+                --gmd $<TARGET_FILE:gmd>
+                --gmd-validate $<TARGET_FILE:gmd_validate>
+                --work-root ${CMAKE_CURRENT_BINARY_DIR}/validation
+        DEPENDS gmd gmd_validate
+        USES_TERMINAL
+    )
+
+    add_custom_target(gmd_validation_long
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/validation/run_validation.py
+                --case long
+                --gmd $<TARGET_FILE:gmd>
+                --gmd-validate $<TARGET_FILE:gmd_validate>
+                --work-root ${CMAKE_CURRENT_BINARY_DIR}/validation
+        DEPENDS gmd gmd_validate
+        USES_TERMINAL
+    )
+
     if(GMD_ENABLE_MPI)
         add_executable(gmd_mpi_periodic_1d_tests tests/mpi_periodic_1d.cpp)
         target_link_libraries(gmd_mpi_periodic_1d_tests PRIVATE gmd_core)
@@ -159,6 +280,12 @@ if(BUILD_TESTING)
         add_executable(gmd_mpi_ghost_exchange_3d_tests
             tests/mpi_ghost_exchange_3d.cpp)
         target_link_libraries(gmd_mpi_ghost_exchange_3d_tests PRIVATE gmd_core)
+        add_executable(gmd_mpi_special_pair_tests tests/mpi_special_pair.cpp)
+        target_link_libraries(gmd_mpi_special_pair_tests PRIVATE gmd_core)
+        add_executable(gmd_mpi_constraint_solver_tests tests/mpi_constraint_solver.cpp)
+        target_link_libraries(gmd_mpi_constraint_solver_tests PRIVATE gmd_core)
+        add_executable(gmd_mpi_checkpoint_restart_tests tests/mpi_checkpoint_restart.cpp)
+        target_link_libraries(gmd_mpi_checkpoint_restart_tests PRIVATE gmd_core)
 
         add_test(
             NAME gmd_mpi_periodic_1d_ghost_exchange_2proc
@@ -189,6 +316,72 @@ if(BUILD_TESTING)
             PROPERTIES
                 LABELS "mpi;parallel"
                 PROCESSORS 2)
+
+        add_test(
+            NAME gmd_mpi_special_pair_consistency_2proc
+            COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 2
+                    $<TARGET_FILE:gmd_mpi_special_pair_tests>
+        )
+        set_tests_properties(gmd_mpi_special_pair_consistency_2proc
+            PROPERTIES
+                LABELS "mpi;parallel;force"
+                PROCESSORS 2)
+
+        add_test(
+            NAME gmd_mpi_constraint_solver_2proc
+            COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 2
+                    $<TARGET_FILE:gmd_mpi_constraint_solver_tests>
+        )
+        set_tests_properties(gmd_mpi_constraint_solver_2proc
+            PROPERTIES
+                LABELS "mpi;parallel;integrator"
+                PROCESSORS 2)
+
+        add_test(
+            NAME gmd_mpi_checkpoint_restart_2proc
+            COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 2
+                    $<TARGET_FILE:gmd_mpi_checkpoint_restart_tests>
+        )
+        set_tests_properties(gmd_mpi_checkpoint_restart_2proc
+            PROPERTIES
+                LABELS "mpi;parallel;restart"
+                PROCESSORS 2)
+
+        add_test(
+            NAME gmd_mpi_restart_continuity_cli_2proc
+            COMMAND Python3::Interpreter
+                    ${CMAKE_CURRENT_SOURCE_DIR}/tests/restart_continuity.py
+                    --gmd $<TARGET_FILE:gmd>
+                    --work-root ${CMAKE_CURRENT_BINARY_DIR}/tests/restart_continuity_mpi_2
+                    --np 2
+                    --mpiexec ${MPIEXEC_EXECUTABLE}
+                    --mpiexec-np-flag=${MPIEXEC_NUMPROC_FLAG}
+                    --position-tolerance 1e-9
+                    --velocity-tolerance 1e-9
+                    --energy-tolerance 1e-6
+        )
+        set_tests_properties(gmd_mpi_restart_continuity_cli_2proc
+            PROPERTIES
+                LABELS "mpi;parallel;restart;integration"
+                PROCESSORS 2)
+
+        add_test(
+            NAME gmd_mpi_restart_continuity_cli_4proc
+            COMMAND Python3::Interpreter
+                    ${CMAKE_CURRENT_SOURCE_DIR}/tests/restart_continuity.py
+                    --gmd $<TARGET_FILE:gmd>
+                    --work-root ${CMAKE_CURRENT_BINARY_DIR}/tests/restart_continuity_mpi_4
+                    --np 4
+                    --mpiexec ${MPIEXEC_EXECUTABLE}
+                    --mpiexec-np-flag=${MPIEXEC_NUMPROC_FLAG}
+                    --position-tolerance 1e-9
+                    --velocity-tolerance 1e-9
+                    --energy-tolerance 1e-6
+        )
+        set_tests_properties(gmd_mpi_restart_continuity_cli_4proc
+            PROPERTIES
+                LABELS "mpi;parallel;restart;integration"
+                PROCESSORS 4)
 
         add_test(
             NAME gmd_mpi_domain_decomposition_3d_grid_4proc

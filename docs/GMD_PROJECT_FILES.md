@@ -1,8 +1,8 @@
 # GMD 项目完整文件清单与说明
 
-> **项目:** GMD (Generalized Molecular Dynamics) v2.2  
-> **语言:** C++20 | **构建:** CMake | **许可证:** MIT  
-> **生成日期:** 2026-05-23（目录重组后）
+> **项目:** GMD (Generalized Molecular Dynamics) v2.4
+> **语言:** C++20 | **构建:** CMake | **许可证:** MIT
+> **生成日期:** 2026-05-24（v2.4 validation-progress 文档整理后）
 
 ---
 
@@ -24,7 +24,7 @@
 
 ## 1. 项目结构总览
 
-> **v2.2 目录重组:** 原 12 个子目录合并为 6 个，详见[第 10 节](#10-目录重组说明)。
+> **v2.4 状态:** v2.2 完成目录重组，v2.4 更新 validation/release 文档、release log 收集和 PME 外部验证计划。
 
 ```
 GMD/
@@ -34,27 +34,36 @@ GMD/
 ├── LICENSE                        # MIT 许可证
 ├── run_ethane_demo.sh             # 乙烷示例快速构建脚本
 ├── app/
-│   └── gmd_main.cpp               # 主程序入口 (~700行)
-├── include/gmd/                   # 公共 API 头文件 (34个, 6个子目录)
+│   ├── gmd_main.cpp               # 主程序入口
+│   └── gmd_validate_main.cpp      # 静态 validation 输出工具
+├── include/gmd/                   # 公共 API 头文件 (38个, 6个子目录)
 │   ├── core/          (2)         #   模拟核心 + 运行时上下文
-│   ├── force/         (10)        #   力场计算 + ML 力场
-│   ├── integrator/    (8)         #   积分器/热浴/压浴
-│   ├── io/            (2)         #   输入输出
+│   ├── force/         (11)        #   力场计算 + ML 力场 + special-pair correction
+│   ├── integrator/    (9)         #   积分器/热浴/压浴/约束
+│   ├── io/            (3)         #   输入输出 + checkpoint
 │   ├── parallel/      (4)         #   MPI 并行化
-│   └── system/        (8)         #   系统数据结构 + 边界条件 + 近邻列表
+│   └── system/        (9)         #   系统数据结构 + 边界条件 + 近邻列表 + special-pair map
 ├── src/                           # 源代码实现 (27个, 6个子目录)
 │   ├── core/          (2)
 │   ├── force/         (7)
 │   ├── integrator/    (7)
-│   ├── io/            (2)
+│   ├── io/            (3)
 │   ├── parallel/      (4)
-│   └── system/        (5)
+│   └── system/        (4)
 ├── tests/                         # 测试文件
-│   ├── *.cpp                      #   单元测试程序 (4)
+│   ├── *.cpp                      #   单元/集成测试程序 (11)
 │   ├── smoke_*.run                #   冒烟测试运行配置 (10+)
 │   ├── smoke_*.xyz                #   冒烟测试坐标文件 (7+)
 │   ├── smoke_*.ff                 #   冒烟测试力场参数 (1)
 │   └── smoke_*.top                #   冒烟测试拓扑文件 (1)
+├── validation/                    # validation suite 和 reference 说明
+│   ├── static_lj_cluster/         #   analytic LJ reference
+│   ├── static_special_pairs/      #   analytic special-pair reference
+│   ├── static_coulomb/            #   analytic Ewald + provisional PME
+│   └── pme_external/              #   PME external validation TODO
+├── scripts/
+│   └── collect_release_logs.sh    # release evidence 收集脚本
+├── .github/workflows/             # CI 和 full MPI workflow
 ├── examples/ethane_demo/          # 乙烷分子模拟示例
 │   ├── ethane_demo.cpp
 │   ├── ethane.xyz / .run / .ff / .top
@@ -81,14 +90,14 @@ GMD/
 - 要求 C++20 标准
 - 定义构建选项: `GMD_ENABLE_CUDA`, `GMD_ENABLE_PYTHON`, `GMD_ENABLE_TORCH`, `GMD_ENABLE_MPI`
 - 构建目标: **`gmd_core`** 静态库 + **`gmd`** 可执行文件
-- 注册 **40+ 个 CTest 测试目标**
+- 注册 serial 13 / MPI 38 个 CTest 测试目标（MPI 构建启用时）
 - 构建时自动复制测试数据文件到 `build/tests/`
 
 ### `README.md`
-项目说明文档，包含 v2.2 版本亮点、构建指南、快速开始和 MPI 并行运行说明。
+项目说明文档，包含 v2.4 版本状态、构建指南、快速开始、MPI、validation、release evidence 和已知限制。
 
 ### `CHANGELOG.md`
-详细版本更新日志（v2.2 → v1.0）。
+详细版本更新日志（v2.4 → v1.0）。
 
 ### `LICENSE`
 MIT 开源许可证，Copyright © 2026 Ēlýsion。
@@ -315,7 +324,7 @@ MPI 专用构建配置目录，含独立的 `CMakeCache.txt` 和 `DartConfigurat
 
 ---
 
-## 10. 目录重组说明
+## 10. 目录重组与 v2.4 release 整理说明
 
 > **v2.2 重组 (2026-05-23):** 原 12 个子目录合并为 6 个。
 
@@ -330,31 +339,33 @@ MPI 专用构建配置目录，含独立的 `CMakeCache.txt` 和 `DartConfigurat
 
 **代码和架构完全不变**，仅移动文件并更新 `#include` 路径。
 
+> **v2.4 整理 (2026-05-24):** release-facing 文档统一为 `v2.4`，并补充 validation maturity、PME external validation plan、release log 收集脚本和 full MPI workflow。核心 MD 计算路径没有在本轮整理中重构。
+
 ---
 
 ## 11. 统计汇总
 
 | 类别 | 数量 |
 |------|------|
-| 公共头文件 (`include/gmd/`) | 34 |
+| 公共头文件 (`include/gmd/`) | 38 |
 | 源代码文件 (`src/`) | 27 |
 | 子目录数 (include + src) | 6 + 6 |
-| 应用程序入口 (`app/`) | 1 |
-| 测试 C++ 程序 | 4 |
+| 应用程序入口/工具 (`app/`) | 2 |
+| 测试 C++ 程序 | 11 |
 | 冒烟测试配置文件 | 15+ |
 | CMake 模块 | 5 |
 | 示例文件 | 5 |
-| CTest 注册测试目标 | 40+ |
+| CTest 注册测试目标 | serial 13 / MPI 38 |
 
 ### 模块文件分布
 
 ```
-force/          ██████████████████ 17 (10h + 7cpp)
-system/         █████████████ 13 (8h + 5cpp)
-integrator/     ███████████████ 15 (8h + 7cpp)
+force/          ██████████████████ 18 (11h + 7cpp)
+system/         █████████████ 13 (9h + 4cpp)
+integrator/     ████████████████ 16 (9h + 7cpp)
 parallel/       ████████ 8 (4h + 4cpp)
 core/           ████ 4 (2h + 2cpp)
-io/             ████ 4 (2h + 2cpp)
+io/             ██████ 6 (3h + 3cpp)
 ```
 
 ---
@@ -366,8 +377,8 @@ io/             ████ 4 (2h + 2cpp)
 | `GMD_ENABLE_MPI` | MPI 并行化 | `parallel/` 全部, `app/gmd_main.cpp`, `core/simulation.cpp` |
 | `GMD_ENABLE_TORCH` | ML 力场 | `force/torchscript_adapter.cpp`, `force/ml_force_provider.*` |
 | `GMD_ENABLE_CUDA` | GPU 加速 | 预留 |
-| `BUILD_TESTING` | 测试注册 | `CMakeLists.txt`（注册 40+ CTest 目标） |
+| `BUILD_TESTING` | 测试注册 | `CMakeLists.txt`（serial 13 / MPI 38 个 CTest 目标） |
 
 ---
 
-> **文档生成:** 2026-05-23 | **基于:** GMD v2.2 目录重组后完整项目源码分析
+> **文档生成:** 2026-05-24 | **基于:** GMD v2.4 validation-progress release 整理后完整项目源码分析

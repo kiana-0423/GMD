@@ -12,6 +12,8 @@
 #include <vector>
 
 #include "gmd/force/bonded_params.hpp"
+#include "gmd/integrator/constraint_solver.hpp"
+#include "gmd/system/special_pair_map.hpp"
 #include "gmd/system/topology.hpp"
 
 namespace gmd {
@@ -105,12 +107,15 @@ struct CoulombConfig {
 	// PME-specific
 	int pme_order = 4;                    // B-spline order (4 or 6)
 	std::array<int, 3> pme_grid = {32, 32, 32};
+	std::string pme_mode = "replicated";  // "replicated", "distributed", or "auto"
+	bool pme_benchmark = false;
 };
 
 struct RunConfig {
 	std::uint64_t num_steps = 0;
 	double time_step = 0.0;            // internal integration time unit
 	double time_step_fs = 0.0;         // user-facing time step in femtoseconds
+	std::uint64_t output_interval = 100;
 	double temperature = 0.0;
 	std::string velocity_init_mode = "random";
 	std::uint32_t velocity_seed = 5489u;
@@ -119,10 +124,11 @@ struct RunConfig {
 	std::string force_field_type;
 	// Path to a TorchScript model file; populated when force_field_type == "ml".
 	std::filesystem::path ml_model_path;
-	// External molecular FFs default to bonded-only mode because 1-2 / 1-3
-	// nonbonded exclusions are not implemented yet. Set to "lj_unsafe" to
-	// explicitly include molecular LJ anyway.
-	std::string molecular_nonbonded_mode = "none";
+	// Molecular non-bonded LJ may be disabled with "none"; "special" applies
+	// topology-generated exclusions/scaling. "lj_unsafe" is retained as a
+	// backwards-compatible alias for "special".
+	std::string molecular_nonbonded_mode = "special";
+	SpecialPairScaleConfig special_pair_scales;
 	// Optional MPI Cartesian processor grid override.
 	std::optional<std::array<int, 3>> mpi_grid;
 
@@ -146,6 +152,14 @@ struct RunConfig {
 	double        compressibility  = 4.5e-5; // isothermal compressibility [1/bar]  (Berendsen)
 	std::uint32_t mc_frequency     = 25;     // attempt volume move every N steps   (MC)
 	double        mc_volume_step   = 0.01;   // initial max |Δ ln V| for trial moves (MC)
+
+	bool constraints_enabled = false;
+	ConstraintSettings constraint_settings;
+	std::vector<int> constrained_bond_types;
+
+	std::uint64_t write_checkpoint_every = 0;
+	std::filesystem::path checkpoint_file;
+	std::filesystem::path restart_from;
 };
 
 // ---------------------------------------------------------------------------

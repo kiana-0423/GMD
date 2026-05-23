@@ -1,0 +1,89 @@
+{
+  "energy": {
+    "components": {
+      "bonded": 0.0,
+      "coulomb": -4.0044778365149485,
+      "lj": -2.372846715371769e-05
+    },
+    "total": -4.004501564982102
+  },
+  "force": {
+    "atoms": [
+      [
+        1.3286841442824198,
+        -5.78449375087158e-17,
+        -1.0967865202774969e-17
+      ],
+      [
+        0.004528949911243529,
+        4.8573520239083305e-17,
+        1.626034131073098e-17
+      ],
+      [
+        -0.004528949911241753,
+        -3.3763885828532e-17,
+        -4.9266152474724514e-18
+      ],
+      [
+        -1.3286841442824198,
+        3.8894526086089594e-17,
+        9.148087955485634e-18
+      ]
+    ]
+  },
+  "reference_details": {
+    "description": "Four-atom 1-2-3-4 chain with 1-2/1-3 exclusions and scaled 1-4 direct corrections.",
+    "formulas": [
+      "shifted LJ: 4 epsilon [(sigma/r)^12 - (sigma/r)^6] - U(rc)",
+      "periodic Ewald real + reciprocal + self/background corrections",
+      "special Coulomb correction: (scale - 1) * k_e q_i q_j / r"
+    ],
+    "units": "GMD internal units: eV, Angstrom, elementary charge"
+  },
+  "scale_variants": {
+    "lj14_0.25_coul14_0.5": {
+      "energy": {
+        "components": {
+          "bonded": 0.0,
+          "coulomb": -2.404522280960993,
+          "lj": -1.1864233576858845e-05
+        },
+        "total": -2.40453414519457
+      },
+      "force": {
+        "atoms": [
+          [
+            0.7953418972973422,
+            -5.78449375087158e-17,
+            -1.0967865202774969e-17
+          ],
+          [
+            0.004528949911243529,
+            4.8573520239083305e-17,
+            1.626034131073098e-17
+          ],
+          [
+            -0.004528949911241753,
+            -3.3763885828532e-17,
+            -4.9266152474724514e-18
+          ],
+          [
+            -0.7953418972973422,
+            3.8894526086089594e-17,
+            9.148087955485634e-18
+          ]
+        ]
+      },
+      "reference_details": {
+        "description": "Same four-atom chain with modified 1-4 LJ/Coulomb scale factors.",
+        "formulas": [
+          "shifted LJ 1-4 contribution scales linearly with lj_scale_14",
+          "direct special-pair Coulomb correction changes linearly with coul_scale_14"
+        ],
+        "units": "GMD internal units: eV, Angstrom, elementary charge"
+      },
+      "source": "analytic_reference_python_ewald_shifted_lj_special_pairs"
+    }
+  },
+  "source": "analytic_reference_python_ewald_shifted_lj_special_pairs"
+}

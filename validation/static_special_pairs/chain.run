@@ -1,0 +1,15 @@
+velocity 0.0
+time_step 1.0
+run 1
+output_interval 1
+velocity_init input
+remove_com_velocity false
+
+molecular_nonbonded special
+lj_scale_14 0.5
+coul_scale_14 0.833333333333
+
+coulomb ewald
+ewald_alpha 0.3
+ewald_kmax 7
+ewald_cutoff 9.0

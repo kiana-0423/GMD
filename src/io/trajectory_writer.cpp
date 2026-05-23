@@ -8,6 +8,32 @@
 
 namespace gmd {
 
+namespace {
+
+constexpr double kBarToEvPerA3 = 6.2415091e-7;
+
+double volume_from_box(const Box& box) noexcept {
+    return box.lengths[0] * box.lengths[1] * box.lengths[2];
+}
+
+double pressure_bar_from_system(const System& system, double twice_ke) noexcept {
+    if (!system.last_virial_valid()) {
+        return 0.0;
+    }
+
+    const double volume = volume_from_box(system.box());
+    if (volume <= 0.0) {
+        return 0.0;
+    }
+
+    const auto& virial = system.last_virial();
+    const double virial_trace = virial[0] + virial[4] + virial[8];
+    const double pressure_ev_per_a3 = (twice_ke + virial_trace) / (3.0 * volume);
+    return pressure_ev_per_a3 / kBarToEvPerA3;
+}
+
+}  // namespace
+
 TrajectoryWriter::~TrajectoryWriter() {
     close();
 }
@@ -39,7 +65,8 @@ void TrajectoryWriter::close() {
 }
 
 void TrajectoryWriter::write_log_header() {
-    log_ << "# step  time[fs]  PE[eV]  KE[eV]  E_total[eV]  T[K]\n";
+    log_ << "# step  time[fs]  PE[eV]  KE[eV]  E_total[eV]  T[K]  P[bar]  V[A^3]"
+         << "  shake_iter  shake_error[A]  rattle_iter  rattle_error[A/fs]\n";
 }
 
 void TrajectoryWriter::write_frame(const System& system, std::uint64_t step, double time,
@@ -48,6 +75,8 @@ void TrajectoryWriter::write_frame(const System& system, std::uint64_t step, dou
     const double pe     = system.potential_energy();
     const double ke     = 0.5 * twice_ke;
     const double temp   = (dof > 0) ? temperature_from_twice_ke(twice_ke, dof) : 0.0;
+    const double pressure_bar = pressure_bar_from_system(system, twice_ke);
+    const double volume = volume_from_box(system.box());
 
     // --- XYZ frame ---
     xyz_ << n << '\n';
@@ -57,6 +86,12 @@ void TrajectoryWriter::write_frame(const System& system, std::uint64_t step, dou
          << " PE=" << pe
          << " KE=" << ke
          << " T=" << temp
+         << " P=" << pressure_bar
+         << " V=" << volume
+         << " SHAKE_iter=" << system.last_shake_stats().iterations
+         << " SHAKE_error=" << system.last_shake_stats().max_error
+         << " RATTLE_iter=" << system.last_rattle_stats().iterations
+         << " RATTLE_error=" << system.last_rattle_stats().max_error
          << '\n';
 
     const auto coords     = system.coordinates();
@@ -79,6 +114,12 @@ void TrajectoryWriter::write_frame(const System& system, std::uint64_t step, dou
          << "  " << ke
          << "  " << (pe + ke)
          << "  " << temp
+         << "  " << pressure_bar
+         << "  " << volume
+         << "  " << system.last_shake_stats().iterations
+         << "  " << system.last_shake_stats().max_error
+         << "  " << system.last_rattle_stats().iterations
+         << "  " << system.last_rattle_stats().max_error
          << '\n';
 
     ++frame_count_;

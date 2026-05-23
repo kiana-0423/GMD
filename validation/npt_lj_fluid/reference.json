@@ -1,0 +1,9 @@
+{
+  "metrics": {
+    "pressure_mean": 45.98840553731345,
+    "pressure_stddev": 62.56975693815316,
+    "temperature_mean": 126.44391630348254,
+    "temperature_stddev": 17.042278062727927
+  },
+  "source": "provisional_gmd_baseline_2026-05-23"
+}

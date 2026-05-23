@@ -1,6 +1,8 @@
 #include "gmd/integrator/nose_hoover_thermostat.hpp"
 
 #include <cmath>
+#include <sstream>
+#include <stdexcept>
 
 #include "gmd/system/system.hpp"
 
@@ -45,6 +47,33 @@ void NoseHooverThermostat::apply_half_kick(System& system,
         velocities[i][0] *= scale;
         velocities[i][1] *= scale;
         velocities[i][2] *= scale;
+    }
+}
+
+std::string NoseHooverThermostat::checkpoint_state() const {
+    std::ostringstream out;
+    out.precision(17);
+    out << "tau " << tau_
+        << " xi " << xi_
+        << " Q " << Q_
+        << " dof " << dof_
+        << " current_temperature " << current_temperature_;
+    return out.str();
+}
+
+void NoseHooverThermostat::load_checkpoint_state(const std::string& state) {
+    if (state.empty() || state == "stateless") {
+        return;
+    }
+    std::istringstream input(state);
+    std::string key;
+    if (!(input >> key) || key != "tau" || !(input >> tau_) ||
+        !(input >> key) || key != "xi" || !(input >> xi_) ||
+        !(input >> key) || key != "Q" || !(input >> Q_) ||
+        !(input >> key) || key != "dof" || !(input >> dof_) ||
+        !(input >> key) || key != "current_temperature" ||
+        !(input >> current_temperature_)) {
+        throw std::runtime_error("Invalid Nose-Hoover thermostat checkpoint state");
     }
 }
 

@@ -127,6 +127,14 @@ double parse_double(const std::string& token, const char* field_name) {
     }
 }
 
+double parse_nonnegative_scale(const std::string& token, const char* field_name) {
+    const double value = parse_double(token, field_name);
+    if (value < 0.0) {
+        throw std::runtime_error(std::string(field_name) + " must be non-negative");
+    }
+    return value;
+}
+
 // Parses a "type <N> <elem> epsilon <val> sigma <val>" directive into `ff`.
 // `tokens` must be the full tokenized line starting with "type".
 // N is 1-based; the entry is stored at index N-1 (vector is resized if needed).
@@ -480,6 +488,12 @@ RunConfig ConfigLoader::load_run(const std::filesystem::path& run_path) const {
             if (config.time_step_fs < 0.0) {
                 throw std::runtime_error("time_step must be non-negative");
             }
+        } else if (tokens[0] == "output_interval") {
+            const int interval = parse_int(tokens[1], "output_interval");
+            if (interval < 0) {
+                throw std::runtime_error("output_interval must be non-negative");
+            }
+            config.output_interval = static_cast<std::uint64_t>(interval);
         } else if (tokens[0] == "run") {
             config.num_steps = static_cast<std::uint64_t>(parse_int(tokens[1], "run"));
             if (config.num_steps == 0) {
@@ -499,12 +513,69 @@ RunConfig ConfigLoader::load_run(const std::filesystem::path& run_path) const {
             config.velocity_seed = parse_uint32(tokens[1], "velocity_seed");
         } else if (tokens[0] == "remove_com_velocity") {
             config.remove_center_of_mass_velocity = parse_bool(tokens[1], "remove_com_velocity");
+        } else if (tokens[0] == "write_checkpoint_every") {
+            const int interval = parse_int(tokens[1], "write_checkpoint_every");
+            if (interval < 0) {
+                throw std::runtime_error("write_checkpoint_every must be non-negative");
+            }
+            config.write_checkpoint_every = static_cast<std::uint64_t>(interval);
+        } else if (tokens[0] == "checkpoint_file") {
+            config.checkpoint_file = tokens[1];
+        } else if (tokens[0] == "restart_from") {
+            config.restart_from = tokens[1];
+        } else if (tokens[0] == "constraints") {
+            if (tokens[1] != "on" && tokens[1] != "off" &&
+                tokens[1] != "true" && tokens[1] != "false") {
+                throw std::runtime_error("constraints must be on/off");
+            }
+            config.constraints_enabled = (tokens[1] == "on" || tokens[1] == "true");
+        } else if (tokens[0] == "constraint_tolerance") {
+            config.constraint_settings.tolerance = parse_double(tokens[1], "constraint_tolerance");
+            if (config.constraint_settings.tolerance <= 0.0) {
+                throw std::runtime_error("constraint_tolerance must be positive");
+            }
+        } else if (tokens[0] == "constraint_max_iterations") {
+            config.constraint_settings.max_iterations = parse_int(tokens[1], "constraint_max_iterations");
+            if (config.constraint_settings.max_iterations <= 0) {
+                throw std::runtime_error("constraint_max_iterations must be positive");
+            }
+        } else if (tokens[0] == "rattle") {
+            config.constraint_settings.enable_rattle = parse_bool(tokens[1], "rattle");
+        } else if (tokens[0] == "constrain_bond_type") {
+            const int type = parse_int(tokens[1], "constrain_bond_type");
+            if (type < 1) {
+                throw std::runtime_error("constrain_bond_type must be >= 1");
+            }
+            config.constrained_bond_types.push_back(type - 1);
+            config.constraints_enabled = true;
+        } else if (tokens[0] == "constrain_bond_types") {
+            for (std::size_t token_index = 1; token_index < tokens.size(); ++token_index) {
+                const int type = parse_int(tokens[token_index], "constrain_bond_types");
+                if (type < 1) {
+                    throw std::runtime_error("constrain_bond_types entries must be >= 1");
+                }
+                config.constrained_bond_types.push_back(type - 1);
+            }
+            config.constraints_enabled = true;
         } else if (tokens[0] == "molecular_nonbonded") {
-            if (tokens[1] != "none" && tokens[1] != "lj_unsafe") {
+            if (tokens[1] != "none" && tokens[1] != "special" &&
+                tokens[1] != "lj_unsafe") {
                 throw std::runtime_error(
-                    "molecular_nonbonded must be 'none' or 'lj_unsafe'");
+                    "molecular_nonbonded must be 'none' or 'special'");
             }
             config.molecular_nonbonded_mode = tokens[1];
+        } else if (tokens[0] == "lj_scale_12") {
+            config.special_pair_scales.pair_12.lj = parse_nonnegative_scale(tokens[1], "lj_scale_12");
+        } else if (tokens[0] == "coul_scale_12") {
+            config.special_pair_scales.pair_12.coulomb = parse_nonnegative_scale(tokens[1], "coul_scale_12");
+        } else if (tokens[0] == "lj_scale_13") {
+            config.special_pair_scales.pair_13.lj = parse_nonnegative_scale(tokens[1], "lj_scale_13");
+        } else if (tokens[0] == "coul_scale_13") {
+            config.special_pair_scales.pair_13.coulomb = parse_nonnegative_scale(tokens[1], "coul_scale_13");
+        } else if (tokens[0] == "lj_scale_14") {
+            config.special_pair_scales.pair_14.lj = parse_nonnegative_scale(tokens[1], "lj_scale_14");
+        } else if (tokens[0] == "coul_scale_14") {
+            config.special_pair_scales.pair_14.coulomb = parse_nonnegative_scale(tokens[1], "coul_scale_14");
         } else if (tokens[0] == "mpi_grid") {
             if (tokens.size() < 4) {
                 throw std::runtime_error("mpi_grid expects three integers: mpi_grid Px Py Pz");
@@ -584,6 +655,18 @@ RunConfig ConfigLoader::load_run(const std::filesystem::path& run_path) const {
             config.coulomb->pme_grid[0] = parse_int(tokens[1], "pme_grid_x");
             config.coulomb->pme_grid[1] = parse_int(tokens[2], "pme_grid_y");
             config.coulomb->pme_grid[2] = parse_int(tokens[3], "pme_grid_z");
+        } else if (tokens[0] == "pme_mode") {
+            if (!config.coulomb.has_value()) config.coulomb = CoulombConfig{};
+            if (tokens[1] != "replicated" &&
+                tokens[1] != "distributed" &&
+                tokens[1] != "auto") {
+                throw std::runtime_error(
+                    "pme_mode must be 'replicated', 'distributed', or 'auto'");
+            }
+            config.coulomb->pme_mode = tokens[1];
+        } else if (tokens[0] == "pme_benchmark") {
+            if (!config.coulomb.has_value()) config.coulomb = CoulombConfig{};
+            config.coulomb->pme_benchmark = parse_bool(tokens[1], "pme_benchmark");
         // ---- Thermostat directives ----
         } else if (tokens[0] == "thermostat") {
             if (tokens[1] != "velocity_rescaling" && tokens[1] != "nose_hoover") {
@@ -1132,6 +1215,24 @@ std::shared_ptr<Topology> ConfigLoader::load_topology(
                 if (it.i < 0 || it.j < 0 || it.k < 0 || it.l < 0 || it.type_idx < 0)
                     throw std::runtime_error("Improper atom indices and type must be >= 1");
                 topo->impropers.push_back(it);
+            }
+        } else if (section == "constraints") {
+            for (int entry = 0; entry < count; ++entry) {
+                const auto row = tokenize_line(input);
+                if (row.size() < 3) {
+                    throw std::runtime_error(
+                        "constraints entry must be: <i> <j> <distance>");
+                }
+                BondConstraint constraint;
+                constraint.i = parse_int(row[0], "constraint_i") - 1;
+                constraint.j = parse_int(row[1], "constraint_j") - 1;
+                constraint.target_distance = parse_double(row[2], "constraint_distance");
+                if (constraint.i < 0 || constraint.j < 0 ||
+                    constraint.target_distance <= 0.0) {
+                    throw std::runtime_error(
+                        "Constraint atom indices must be >= 1 and distance must be positive");
+                }
+                topo->constraints.push_back(constraint);
             }
         } else {
             throw std::runtime_error("Unknown topology section: " + section);

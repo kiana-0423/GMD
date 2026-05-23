@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <string_view>
 
 #include "gmd/integrator/barostat.hpp"
 
@@ -25,6 +26,8 @@ public:
         : tau_P_(tau_P), beta_(beta) {}
 
     ~BerendsenBarostat() override = default;
+
+    std::string_view name() const noexcept override { return "berendsen"; }
 
     void apply(System& system,
                ForceProvider& provider,

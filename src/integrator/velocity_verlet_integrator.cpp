@@ -5,6 +5,7 @@
 
 #include "gmd/system/periodic_boundary.hpp"
 #include "gmd/force/force_provider.hpp"
+#include "gmd/integrator/constraint_solver.hpp"
 #include "gmd/integrator/barostat.hpp"
 #include "gmd/integrator/thermostat.hpp"
 #include "gmd/core/runtime_context.hpp"
@@ -116,6 +117,8 @@ void VelocityVerletIntegrator::begin_step(System& system,
         }
         wrap_position(coordinates[atom_index], system.box());
     }
+
+    apply_position_constraints(system);
 }
 
 void VelocityVerletIntegrator::finish_step(System& system,
@@ -151,6 +154,7 @@ void VelocityVerletIntegrator::finish_step(System& system,
         thermostat_->apply(system, dt, target_temperature_);
     }
 
+    apply_velocity_constraints(system);
 }
 
 void VelocityVerletIntegrator::apply_barostat(System& system,
@@ -172,6 +176,18 @@ void VelocityVerletIntegrator::apply_barostat(System& system,
     }
 }
 
+void VelocityVerletIntegrator::apply_position_constraints(System& system) {
+    if (constraints_ != nullptr && constraints_->enabled()) {
+        system.set_last_shake_stats(constraints_->apply_shake(system));
+    }
+}
+
+void VelocityVerletIntegrator::apply_velocity_constraints(System& system) {
+    if (constraints_ != nullptr && constraints_->enabled()) {
+        system.set_last_rattle_stats(constraints_->apply_rattle(system));
+    }
+}
+
 double VelocityVerletIntegrator::dt() const noexcept {
     return dt_;
 }
@@ -186,6 +202,11 @@ void VelocityVerletIntegrator::set_thermostat(std::shared_ptr<Thermostat> thermo
 
 void VelocityVerletIntegrator::set_target_temperature(double temperature) noexcept {
     target_temperature_ = temperature;
+}
+
+void VelocityVerletIntegrator::set_constraint_solver(
+        std::shared_ptr<ConstraintSolver> constraints) noexcept {
+    constraints_ = std::move(constraints);
 }
 
 void VelocityVerletIntegrator::set_barostat(std::shared_ptr<Barostat> barostat) noexcept {

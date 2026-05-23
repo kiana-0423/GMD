@@ -1,5 +1,6 @@
 #include <cmath>
 #include <cstddef>
+#include <filesystem>
 #include <iostream>
 #include <span>
 #include <string>
@@ -7,6 +8,7 @@
 
 #include "gmd/force/classical_force_provider.hpp"
 #include "gmd/force/force_provider.hpp"
+#include "gmd/io/checkpoint.hpp"
 #include "gmd/parallel/domain_decomposition.hpp"
 #include "gmd/parallel/mpi_communicator.hpp"
 #include "gmd/parallel/mpi_environment.hpp"
@@ -35,6 +37,7 @@ gmd::System make_local_atom(const gmd::Box& box, double x, int tag, int owner) {
     system.mutable_coordinates()[0] = {x, 5.0, 5.0};
     system.mutable_atom_tags()[0] = tag;
     system.mutable_atom_owners()[0] = owner;
+    system.mutable_molecule_ids()[0] = 1000 + tag;
     return system;
 }
 
@@ -200,6 +203,10 @@ void test_periodic_migration(const gmd::MpiCommunicator& communicator,
               "periodic edge migration delivered the wrong atom",
               rank,
               failures);
+        check(system.molecule_ids()[0] == 1000 + (rank == 0 ? 20 : 10),
+              "periodic edge migration did not preserve molecule id",
+              rank,
+              failures);
         check(system.atom_owner(0) == rank,
               "periodic edge migration did not reset the local owner rank",
               rank,
@@ -209,6 +216,25 @@ void test_periodic_migration(const gmd::MpiCommunicator& communicator,
               "periodic edge migration did not wrap the x coordinate",
               rank,
               failures);
+
+        const auto checkpoint_path =
+            std::filesystem::current_path() /
+            ("mpi_periodic_migration_rank_" + std::to_string(rank) + ".gmdchk");
+        gmd::CheckpointMetadata metadata;
+        metadata.step = 1;
+        metadata.time_fs = 0.5;
+        metadata.config_summary = "mpi periodic migration molecule-id test";
+        gmd::CheckpointData checkpoint{metadata, &system, nullptr};
+        gmd::write_checkpoint(checkpoint_path, checkpoint);
+
+        gmd::System checkpoint_system;
+        gmd::read_checkpoint(checkpoint_path, checkpoint_system, nullptr);
+        check(checkpoint_system.atom_count() == 1 &&
+                  checkpoint_system.molecule_ids()[0] == system.molecule_ids()[0],
+              "checkpoint after migration did not retain molecule id",
+              rank,
+              failures);
+        std::filesystem::remove(checkpoint_path);
     }
 }
 

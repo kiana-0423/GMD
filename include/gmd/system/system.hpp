@@ -2,12 +2,15 @@
 
 #include <array>
 #include <cstddef>
+#include <memory>
 #include <optional>
 #include <span>
 #include <stdexcept>
 #include <vector>
 
 #include "../system/box.hpp"
+#include "../integrator/constraint_solver.hpp"
+#include "../system/special_pair_map.hpp"
 
 namespace gmd {
 
@@ -61,6 +64,7 @@ public:
 		velocities_.assign(atom_count, Vec3{0.0, 0.0, 0.0});
 		forces_.assign(atom_count, Vec3{0.0, 0.0, 0.0});
 		atom_types_.assign(atom_count, 0);
+		molecule_ids_.assign(atom_count, 0);
 		atomic_numbers_.assign(atom_count, 0);
 		atom_tags_.resize(atom_count);
 		for (std::size_t atom_index = 0; atom_index < atom_count; ++atom_index) {
@@ -123,6 +127,7 @@ public:
 		velocities_.push_back(Vec3{0.0, 0.0, 0.0});
 		forces_.push_back(Vec3{0.0, 0.0, 0.0});
 		atom_types_.push_back(0);
+		molecule_ids_.push_back(0);
 		atomic_numbers_.push_back(0);
 		atom_tags_.push_back(tag);
 		atom_owners_.push_back(owner);
@@ -136,6 +141,7 @@ public:
 		velocities_.resize(num_local_atoms_);
 		forces_.resize(num_local_atoms_);
 		atom_types_.resize(num_local_atoms_);
+		molecule_ids_.resize(num_local_atoms_);
 		atomic_numbers_.resize(num_local_atoms_);
 		atom_tags_.resize(num_local_atoms_);
 		atom_owners_.resize(num_local_atoms_);
@@ -176,6 +182,14 @@ public:
 
 	std::span<int> mutable_atom_types() noexcept {
 		return atom_types_;
+	}
+
+	std::span<const int> molecule_ids() const noexcept {
+		return molecule_ids_;
+	}
+
+	std::span<int> mutable_molecule_ids() noexcept {
+		return molecule_ids_;
 	}
 
 	std::span<const int> atomic_numbers() const noexcept {
@@ -232,6 +246,50 @@ public:
 		potential_energy_ = value;
 	}
 
+	const std::array<double, 9>& last_virial() const noexcept {
+		return last_virial_;
+	}
+
+	void set_last_virial(const std::array<double, 9>& virial, bool valid) noexcept {
+		last_virial_ = virial;
+		last_virial_valid_ = valid;
+	}
+
+	bool last_virial_valid() const noexcept {
+		return last_virial_valid_;
+	}
+
+	void set_last_shake_stats(const ConstraintProjectionStats& stats) noexcept {
+		last_shake_stats_ = stats;
+	}
+
+	const ConstraintProjectionStats& last_shake_stats() const noexcept {
+		return last_shake_stats_;
+	}
+
+	void set_last_rattle_stats(const ConstraintProjectionStats& stats) noexcept {
+		last_rattle_stats_ = stats;
+	}
+
+	const ConstraintProjectionStats& last_rattle_stats() const noexcept {
+		return last_rattle_stats_;
+	}
+
+	void set_special_pair_map(std::shared_ptr<const SpecialPairMap> special_pairs) noexcept {
+		special_pairs_ = std::move(special_pairs);
+	}
+
+	const SpecialPairMap* special_pair_map() const noexcept {
+		return special_pairs_.get();
+	}
+
+	NonbondedScale nonbonded_scale(std::size_t atom_i,
+	                               std::size_t atom_j) const noexcept {
+		return special_pairs_ != nullptr
+			? special_pairs_->scale_for(atom_tag(atom_i), atom_tag(atom_j))
+			: NonbondedScale{};
+	}
+
 	const NeighborList& neighbor_list() const noexcept {
 		return neighbor_list_;
 	}
@@ -245,6 +303,7 @@ private:
 	std::vector<double> masses_;
 	std::vector<double> charges_;
 	std::vector<int>    atom_types_;
+	std::vector<int>    molecule_ids_;
 	std::vector<int>    atomic_numbers_;
 	std::vector<int>    atom_tags_;
 	std::vector<int>    atom_owners_;
@@ -257,7 +316,16 @@ private:
 		0.0, 0.0, 0.0,
 		0.0, 0.0, 0.0
 	};
+	std::array<double, 9> last_virial_ = {
+		0.0, 0.0, 0.0,
+		0.0, 0.0, 0.0,
+		0.0, 0.0, 0.0
+	};
+	bool last_virial_valid_ = false;
+	ConstraintProjectionStats last_shake_stats_;
+	ConstraintProjectionStats last_rattle_stats_;
 	double potential_energy_ = 0.0;
+	std::shared_ptr<const SpecialPairMap> special_pairs_;
 	NeighborList neighbor_list_;
 };
 

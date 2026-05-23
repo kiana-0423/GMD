@@ -1,0 +1,54 @@
+name: Full MPI Validation
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 8 * * 0"
+
+jobs:
+  full-mpi:
+    name: Full MPI CTest
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            cmake \
+            ninja-build \
+            python3 \
+            openmpi-bin \
+            libopenmpi-dev
+
+      - name: Configure MPI build
+        run: >
+          cmake -S . -B build-mpi
+          -G Ninja
+          -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          -DGMD_ENABLE_MPI=ON
+
+      - name: Build MPI targets
+        run: cmake --build build-mpi --parallel
+
+      - name: List registered tests
+        run: ctest --test-dir build-mpi -N
+
+      - name: Run full MPI CTest suite
+        env:
+          OMPI_MCA_rmaps_base_oversubscribe: "1"
+        run: ctest --test-dir build-mpi --output-on-failure --verbose
+
+      - name: Upload CTest logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: full-mpi-ctest-logs
+          path: |
+            build-mpi/Testing/**/*.log
+            build-mpi/Testing/**/*.xml
+          if-no-files-found: ignore

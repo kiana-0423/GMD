@@ -37,6 +37,7 @@ gmd::System make_system(const gmd::Box& box,
         system.mutable_coordinates()[index] = atoms[index].position;
         system.mutable_atom_tags()[index] = atoms[index].tag;
         system.mutable_atom_owners()[index] = owner;
+        system.mutable_molecule_ids()[index] = 10000 + atoms[index].tag;
     }
     return system;
 }
@@ -180,10 +181,18 @@ void test_xyz_migration(const gmd::MpiCommunicator& communicator,
         source[static_cast<std::size_t>(dim)] =
             1 - source[static_cast<std::size_t>(dim)];
         const int source_rank = decomposition.rank_from_proc_coord(source);
-        check(find_tag(system, dim * 100 + source_rank) != system.num_local_atoms(),
+        const int expected_tag = dim * 100 + source_rank;
+        const std::size_t local_index = find_tag(system, expected_tag);
+        check(local_index != system.num_local_atoms(),
               "xyz migration delivered the wrong owner set",
               rank,
               failures);
+        if (local_index != system.num_local_atoms()) {
+            check(system.molecule_ids()[local_index] == 10000 + expected_tag,
+                  "xyz migration did not preserve molecule id",
+                  rank,
+                  failures);
+        }
     }
 }
 
@@ -226,6 +235,10 @@ void test_xyz_periodic_wrap(const gmd::MpiCommunicator& communicator,
               rank,
               failures);
         if (local_index != system.num_local_atoms()) {
+            check(system.molecule_ids()[local_index] == 10000 + expected_tag,
+                  "periodic xyz wrap did not preserve molecule id",
+                  rank,
+                  failures);
             const double expected_coordinate = coord[static_cast<std::size_t>(dim)] == 0
                 ? 0.1
                 : 7.9;

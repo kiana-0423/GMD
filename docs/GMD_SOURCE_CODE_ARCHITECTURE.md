@@ -1,8 +1,8 @@
 # GMD (Generalized Molecular Dynamics) 源代码架构文档
 
-> **版本:** 基于 2026-05-23 代码库（v2.2 目录重组后）  
-> **语言:** C++20  
-> **构建系统:** CMake  
+> **版本:** 基于 2026-05-24 代码库（v2.4 validation-progress release 整理后）
+> **语言:** C++20
+> **构建系统:** CMake
 > **许可证:** MIT
 
 ---
@@ -29,14 +29,15 @@
 
 ## 1. 项目概述
 
-**GMD** (Generalized Molecular Dynamics) 是一个高性能的分子动力学模拟引擎，具有以下核心能力：
+**GMD** (Generalized Molecular Dynamics) 是一个 C++ 分子动力学研究原型，当前定位为 validation-in-progress molecular dynamics platform，具有以下核心能力：
 
 - **经典力场**: Lennard-Jones 12-6 势，支持多元素 Lorentz-Berthelot 混合规则
 - **分子内相互作用**: 键伸缩、键角弯曲、二面角扭转、异常二面角（improper）
-- **长程库仑力**: Ewald 求和 与 Particle-Mesh Ewald (PME) 方法
+- **长程库仑力**: Ewald 求和 与 replicated Particle-Mesh Ewald (PME) 方法；`pme_mode distributed` 当前仅为 interface/prototype
 - **机器学习力场**: 通过 TorchScript 集成深度学习势函数
 - **MPI 并行化**: 基于三维域分解的大规模并行计算
 - **温度/压力控制**: 多种恒温器（thermostat）和恒压器（barostat）
+- **分子拓扑特性**: special-pair exclusions/1-4 scaling、SHAKE/RATTLE、checkpoint/restart
 - **插件式架构**: 力场和积分器可运行时动态组合
 
 ---
@@ -44,15 +45,16 @@
 ## 2. 目录结构
 
 > **v2.2 重组:** 原 12 个子目录已合并为 6 个。`boundary`/`neighbor` → `system`，`runtime` → `core`，`ml` → `force`。
+> **v2.4 状态:** release-facing 文档已更新 validation maturity；LJ/special-pair/Ewald 有解析验证，replicated PME 仍等待外部参考，distributed PME 仍不是 true distributed FFT。
 
 ```
 src/                          include/gmd/
 ├── core/          (2)        ├── core/          (2)
-├── force/         (7)        ├── force/         (10)
-├── integrator/    (7)        ├── integrator/    (8)
-├── io/            (2)        ├── io/            (2)
+├── force/         (7)        ├── force/         (11)
+├── integrator/    (7)        ├── integrator/    (9)
+├── io/            (3)        ├── io/            (3)
 ├── parallel/      (4)        ├── parallel/      (4)
-└── system/        (5)        └── system/        (8)
+└── system/        (4)        └── system/        (9)
 ```
 
 ---
@@ -380,6 +382,7 @@ src/
 │   ├── velocity_rescaling_thermostat.cpp
 │   └── velocity_verlet_integrator.cpp
 ├── io/
+│   ├── checkpoint.cpp
 │   ├── config_loader.cpp
 │   └── trajectory_writer.cpp
 ├── parallel/
@@ -390,10 +393,10 @@ src/
 └── system/
     ├── initializer.cpp
     ├── minimum_image.cpp
-    ├── periodic_boundary.cpp
-    └── verlet_neighbor_builder.cpp
+	    ├── periodic_boundary.cpp
+	    └── verlet_neighbor_builder.cpp
 ```
 
 ---
 
-> **文档生成:** 2026-05-23 | **重组说明:** v2.2 目录重组将 12 个子目录合并为 6 个，代码逻辑和架构不变。
+> **文档生成:** 2026-05-24 | **重组说明:** v2.2 目录重组将 12 个子目录合并为 6 个；v2.4 补充 validation/release 状态说明，核心计算路径未在本轮文档整理中重构。

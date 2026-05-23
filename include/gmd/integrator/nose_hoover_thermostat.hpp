@@ -45,6 +45,9 @@ public:
                          double dt_half,
                          double target_temperature) noexcept override;
 
+    std::string checkpoint_state() const override;
+    void load_checkpoint_state(const std::string& state) override;
+
 private:
     double tau_  = 100.0;   // relaxation time (same units as dt)
     double xi_   = 0.0;     // friction variable

@@ -94,6 +94,7 @@ public:
             system_forces[index] = {0.0, 0.0, 0.0};
         }
         system->set_potential_energy(result.potential_energy);
+        system->set_last_virial(result.virial, result.virial_valid);
 
         if (mpi_comm != nullptr && domain_decomposition != nullptr) {
             mpi_comm->reverse_accumulate_ghost_forces(*system, *domain_decomposition);
@@ -177,6 +178,14 @@ void Simulation::set_time_step(double time_step) noexcept {
     impl_->time_step = time_step;
 }
 
+void Simulation::set_current_step(std::uint64_t step) noexcept {
+    impl_->step = step;
+}
+
+std::uint64_t Simulation::current_step() const noexcept {
+    return impl_->step;
+}
+
 bool Simulation::ready() const noexcept {
     return impl_->system != nullptr && impl_->force_provider != nullptr && impl_->integrator != nullptr;
 }
@@ -249,6 +258,7 @@ void Simulation::step(RuntimeContext& runtime) {
                                         *impl_->force_provider,
                                         runtime,
                                         step_context);
+        velocity_verlet->apply_position_constraints(*impl_->system);
         impl_->redistribute_owned_atoms();
         impl_->system->mutable_neighbor_list().valid = false;
         impl_->evaluate_force(impl_->step + 1, next_time, runtime);

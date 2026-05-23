@@ -130,6 +130,11 @@ void ClassicalForceProvider::compute(const ForceRequest& request,
             const double r2 = dr[0]*dr[0] + dr[1]*dr[1] + dr[2]*dr[2];
             if (r2 >= cutoff_sq_ || r2 < 1e-12) return;
 
+            const double lj_scale = request.system != nullptr
+                ? request.system->nonbonded_scale(i, j).lj
+                : 1.0;
+            if (lj_scale == 0.0) return;
+
             // Select pair cache by atom types.
             const PairCache& pc = multi_element
                 ? pair_table_[static_cast<std::size_t>(request.system->atom_types()[i])]
@@ -137,25 +142,26 @@ void ClassicalForceProvider::compute(const ForceRequest& request,
                 : pair_table_[0][0];
 
             const auto [energy, ff] = lj_eval(r2, pc.eps4, pc.sig2);
-            total_pe += energy - pc.energy_shift;
+            const double scaled_ff = lj_scale * ff;
+            total_pe += lj_scale * (energy - pc.energy_shift);
 
-            result.forces[i][0] += ff * dr[0];
-            result.forces[i][1] += ff * dr[1];
-            result.forces[i][2] += ff * dr[2];
-            result.forces[j][0] -= ff * dr[0];
-            result.forces[j][1] -= ff * dr[1];
-            result.forces[j][2] -= ff * dr[2];
+            result.forces[i][0] += scaled_ff * dr[0];
+            result.forces[i][1] += scaled_ff * dr[1];
+            result.forces[i][2] += scaled_ff * dr[2];
+            result.forces[j][0] -= scaled_ff * dr[0];
+            result.forces[j][1] -= scaled_ff * dr[1];
+            result.forces[j][2] -= scaled_ff * dr[2];
 
             // Pair virial tensor contribution W_ab = r_a * F_b.
-            result.virial[0] += dr[0] * (ff * dr[0]);
-            result.virial[1] += dr[0] * (ff * dr[1]);
-            result.virial[2] += dr[0] * (ff * dr[2]);
-            result.virial[3] += dr[1] * (ff * dr[0]);
-            result.virial[4] += dr[1] * (ff * dr[1]);
-            result.virial[5] += dr[1] * (ff * dr[2]);
-            result.virial[6] += dr[2] * (ff * dr[0]);
-            result.virial[7] += dr[2] * (ff * dr[1]);
-            result.virial[8] += dr[2] * (ff * dr[2]);
+            result.virial[0] += dr[0] * (scaled_ff * dr[0]);
+            result.virial[1] += dr[0] * (scaled_ff * dr[1]);
+            result.virial[2] += dr[0] * (scaled_ff * dr[2]);
+            result.virial[3] += dr[1] * (scaled_ff * dr[0]);
+            result.virial[4] += dr[1] * (scaled_ff * dr[1]);
+            result.virial[5] += dr[1] * (scaled_ff * dr[2]);
+            result.virial[6] += dr[2] * (scaled_ff * dr[0]);
+            result.virial[7] += dr[2] * (scaled_ff * dr[1]);
+            result.virial[8] += dr[2] * (scaled_ff * dr[2]);
         };
 
         if (request.neighbor_list != nullptr && request.neighbor_list->valid) {

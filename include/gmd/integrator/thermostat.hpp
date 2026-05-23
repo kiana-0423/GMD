@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <string>
 #include <string_view>
 
 namespace gmd {
@@ -21,7 +22,7 @@ public:
     virtual std::string_view name() const noexcept = 0;
 
     // Called once before the first step with the system at t=0.
-    virtual void initialize(const System& system) noexcept {}
+    virtual void initialize(const System&) noexcept {}
 
     // Applied at the end of a full Velocity Verlet step.
     // For simple rescaling schemes (Velocity Rescaling, Berendsen) this is
@@ -31,9 +32,15 @@ public:
     // Optional hook called in both half-kicks for extended-system thermostats
     // (e.g., Nosé-Hoover).  Default implementation is a no-op so that simple
     // thermostats do not need to override it.
-    virtual void apply_half_kick(System& system,
-                                 double dt_half,
-                                 double target_temperature) noexcept {}
+    virtual void apply_half_kick(System&,
+                                 double,
+                                 double) noexcept {}
+
+    // Text state used by checkpoint/restart. Stateless thermostats can keep
+    // the defaults; stateful implementations should include enough data to
+    // continue a deterministic run.
+    virtual std::string checkpoint_state() const { return "stateless"; }
+    virtual void load_checkpoint_state(const std::string& /*state*/) {}
 };
 
 // --- Shared kinetic-energy helpers used by multiple thermostats ---------------

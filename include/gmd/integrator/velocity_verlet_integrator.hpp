@@ -3,6 +3,7 @@
 #include <array>
 #include <memory>
 
+#include "gmd/integrator/constraint_solver.hpp"
 #include "gmd/integrator/integrator.hpp"
 
 namespace gmd {
@@ -36,6 +37,8 @@ public:
                         ForceProvider& force_provider,
                         RuntimeContext& runtime,
                         const IntegratorStepContext& ctx);
+    void apply_position_constraints(System& system);
+    void apply_velocity_constraints(System& system);
 
     // Returns the configured default time step for this integrator instance.
     double dt() const noexcept;
@@ -45,6 +48,8 @@ public:
     void set_thermostat(std::shared_ptr<Thermostat> thermostat) noexcept;
     void set_target_temperature(double temperature) noexcept;
     double target_temperature() const noexcept { return target_temperature_; }
+    void set_constraint_solver(std::shared_ptr<ConstraintSolver> constraints) noexcept;
+    bool has_constraints() const noexcept { return constraints_ != nullptr && constraints_->enabled(); }
 
     // --- Barostat ---
     void set_barostat(std::shared_ptr<Barostat> barostat) noexcept;
@@ -65,6 +70,7 @@ private:
 
     std::shared_ptr<Thermostat> thermostat_;
     std::shared_ptr<Barostat>   barostat_;
+    std::shared_ptr<ConstraintSolver> constraints_;
 };
 
 }  // namespace gmd

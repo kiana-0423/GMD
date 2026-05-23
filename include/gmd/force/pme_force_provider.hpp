@@ -10,6 +10,12 @@
 
 namespace gmd {
 
+enum class PmeExecutionMode {
+    Replicated,
+    Distributed,
+    Auto,
+};
+
 // Particle-Mesh Ewald (PME) for long-range Coulomb interactions.
 //
 // The real-space part is identical to Ewald summation with erfc damping.
@@ -40,7 +46,9 @@ public:
     // order       – B-spline order (4 or 6)
     // grid        – mesh dimensions; each must be a power of 2
     PMEForceProvider(double alpha, double real_cutoff,
-                     int order, std::array<int, 3> grid);
+                     int order, std::array<int, 3> grid,
+                     PmeExecutionMode mode = PmeExecutionMode::Replicated,
+                     bool benchmark = false);
 
     std::string_view name() const noexcept override;
     void initialize(RuntimeContext& runtime) override;
@@ -55,6 +63,8 @@ private:
     double real_cutoff_sq_;
     int    order_;
     std::array<int, 3> grid_;   // K1, K2, K3
+    PmeExecutionMode mode_ = PmeExecutionMode::Replicated;
+    bool benchmark_ = false;
 
     // Precomputed reciprocal-space influence function (size K1*K2*K3, real).
     std::vector<double> influence_;

@@ -16,7 +16,7 @@ class System;
 //     extended XYZ format: atom-count line, comment line with step/time/PE/KE/T,
 //     then one atom line per atom: "type  x  y  z"
 //   - Energy log file (*.log)      — space-delimited table with columns:
-//     step  time  PE  KE  E_total  temperature
+//     step  time  PE  KE  E_total  temperature  pressure  volume  SHAKE/RATTLE diagnostics
 //
 // Usage:
 //   TrajectoryWriter writer;

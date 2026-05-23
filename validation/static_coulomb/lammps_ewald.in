@@ -1,0 +1,11 @@
+units metal
+atom_style charge
+boundary p p p
+read_data charges.data
+
+pair_style lj/cut/coul/long 8.0
+pair_modify shift yes
+pair_coeff 1 1 0.00774 2.5
+kspace_style ewald 1.0e-8
+
+run 0

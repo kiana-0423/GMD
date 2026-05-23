@@ -1,0 +1,13 @@
+units metal
+atom_style atomic
+boundary p p p
+read_data cluster.data
+
+pair_style lj/cut 8.5
+pair_coeff 1 1 0.01032 3.405
+pair_modify shift yes
+
+neighbor 1.0 bin
+neigh_modify every 1 delay 0 check no
+
+run 0

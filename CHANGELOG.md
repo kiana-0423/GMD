@@ -2,6 +2,37 @@
 
 All notable user-facing changes in GMD are documented here.
 
+## [v2.4] - 2026-05-24
+
+### Added
+
+- **Validation-progress release documentation** for the current GMD research-platform status.
+  - README now states which paths are analytic validation, regression baseline, prototype interface, or tested workflow.
+  - `validation/README.md` records release-facing validation maturity for LJ, Ewald, replicated PME, distributed PME mode, SHAKE/RATTLE, and checkpoint/restart.
+- **Release evidence tooling**.
+  - Added `scripts/collect_release_logs.sh` to collect serial/MPI configure, build, CTest, validation summaries, and environment information without deleting or reusing the repository `build/` directories.
+  - Added `docs/release_logs/README.md` describing expected release artifacts.
+- **PME external validation plan** under `validation/pme_external/`.
+  - Documents planned LAMMPS PPPM or OpenMM PME reference cases and required comparisons.
+  - Explicitly keeps replicated PME marked as tested/regression-only until an external reference is committed.
+- **Full MPI GitHub Actions workflow**.
+  - Added a manual/nightly workflow that runs the full MPI CTest suite and uploads CTest logs.
+
+### Changed
+
+- Bumped the project version to `2.4.0`.
+- Corrected release-facing documentation that still listed SHAKE/RATTLE and checkpoint/restart as not implemented.
+- Clarified that `pme_mode distributed` is an interface/prototype using the replicated PME numerical backend, not true distributed mesh ownership or distributed FFT.
+- Updated project inventory and architecture documents to reflect v2.4 status and current file/test counts.
+
+### Validation Status
+
+- LJ static cluster: analytic validation.
+- Special-pair / 1-4 scaling static chain: analytic validation.
+- Static Ewald Coulomb: analytic validation.
+- Replicated PME: tested, but independent external validation is still pending.
+- Restart continuity: tested through the real CLI workflow in serial and MPI.
+
 ## [v2.3] - 2026-05-23
 
 ### Changed

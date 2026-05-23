@@ -31,7 +31,7 @@ bool mpi_is_available() {
 constexpr int ghost_record_width = 7;
 constexpr int reverse_force_record_width = 13;
 #ifdef GMD_ENABLE_MPI
-constexpr int atom_state_record_width = 11;
+constexpr int atom_state_record_width = 12;
 #endif
 
 #ifdef GMD_ENABLE_MPI
@@ -334,6 +334,7 @@ void MpiCommunicator::redistribute_atoms(System& system,
     const auto masses = system.masses();
     const auto charges = system.charges();
     const auto atom_types = system.atom_types();
+    const auto molecule_ids = system.molecule_ids();
     const auto atomic_numbers = system.atomic_numbers();
     const auto coordinates = system.coordinates();
     const auto velocities = system.velocities();
@@ -341,6 +342,7 @@ void MpiCommunicator::redistribute_atoms(System& system,
         local_state.push_back(masses[atom_index]);
         local_state.push_back(charges[atom_index]);
         local_state.push_back(static_cast<double>(atom_types[atom_index]));
+        local_state.push_back(static_cast<double>(molecule_ids[atom_index]));
         local_state.push_back(static_cast<double>(atomic_numbers[atom_index]));
         local_state.push_back(static_cast<double>(system.atom_tag(atom_index)));
         local_state.push_back(coordinates[atom_index][0]);
@@ -379,6 +381,7 @@ void MpiCommunicator::redistribute_atoms(System& system,
         double mass;
         double charge;
         int atom_type;
+        int molecule_id;
         int atomic_number;
         int tag;
         System::Vec3 coordinate;
@@ -392,17 +395,18 @@ void MpiCommunicator::redistribute_atoms(System& system,
             .mass = global_state[offset],
             .charge = global_state[offset + 1],
             .atom_type = static_cast<int>(global_state[offset + 2]),
-            .atomic_number = static_cast<int>(global_state[offset + 3]),
-            .tag = static_cast<int>(global_state[offset + 4]),
+            .molecule_id = static_cast<int>(global_state[offset + 3]),
+            .atomic_number = static_cast<int>(global_state[offset + 4]),
+            .tag = static_cast<int>(global_state[offset + 5]),
             .coordinate = {
-                global_state[offset + 5],
                 global_state[offset + 6],
                 global_state[offset + 7],
+                global_state[offset + 8],
             },
             .velocity = {
-                global_state[offset + 8],
                 global_state[offset + 9],
                 global_state[offset + 10],
+                global_state[offset + 11],
             },
         };
 
@@ -429,6 +433,7 @@ void MpiCommunicator::redistribute_atoms(System& system,
     auto local_masses = system.mutable_masses();
     auto local_charges = system.mutable_charges();
     auto local_atom_types = system.mutable_atom_types();
+    auto local_molecule_ids = system.mutable_molecule_ids();
     auto local_atomic_numbers = system.mutable_atomic_numbers();
     auto local_coordinates = system.mutable_coordinates();
     auto local_velocities = system.mutable_velocities();
@@ -439,6 +444,7 @@ void MpiCommunicator::redistribute_atoms(System& system,
         local_masses[atom_index] = atom.mass;
         local_charges[atom_index] = atom.charge;
         local_atom_types[atom_index] = atom.atom_type;
+        local_molecule_ids[atom_index] = atom.molecule_id;
         local_atomic_numbers[atom_index] = atom.atomic_number;
         local_coordinates[atom_index] = atom.coordinate;
         local_velocities[atom_index] = atom.velocity;

@@ -6,6 +6,7 @@
 #include <numbers>
 
 #include "gmd/system/minimum_image.hpp"
+#include "gmd/force/special_pair_coulomb.hpp"
 #include "gmd/system/box.hpp"
 #include "gmd/system/system.hpp"
 
@@ -211,22 +212,20 @@ void EwaldForceProvider::compute_real_space(const ForceRequest& req,
     const double two_alpha_over_sqrt_pi =
         2.0 * alpha_ / std::sqrt(std::numbers::pi);
 
+    auto counts_pair = [&](std::size_t i, std::size_t j) {
+        const std::size_t num_local = req.system->num_local_atoms();
+        if (i >= num_local) return false;
+        return j < num_local ||
+               req.system->atom_tag(i) < req.system->atom_tag(j);
+    };
+
     auto eval_pair = [&](std::size_t i, std::size_t j) {
         const double qi = charges[i], qj = charges[j];
         if (qi == 0.0 && qj == 0.0) return;
 
         // In MPI mode, a local/ghost boundary pair can exist on both ranks.
         // Use global tags to evaluate exactly once.
-        if (req.system != nullptr) {
-            const std::size_t num_local = req.system->num_local_atoms();
-            const bool i_is_local = i < num_local;
-            const bool j_is_local = j < num_local;
-            if (i_is_local && !j_is_local) {
-                if (req.system->atom_tag(i) > req.system->atom_tag(j)) return;
-            } else if (!i_is_local && j_is_local) {
-                if (req.system->atom_tag(j) < req.system->atom_tag(i)) return;
-            }
-        }
+        if (!counts_pair(i, j)) return;
 
         Force3D dr = {coords[i][0] - coords[j][0],
                       coords[i][1] - coords[j][1],
@@ -270,6 +269,10 @@ void EwaldForceProvider::compute_real_space(const ForceRequest& req,
             for (std::size_t j = i + 1; j < n; ++j)
                 eval_pair(i, j);
     }
+
+    // Reciprocal and self terms represent the unscaled periodic interaction;
+    // the correction is independent of the real-space cutoff and MPI halo.
+    apply_special_pair_coulomb_corrections(req, res, kEwaldCoulomb);
 }
 
 // ---------------------------------------------------------------------------

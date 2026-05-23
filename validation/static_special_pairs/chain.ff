@@ -1,0 +1,8 @@
+force_field molecular
+lj_cutoff 9.0
+
+type 1 C mass 12.011 epsilon 0.2 sigma 1.0 charge 0.0
+
+bond_type 1 k 300.0 r0 1.0
+angle_type 1 k 0.0 theta0 180.0
+dihedral_type 1 k 0.0 n 1 delta 0.0
