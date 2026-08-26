@@ -71,16 +71,33 @@ double energy_with_offset(gmd::ForceProvider& provider,
 }
 
 // F_ia == -dU/dr_ia for every atom and every component.
+//
+// `tolerance` is RELATIVE to the largest force in the fixture, not absolute.
+// These fixtures span two orders of magnitude in force (a few eV/A for a lone
+// torsion, ~170 eV/A with a stiff bond active), so a single absolute bound is
+// either meaningless for one case or unreachably tight for the other.
 void check_forces_match_gradient(gmd::ForceProvider& provider,
                                  gmd::System& system,
                                  const std::string& label,
-                                 double tolerance = 1.0e-6) {
+                                 double tolerance = 1.0e-8) {
     const gmd::ForceResult result = evaluate(provider, system);
     check(result.success, label + ": force evaluation must succeed");
 
     double worst = 0.0;
     double largest_force = 0.0;
-    constexpr double h = 1.0e-7;
+
+    // Central-difference step. The error is round-off dominated below ~1e-6 and
+    // truncation dominated above ~1e-4; measured on the combined fixture
+    // (U ~ 296 eV, max|F| ~ 170 eV/A) the max deviation runs
+    //
+    //   h=1e-8: 7.0e-6   h=1e-7: 9.4e-7   h=1e-6: 1.1e-7
+    //   h=1e-5: 1.3e-8   h=1e-4: 1.1e-6   h=1e-3: 1.1e-4
+    //
+    // so 1e-5 sits at the minimum. An earlier 1e-7 left only a few percent of
+    // margin against the bound and flipped between compilers -- it passed on
+    // clang/macOS and failed on gcc/Linux -- which is a property of the step
+    // size, not of the forces (the relative error there was still 5.5e-9).
+    constexpr double h = 1.0e-5;
 
     for (std::size_t atom = 0; atom < system.num_local_atoms(); ++atom) {
         for (std::size_t dim = 0; dim < 3; ++dim) {
@@ -104,9 +121,12 @@ void check_forces_match_gradient(gmd::ForceProvider& provider,
         }
     }
 
-    check(worst < tolerance,
+    const double limit = tolerance * std::max(1.0, largest_force);
+    check(worst <= limit,
           label + ": forces do not match -dU/dx (max component difference " +
-              std::to_string(worst) + ")");
+              std::to_string(worst) + ", limit " + std::to_string(limit) +
+              " = " + std::to_string(tolerance) + " x max|F| " +
+              std::to_string(largest_force) + ")");
 
     // Guard against a vacuous pass on a configuration that produces no force.
     check(largest_force > 1.0e-3,
