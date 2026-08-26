@@ -52,6 +52,130 @@ each force term now contributes it in the form that term actually requires:
 | Ewald/PME reciprocal space | `Σ_k E_k [δ_ab - 2(1/4α² + 1/k²) k_a k_b]` |
 | Ewald/PME net-charge correction | isotropic `U_net · δ_ab` (the term scales as `1/V`) |
 | Ewald/PME self-energy | none — it does not depend on the cell |
+| SHAKE/RATTLE constraints | `Σ_c (2Λ_c/dt)·(r_c ⊗ r_c)`, the endpoint force recovered from the converged RATTLE multipliers |
+
+### Constraint (SHAKE/RATTLE) virial
+
+**The splitting.** Constrained dynamics uses the standard velocity-Verlet
+SHAKE/RATTLE splitting, in which the constraint force enters **twice** per step:
+
+```
+(1)  v_i += (dt/2m_i)·F_i(t)                    first half-kick
+(2)  v_i += w_i·Σ_c s_ic·Γ_c·r_c(t)             SHAKE impulse      } solved
+(3)  r_i += dt·v_i                              drift              } together
+(4)  v_i += (dt/2m_i)·F_i(t+dt)                 second half-kick
+(5)  v_i += w_i·Σ_c s_ic·Λ_c·r_c(t+dt)          RATTLE impulse
+```
+
+(2) is the constraint force at time level `t`, paired with `F(t)`; (5) is the
+same force at `t+dt`, paired with `F(t+dt)`. They are different quantities.
+
+**Which one the pressure needs, and the factor.** The providers are evaluated at
+`r(t+dt)`, so the provider virial belongs to `t+dt` and its partner is the
+RATTLE impulse. Matching (5) against (4) term by term,
+
+```
+(dt/2m_i)·G_i(t+dt) = w_i·Λ_c·r_c(t+dt)   ⇒   G_i(t+dt) = (2/dt)·Σ_c s_ic·Λ_c·r_c
+W_constraint(t+dt) = Σ_c (2Λ_c/dt)·(r_c ⊗ r_c)
+```
+
+The factor is **`2/dt`**, and it is exact — this is an endpoint quantity, not a
+step average, so **both halves of the reported virial live at the same time
+level and there is no `O(dt)` mixing**. Pinned from the outside rather than
+assumed: a freely rotating rigid dimer's endpoint constraint force must equal
+the centripetal force `μω²d`, and it does, to `O(dt²)`. `1/dt` — the value that
+would be right if SHAKE omitted its velocity impulse (2), leaving RATTLE to
+carry the whole step — undershoots it by exactly two.
+
+**Central and symmetric by construction.** RATTLE does not move atoms, so
+`r_c(t+dt)` is fixed for the whole solve and summing the *scalar* multipliers
+gives a pair force exactly along `r_c` and exactly antisymmetric — for coupled
+constraints such as a rigid triangle as much as for isolated ones. Nothing is
+projected and no residual is discarded.
+
+**Sign.** `λ = -(r_c·v_c)/((w_i+w_j)|r_c|²)`, so a separating pair gives `λ < 0`
+and an attractive restoring force with a negative trace — matching the negative
+virial an attractive Lennard-Jones pair produces under the same convention.
+
+**Why the kinetic term does not already cover it.** `2K` and the configurational
+constraint virial are different quantities, and projecting the velocities does
+not remove the need for the second. For a rigid rotor of reduced mass `μ`,
+
+```
+2K = μω²d²        tr W_constraint = -μω²d²        2K + tr W = 0
+```
+
+which is the physically required answer — a rigid body's frozen internal
+coordinate contributes nothing to the pressure. Drop the constraint virial and
+`2K` is left uncancelled, reporting a spurious `2K/3V`.
+
+### Reported pressure vs current-geometry virial
+
+These are two different things and the engine stores them separately.
+
+- **`System::last_virial()`** is the *current geometry's* tensor: provider plus,
+  when one belongs to that geometry, the constraint term. After a barostat
+  rescale the forces are re-evaluated for a geometry no dynamics integrated, and
+  that tensor has no constraint partner — it is then marked **invalid** rather
+  than passed off as a complete pressure virial.
+- **`System::step_thermodynamics()`** is the state *of the step that just
+  finished* — pressure, virial, `2K`, volume and potential energy — captured
+  together at the end of `finish_step()`, before any barostat runs. Its pressure
+  is bit-for-bit the number the barostat itself consumed, and a later force
+  evaluation deliberately does not touch the record.
+
+The log row is that record: **`PE`, `KE`, `E_total`, `T`, `P` and `V` all come
+from one state**, so `P = (2K + tr W)/3V` holds among exactly those numbers and
+`E_total` is the energy of the configuration that produced them. Keeping the
+completed step and the current geometry in one slot would force a rescale to
+destroy the pressure the step actually measured, which is why constrained NPT
+previously had no pressure to report.
+
+The one thing that is *not* from that state is the **`.xyz` configuration**:
+those are the current coordinates, which under a barostat are the rescaled ones
+the next step starts from. Snapshotting coordinates every step to match would
+cost an `N x 3` copy per step for a difference no thermodynamic quantity in the
+row depends on. Under a barostat, therefore, the row's `V` lags the `.xyz`
+coordinates by one rescale, by design.
+
+**Validity is explicit, never a sentinel.** A numerical zero is an ordinary
+pressure. When no complete pressure exists — the initial frame of a constrained
+run, before any step has produced a RATTLE multiplier — the log writes `nan` and
+sets the `P_valid` column to `0`.
+
+**MPI output.** The MPI output path writes a separate `System` holding the
+gathered global coordinates. It takes part in no dynamics, so every non-atomic
+field the writer reads is brought across from the distributed `System` by
+`System::copy_frame_state_from()` — box, potential energy, completed-step
+record, SHAKE/RATTLE diagnostics and the virial state used as the initial-frame
+fallback. Nothing there is reduced: each field is either replicated (box,
+constraint virial) or already global (provider virial, and the completed-step
+record built from globally reduced quantities), so every rank already holds the
+identical value and reducing would multiply it. That identity is asserted
+directly in `tests/mpi_constraint_virial.cpp` rather than assumed, and
+`tests/constrained_pressure_reporting.py` compares whole logs from serial,
+`np=2` and `np=4` runs of the real executable column by column.
+
+**MPI constraint solving.** `ConstraintSolver` allgathers every owned atom and works from a
+constraint list replicated against global atom tags, so every rank converges to
+the same multipliers and the tensor each rank computes is *already global*. It
+is therefore **not** reduced — an allreduce would multiply it by the rank count.
+`tests/mpi_constraint_virial.cpp` runs the same fixture at 1, 2 and 4 ranks,
+which catches both a dropped and a rank-multiplied contribution.
+
+**Validated scope.** Against the centripetal force of a rigid rotor — a
+reference independent of the implementation — for a dimer and for a rigid
+triangle of three coupled constraints: the magnitude of the recovered endpoint
+force, the sign, the trace, the identity `2K + tr W = 0`, and second-order
+convergence of both errors in `dt`. Plus exact tensor symmetry, exact centrality
+of every pair force, the two constraint half-impulses being measurably distinct,
+energy conservation of a free rotor, per-constraint additivity, translation
+invariance, invariance across a periodic boundary, rank invariance, and restart
+continuity of the reported pressure. Constrained pressure is complete and
+analytically validated for its **trace and diagonal** on orthorhombic cells. It
+has **no independent external reference**: LAMMPS does not expose a separately
+extractable constraint virial with a proven-equivalent definition, and the
+quantity is dynamical, so it cannot be compared from a static configuration.
 
 None of these depend on the coordinate origin or on how atoms happen to be
 wrapped into the cell. In particular the reciprocal sum is **not** computed as
@@ -897,8 +1021,10 @@ ForceProvider (interface)                                      │  MpiCommunica
 ## Known Limitations
 
 - SHAKE / RATTLE constraints use a correctness-first MPI global-gather projection; scalable local constraint communication and SETTLE/LINCS are not implemented
-- Constraint forces do not contribute to the virial. Degrees of freedom now account for constraints, so reported *temperature* is correct for constrained runs, but the *pressure* of a constrained system is missing the constraint virial and NPT with SHAKE/RATTLE should not be treated as quantitative
+- Constraint forces contribute to the virial as an endpoint quantity at `t+dt` (see *Virial and pressure*), so constrained pressure is complete and single-time-level. It has **no independent external reference**, only an analytical one
 - Constraint **independence is assumed, not verified**. The solver normalises its list to distinct pairs and rejects duplicates, conflicts and self-constraints, but a redundant closed topology (for example all pairs among five or more atoms) is accepted and every distinct constraint is counted, which over-subtracts degrees of freedom. Deciding this in general needs the rank of the constraint Jacobian, which is configuration dependent. Configure independent constraints
+- The **initial frame of a constrained run** has no completed step behind it and no RATTLE multiplier for its force evaluation, so it has no complete pressure. It is reported as `nan` with `P_valid 0`, never as a number
+- The SHAKE reference-gradient linearisation has no solution when a bond turns through ~90° in a single step (`r(t+dt)·r(t) → 0`). That is diagnosed as a hard error naming the pair and asking for a smaller time step, rather than being allowed to produce a wild correction
 - Off-diagonal virial components are unvalidated; see *Virial and pressure*
 - A Nose-Hoover checkpoint can only be restarted into a run with the same degrees of freedom. Changing the constraint set, the centre-of-mass removal setting or the atom count is rejected, as is a checkpoint predating constraint-aware DOF accounting (the old `3N-3` rule) whenever the two disagree. There is no migration path: the thermostat mass `Q` and friction variable `xi` belong to the DOF they were generated under. Restart from the input instead
 - No GPU execution (CUDA option present but CPU-only)
