@@ -499,6 +499,21 @@ if(BUILD_TESTING)
             PROPERTIES
                 LABELS "mpi;parallel;integration;restart;integrator"
                 PROCESSORS 2)
+        add_test(
+            NAME gmd_mpi_nose_hoover_restart_continuity_cli_4proc
+            COMMAND Python3::Interpreter
+                    ${CMAKE_CURRENT_SOURCE_DIR}/tests/nose_hoover_restart_continuity.py
+                    --gmd $<TARGET_FILE:gmd>
+                    --gmd-validate $<TARGET_FILE:gmd_validate>
+                    --work-root ${CMAKE_CURRENT_BINARY_DIR}/tests/nh_restart_continuity_mpi_4
+                    --np 4
+                    --mpiexec ${MPIEXEC_EXECUTABLE}
+                    --mpiexec-np-flag=${MPIEXEC_NUMPROC_FLAG}
+        )
+        set_tests_properties(gmd_mpi_nose_hoover_restart_continuity_cli_4proc
+            PROPERTIES
+                LABELS "mpi;parallel;integration;restart;integrator"
+                PROCESSORS 4)
 
         add_test(
             NAME gmd_mpi_restart_continuity_cli_2proc

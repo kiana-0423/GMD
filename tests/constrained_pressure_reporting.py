@@ -228,13 +228,22 @@ def main() -> int:
         problems.append("the log header does not mention the P_valid column")
 
     # --- constrained NVE: bounded, second-order, no worse than the control -
-    def relative_drift(rows: list[dict]) -> float:
+    # Every value is checked for finiteness before it reaches a metric. max() over
+    # a nan keeps its running value -- `max(0.0, nan)` is 0.0 -- so a column that
+    # was never reported would aggregate to "no drift" and pass by vacuity.
+    def relative_drift(label: str, rows: list[dict]) -> float:
+        for row in rows:
+            if not math.isfinite(row["etot"]):
+                problems.append(
+                    f"{label}: total energy is {row['etot']} at step {row['step']}; a "
+                    f"non-finite value cannot be aggregated into a drift metric")
+                return float("inf")
         initial = rows[0]["etot"]
         return max(abs(row["etot"] - initial) for row in rows) / max(abs(initial), 1e-30)
 
-    coarse = relative_drift(nve)
-    fine = relative_drift(nve_half)
-    unconstrained = relative_drift(control)
+    coarse = relative_drift("constrained NVE", nve)
+    fine = relative_drift("constrained NVE at half dt", nve_half)
+    unconstrained = relative_drift("unconstrained control", control)
     ratio = coarse / fine if fine > 0.0 else float("inf")
     span = NVE_TIME_STEP * NVE_STEPS
     print(f"constrained NVE over {span:.1f} fs: max relative energy drift "
@@ -367,12 +376,18 @@ def main() -> int:
                                 f"{label} step {serial_row['step']}: {name} is {a} in serial "
                                 f"and {b} at np={args.np}; this must match exactly")
                         continue
-                    if math.isnan(a) and math.isnan(b):
-                        continue
-                    if math.isnan(a) != math.isnan(b):
+                    # Finiteness first: a difference involving nan is nan, and
+                    # max() would keep its running value and read as agreement.
+                    if not math.isfinite(a) or not math.isfinite(b):
+                        if math.isnan(a) and math.isnan(b) and name == "pressure" \
+                                and serial_row["p_valid"] == 0 and mpi_row["p_valid"] == 0:
+                            # Both sides agree there is no pressure for this frame,
+                            # which the P_valid column states explicitly.
+                            continue
                         problems.append(
                             f"{label} step {serial_row['step']}: {name} is {a} in serial and "
-                            f"{b} at np={args.np}; one is nan and the other is not")
+                            f"{b} at np={args.np}; a non-finite value here is either a "
+                            f"disagreement or a quantity that was never reported")
                         continue
                     worst[name] = max(worst[name], abs(a - b))
             reported = "  ".join(
