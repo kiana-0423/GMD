@@ -61,6 +61,7 @@ inline Vec3 min_image(Vec3 dr, const Box& box) noexcept {
     apply_minimum_image(dr, box);
     return dr;
 }
+
 // Accumulate the virial of a single bonded interaction.
 //
 // `relative[a]` is the position of atom a measured from an arbitrary reference
@@ -85,7 +86,6 @@ inline void accum_interaction_virial(ForceResult& result,
         }
     }
 }
-
 
 // Accumulate a force vector onto atom `idx` in the result forces array.
 inline void accum_force(ForceResult& result, int idx, const Vec3& f) noexcept {
@@ -271,26 +271,47 @@ inline void apply_dihedral_forces(ForceResult& result,
 
     if (m2 < 1.0e-20 || n2 < 1.0e-20 || b2len < 1.0e-12) return;
 
-    // F = -dV/dφ
-    const double F   = -dV_dphi;
+    // Forces are F_a = -(dV/dphi) * dphi/dr_a. With b1 = r_j - r_i, b2 = r_k - r_j,
+    // b3 = r_l - r_k and the phi convention used by dihedral_angle() above,
+    //
+    //   dphi/dr_i = -(|b2| / |m|^2) m
+    //   dphi/dr_l = +(|b2| / |n|^2) n
+    //   dphi/dr_j = -(1 + p) dphi/dr_i + q dphi/dr_l
+    //
+    // with p = (b1.b2)/|b2|^2 and q = (b3.b2)/|b2|^2, giving
+    //
+    //   F_i = +(dV/dphi) (|b2| / |m|^2) m
+    //   F_l = -(dV/dphi) (|b2| / |n|^2) n
+    //   F_j = -(1 + p) F_i + q F_l
+    //   F_k = -(F_i + F_j + F_l)
+    //
+    // Both the overall sign and the middle-atom projection were previously
+    // wrong: the projection used was the one belonging to the opposite
+    // convention b1 = r_i - r_j. The terminal-atom error is a pure sign flip,
+    // which leaves tr(W) unchanged because a torsion angle is invariant under
+    // isotropic scaling -- so only a per-component check catches it. See
+    // tests/virial_finite_difference_tests.cpp and the dihedral force-gradient
+    // check in tests/bonded_force_gradient_tests.cpp.
+    const double F   = dV_dphi;
     const double s   = b2len;
 
-    // Force on i and l
+    // Force on the terminal atoms i and l.
     Vec3 fi = scale( F * s / m2, m);
     Vec3 fl = scale(-F * s / n2, n);
 
-    // Projection coefficients
+    // Projection coefficients onto the central bond b2.
     const double b2len2 = b2len * b2len;
     const double p = dot(b1, b2) / b2len2;
     const double q = dot(b3, b2) / b2len2;
 
-    // Force on j and k (via constraint ∑ F = 0)
-    Vec3 fj = add(scale(p - 1.0, fi), scale(-q, fl));
+    // Force on j from the chain rule, and on k from the constraint sum F = 0.
+    Vec3 fj = add(scale(-(1.0 + p), fi), scale(q, fl));
     Vec3 fk = {-(fi[0]+fj[0]+fl[0]), -(fi[1]+fj[1]+fl[1]), -(fi[2]+fj[2]+fl[2])};
 
     if (i >= 0) accum_force(result, i, fi);
     if (j >= 0) accum_force(result, j, fj);
     if (k >= 0) accum_force(result, k, fk);
+    if (l >= 0) accum_force(result, l, fl);
 
     if (accumulate_virial) {
         // Positions relative to atom i, walking the chain i -> j -> k -> l.
@@ -301,7 +322,6 @@ inline void apply_dihedral_forces(ForceResult& result,
         const Vec3 forces[4] = {fi, fj, fk, fl};
         accum_interaction_virial(result, relative, forces, 4);
     }
-    if (l >= 0) accum_force(result, l, fl);
 }
 
 }  // anonymous namespace
@@ -684,6 +704,7 @@ void BondedForceProvider::compute_bonds(const ForceRequest& req,
         const int force_i = force_index_for_tag(b.i);
         const int force_j = force_index_for_tag(b.j);
         if (force_i >= 0) accum_force(result, force_i, fi);
+        if (force_j >= 0) accum_force(result, force_j, fj);
 
         // Accumulated on the same rank that counts the energy, so the full
         // interaction virial is counted exactly once across the communicator.
@@ -692,7 +713,6 @@ void BondedForceProvider::compute_bonds(const ForceRequest& req,
             const Vec3 forces[2] = {fi, fj};
             accum_interaction_virial(result, relative, forces, 2);
         }
-        if (force_j >= 0) accum_force(result, force_j, fj);
     }
 }
 
@@ -772,6 +792,7 @@ void BondedForceProvider::compute_angles(const ForceRequest& req,
         const int force_k = force_index_for_tag(a.k);
         if (force_i >= 0) accum_force(result, force_i, fi);
         if (force_j >= 0) accum_force(result, force_j, fj);
+        if (force_k >= 0) accum_force(result, force_k, fk);
 
         if (counts_global_energy(a)) {
             // Positions relative to the vertex atom j.
@@ -779,7 +800,6 @@ void BondedForceProvider::compute_angles(const ForceRequest& req,
             const Vec3 forces[3] = {fi, fj, fk};
             accum_interaction_virial(result, relative, forces, 3);
         }
-        if (force_k >= 0) accum_force(result, force_k, fk);
     }
 }
 
