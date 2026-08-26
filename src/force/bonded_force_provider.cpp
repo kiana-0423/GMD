@@ -61,6 +61,31 @@ inline Vec3 min_image(Vec3 dr, const Box& box) noexcept {
     apply_minimum_image(dr, box);
     return dr;
 }
+// Accumulate the virial of a single bonded interaction.
+//
+// `relative[a]` is the position of atom a measured from an arbitrary reference
+// atom of the same interaction, through the minimum image convention; the
+// reference itself therefore contributes a zero vector.
+//
+// The forces of one bonded term sum to zero, which makes
+// sum_a (r_a - r_ref) (x) F_a independent of the choice of reference. That is
+// what makes this origin-independent, and in particular independent of how the
+// individual atoms happen to be wrapped into the cell -- unlike an outer
+// product of absolute coordinates, which changes when a molecule straddles a
+// periodic boundary.
+inline void accum_interaction_virial(ForceResult& result,
+                                     const Vec3* relative,
+                                     const Vec3* forces,
+                                     std::size_t count) noexcept {
+    for (std::size_t a = 0; a < count; ++a) {
+        for (std::size_t row = 0; row < 3; ++row) {
+            for (std::size_t col = 0; col < 3; ++col) {
+                result.virial[row * 3 + col] += relative[a][row] * forces[a][col];
+            }
+        }
+    }
+}
+
 
 // Accumulate a force vector onto atom `idx` in the result forces array.
 inline void accum_force(ForceResult& result, int idx, const Vec3& f) noexcept {
@@ -231,7 +256,8 @@ inline void apply_dihedral_forces(ForceResult& result,
                                   const Vec3& ri, const Vec3& rj,
                                   const Vec3& rk, const Vec3& rl,
                                   double dV_dphi,   // dV/dφ (scalar)
-                                  const Box& box) noexcept {
+                                  const Box& box,
+                                  bool accumulate_virial) noexcept {
     Vec3 b1 = min_image(sub(rj, ri), box);
     Vec3 b2 = min_image(sub(rk, rj), box);
     Vec3 b3 = min_image(sub(rl, rk), box);
@@ -265,6 +291,16 @@ inline void apply_dihedral_forces(ForceResult& result,
     if (i >= 0) accum_force(result, i, fi);
     if (j >= 0) accum_force(result, j, fj);
     if (k >= 0) accum_force(result, k, fk);
+
+    if (accumulate_virial) {
+        // Positions relative to atom i, walking the chain i -> j -> k -> l.
+        const Vec3 r_ij = b1;
+        const Vec3 r_ik = add(b1, b2);
+        const Vec3 r_il = add(r_ik, b3);
+        const Vec3 relative[4] = {{0.0, 0.0, 0.0}, r_ij, r_ik, r_il};
+        const Vec3 forces[4] = {fi, fj, fk, fl};
+        accum_interaction_virial(result, relative, forces, 4);
+    }
     if (l >= 0) accum_force(result, l, fl);
 }
 
@@ -449,28 +485,11 @@ void BondedForceProvider::compute(const ForceRequest& request,
         compute_dihedrals(request, result);
         compute_impropers(request, result);
 
-        const bool use_global_coordinates = compute_use_global_coordinates_;
-
-        // Bonded forces are already accumulated per atom. For internal forces with
-        // zero net translation, the configurational virial can be formed from the
-        // outer product r_i ⊗ F_i and summed over all atoms.
-        const std::size_t virial_atom_count = use_global_coordinates
-            ? request.system->num_local_atoms()
-            : n;
-        for (std::size_t i = 0; i < virial_atom_count; ++i) {
-            const auto& r = request.coordinates[i];
-            const auto& f = result.forces[i];
-            result.virial[0] += r[0] * f[0];
-            result.virial[1] += r[0] * f[1];
-            result.virial[2] += r[0] * f[2];
-            result.virial[3] += r[1] * f[0];
-            result.virial[4] += r[1] * f[1];
-            result.virial[5] += r[1] * f[2];
-            result.virial[6] += r[2] * f[0];
-            result.virial[7] += r[2] * f[1];
-            result.virial[8] += r[2] * f[2];
-        }
-
+        // The virial is accumulated per interaction inside the kernels above,
+        // from minimum-image separations relative to one atom of each term. The
+        // previous whole-system sum_i r_i (x) F_i is gone: it silently changed
+        // value when a molecule was wrapped across a periodic boundary, because
+        // absolute coordinates then no longer describe the intact geometry.
         compute_system_ = nullptr;
         compute_rank_ = 0;
         compute_use_global_coordinates_ = false;
@@ -665,6 +684,14 @@ void BondedForceProvider::compute_bonds(const ForceRequest& req,
         const int force_i = force_index_for_tag(b.i);
         const int force_j = force_index_for_tag(b.j);
         if (force_i >= 0) accum_force(result, force_i, fi);
+
+        // Accumulated on the same rank that counts the energy, so the full
+        // interaction virial is counted exactly once across the communicator.
+        if (counts_global_energy(b)) {
+            const Vec3 relative[2] = {{0.0, 0.0, 0.0}, dr};
+            const Vec3 forces[2] = {fi, fj};
+            accum_interaction_virial(result, relative, forces, 2);
+        }
         if (force_j >= 0) accum_force(result, force_j, fj);
     }
 }
@@ -745,6 +772,13 @@ void BondedForceProvider::compute_angles(const ForceRequest& req,
         const int force_k = force_index_for_tag(a.k);
         if (force_i >= 0) accum_force(result, force_i, fi);
         if (force_j >= 0) accum_force(result, force_j, fj);
+
+        if (counts_global_energy(a)) {
+            // Positions relative to the vertex atom j.
+            const Vec3 relative[3] = {b_ji, {0.0, 0.0, 0.0}, b_jk};
+            const Vec3 forces[3] = {fi, fj, fk};
+            accum_interaction_virial(result, relative, forces, 3);
+        }
         if (force_k >= 0) accum_force(result, force_k, fk);
     }
 }
@@ -788,7 +822,8 @@ void BondedForceProvider::compute_dihedrals(const ForceRequest& req,
                               force_index_for_tag(d.k),
                               force_index_for_tag(d.l),
                               pi, pj, pk, pl,
-                              dV_dphi, box);
+                              dV_dphi, box,
+                              counts_global_energy(d));
     }
 }
 
@@ -832,7 +867,8 @@ void BondedForceProvider::compute_impropers(const ForceRequest& req,
                               force_index_for_tag(ip.k),
                               force_index_for_tag(ip.l),
                               pi, pj, pk, pl,
-                              dV_dphi, box);
+                              dV_dphi, box,
+                              counts_global_energy(ip));
     }
 }
 

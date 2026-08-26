@@ -21,25 +21,6 @@ static constexpr double kEwaldCoulomb = 14.3996;
 
 namespace {
 
-void accumulate_coordinate_virial(const std::span<const Coordinate3D> coordinates,
-                                  const std::vector<Force3D>& forces,
-                                  std::array<double, 9>& virial) noexcept {
-    const std::size_t n = std::min(coordinates.size(), forces.size());
-    for (std::size_t i = 0; i < n; ++i) {
-        const auto& r = coordinates[i];
-        const auto& f = forces[i];
-        virial[0] += r[0] * f[0];
-        virial[1] += r[0] * f[1];
-        virial[2] += r[0] * f[2];
-        virial[3] += r[1] * f[0];
-        virial[4] += r[1] * f[1];
-        virial[5] += r[1] * f[2];
-        virial[6] += r[2] * f[0];
-        virial[7] += r[2] * f[1];
-        virial[8] += r[2] * f[2];
-    }
-}
-
 #ifdef GMD_ENABLE_MPI
 bool mpi_is_available() noexcept {
     int is_initialized = 0;
@@ -170,7 +151,10 @@ void EwaldForceProvider::compute(const ForceRequest& req,
         }
     }
 #ifdef GMD_ENABLE_MPI
-    {
+    // Guarded like every other reduction in this file: an MPI-enabled build must
+    // still be usable from a process that never called MPI_Init (single-process
+    // tools and unit tests do exactly that).
+    if (mpi_is_available()) {
         int local_has = has_charges ? 1 : 0;
         int global_has = 0;
         MPI_Allreduce(&local_has, &global_has, 1, MPI_INT, MPI_LOR, MPI_COMM_WORLD);
@@ -181,10 +165,16 @@ void EwaldForceProvider::compute(const ForceRequest& req,
     if (can_compute && has_charges) {
         resolve_params(*req.box);
 
+        // Each of these accumulates its own virial contribution in the form
+        // appropriate to that term (pair virial for real space and for the
+        // special-pair correction, the analytic k-space tensor for reciprocal,
+        // an isotropic term for the net-charge correction). The old
+        // whole-system sum_i r_i (x) F_i is deliberately gone: it is
+        // origin-dependent once coordinates are wrapped, and it is simply not
+        // the virial for a cell-dependent reciprocal energy.
         compute_real_space(req, res);
         compute_reciprocal(req, res);
         compute_self_correction(req, res);
-        accumulate_coordinate_virial(req.coordinates, res.forces, res.virial);
     }
 
 #ifdef GMD_ENABLE_MPI
@@ -252,6 +242,20 @@ void EwaldForceProvider::compute_real_space(const ForceRequest& req,
         res.forces[j][0] -= ff * dr[0];
         res.forces[j][1] -= ff * dr[1];
         res.forces[j][2] -= ff * dr[2];
+
+        // Pair virial W_ab = r_ab (x) F_ab, using the minimum-image separation.
+        // Being built from the pair vector rather than from absolute positions,
+        // this is independent of the coordinate origin and of how individual
+        // atoms happen to be wrapped into the cell.
+        res.virial[0] += dr[0] * (ff * dr[0]);
+        res.virial[1] += dr[0] * (ff * dr[1]);
+        res.virial[2] += dr[0] * (ff * dr[2]);
+        res.virial[3] += dr[1] * (ff * dr[0]);
+        res.virial[4] += dr[1] * (ff * dr[1]);
+        res.virial[5] += dr[1] * (ff * dr[2]);
+        res.virial[6] += dr[2] * (ff * dr[0]);
+        res.virial[7] += dr[2] * (ff * dr[1]);
+        res.virial[8] += dr[2] * (ff * dr[2]);
     };
 
     if (req.neighbor_list != nullptr && req.neighbor_list->valid) {
@@ -354,23 +358,33 @@ void EwaldForceProvider::compute_reciprocal(const ForceRequest& req,
                     res.forces[i][1] += fi * ky;
                     res.forces[i][2] += fi * kz;
                 }
+
+                // Reciprocal-space virial.
+                //
+                // sum_i r_i (x) F_i is NOT the virial here: the reciprocal
+                // energy depends on the cell explicitly, both through the 1/V
+                // prefactor and through k = 2*pi*n/L, so deforming the box
+                // changes E_k even with every fractional coordinate held fixed.
+                // Differentiating E_k with respect to the strain tensor gives
+                //
+                //   W_ab = E_k * [ d_ab - 2*(1/(4a^2) + 1/k^2) * k_a * k_b ]
+                //
+                // whose trace, E_k * (1 - k^2/(2a^2)), reproduces -dE_k/ds under
+                // isotropic scaling (verified by finite difference in
+                // tests/virial_finite_difference_tests.cpp).
+                const double e_k = 0.5 * gfactor * (S_re*S_re + S_im*S_im)
+                                 / static_cast<double>(mpi_size());
+                const double coeff = 2.0 * (inv_4a2 + 1.0 / k2);
+                const double kvec[3] = {kx, ky, kz};
+                for (std::size_t a = 0; a < 3; ++a) {
+                    for (std::size_t b = 0; b < 3; ++b) {
+                        const double delta = (a == b) ? 1.0 : 0.0;
+                        res.virial[a * 3 + b] +=
+                            e_k * (delta - coeff * kvec[a] * kvec[b]);
+                    }
+                }
             }
         }
-    }
-
-    // Reciprocal-space virial via coordinate-force outer product.
-    for (std::size_t i = 0; i < num_local; ++i) {
-        const auto& r = coords[i];
-        const auto& f = res.forces[i];
-        res.virial[0] += r[0] * f[0];
-        res.virial[1] += r[0] * f[1];
-        res.virial[2] += r[0] * f[2];
-        res.virial[3] += r[1] * f[0];
-        res.virial[4] += r[1] * f[1];
-        res.virial[5] += r[1] * f[2];
-        res.virial[6] += r[2] * f[0];
-        res.virial[7] += r[2] * f[1];
-        res.virial[8] += r[2] * f[2];
     }
 }
 
@@ -406,10 +420,19 @@ void EwaldForceProvider::compute_self_correction(const ForceRequest& req,
         const double V = req.box->lengths[0]
                        * req.box->lengths[1]
                        * req.box->lengths[2];
-        res.potential_energy -=
-            kEwaldCoulomb * std::numbers::pi / (2.0 * V * alpha_sq_) * Q_net * Q_net
+        const double e_net =
+            -kEwaldCoulomb * std::numbers::pi / (2.0 * V * alpha_sq_) * Q_net * Q_net
             / static_cast<double>(mpi_size());
+        res.potential_energy += e_net;
+
+        // U_net scales as 1/V, i.e. as s^-3 under isotropic scaling, so
+        // -dU/ds = 3*U_net and the tensor is isotropic: W_ab = U_net * d_ab.
+        res.virial[0] += e_net;
+        res.virial[4] += e_net;
+        res.virial[8] += e_net;
     }
+    // U_self depends only on alpha and the charges, not on the cell, so it
+    // contributes nothing to the virial.
 }
 
 }  // namespace gmd
