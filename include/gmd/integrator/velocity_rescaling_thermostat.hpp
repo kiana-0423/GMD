@@ -18,7 +18,8 @@ namespace gmd {
 // sample the canonical (NVT) ensemble correctly — use Nosé-Hoover for that.
 // It is however an excellent choice for equilibration runs.
 //
-// Degrees of freedom: 3*N - 3  (after removing COM velocity).
+// Degrees of freedom are supplied by the integrator via
+// set_degrees_of_freedom(); see compute_degrees_of_freedom() in thermostat.hpp.
 class VelocityRescalingThermostat final : public Thermostat {
 public:
     VelocityRescalingThermostat() = default;
@@ -32,7 +33,7 @@ public:
     void apply(System& system, double dt, double target_temperature) override;
 
 private:
-    std::size_t dof_ = 0;              // degrees of freedom (set in initialize)
+    // dof_ is inherited from Thermostat.
     double current_temperature_ = 0.0; // for diagnostics
 };
 

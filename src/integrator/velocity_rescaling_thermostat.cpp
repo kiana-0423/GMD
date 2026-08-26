@@ -11,9 +11,12 @@
 namespace gmd {
 
 void VelocityRescalingThermostat::initialize(const System& system) noexcept {
-    // 3N - 3: remove three COM translational degrees of freedom.
-    const std::size_t n = global_atom_count(system);
-    dof_ = (n >= 2) ? 3 * n - 3 : 3 * n;
+    // Default assumption: unconstrained system with the COM velocity removed.
+    // VelocityVerletIntegrator::initialize() overrides this immediately with
+    // the authoritative count once the constraint solver and the COM-removal
+    // setting are known.
+    set_default_degrees_of_freedom(
+        compute_degrees_of_freedom(system, DegreesOfFreedomConfig{}));
 }
 
 void VelocityRescalingThermostat::apply(System& system,

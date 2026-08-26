@@ -68,9 +68,31 @@ void VelocityVerletIntegrator::initialize(System& system, RuntimeContext& runtim
         force = {0.0, 0.0, 0.0};
     }
     if (thermostat_) {
+        // initialize() only knows the atom count, so it installs the
+        // unconstrained/COM-removed default. Override it with the count that
+        // also accounts for constraints and for the run's COM-removal setting.
+        thermostat_->set_degrees_of_freedom(degrees_of_freedom(system));
         thermostat_->initialize(system);
     }
 }
+void VelocityVerletIntegrator::set_remove_center_of_mass_velocity(bool enabled) noexcept {
+    remove_center_of_mass_velocity_ = enabled;
+}
+
+std::size_t VelocityVerletIntegrator::constraint_count() const noexcept {
+    // ConstraintSolver normalises its list to distinct pairs and replicates the
+    // same tag-based list on every rank, so this is already a global count and
+    // must not be reduced again. It counts *distinct* constraints; independence
+    // is assumed rather than proven (see the ConstraintSolver class comment).
+    return has_constraints() ? constraints_->active_constraint_count() : 0;
+}
+
+std::size_t VelocityVerletIntegrator::degrees_of_freedom(const System& system) const noexcept {
+    return compute_degrees_of_freedom(
+        system,
+        DegreesOfFreedomConfig{remove_center_of_mass_velocity_, constraint_count()});
+}
+
 
 void VelocityVerletIntegrator::step(System& system,
                                     ForceProvider& force_provider,

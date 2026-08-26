@@ -63,4 +63,27 @@ double temperature_from_twice_ke(double twice_ke, std::size_t dof) noexcept {
     return twice_ke / (static_cast<double>(dof) * kBoltzmann);
 }
 
+std::size_t compute_degrees_of_freedom(std::size_t global_atom_count,
+                                       const DegreesOfFreedomConfig& config) noexcept {
+    // Accumulate the subtractions first, then apply them in one saturating
+    // step. Doing it this way keeps every intermediate non-negative, so the
+    // unsigned arithmetic can never wrap around to a huge DOF count.
+    std::size_t dof = 3 * global_atom_count;
+
+    std::size_t removed = config.constraint_count;
+    // Removing the COM velocity only makes sense when there is relative motion
+    // left to describe; for a single atom the three translational modes are the
+    // entire system, so keep them.
+    if (config.remove_center_of_mass_velocity && global_atom_count >= 2) {
+        removed += 3;
+    }
+
+    return removed >= dof ? 0 : dof - removed;
+}
+
+std::size_t compute_degrees_of_freedom(const System& system,
+                                       const DegreesOfFreedomConfig& config) noexcept {
+    return compute_degrees_of_freedom(global_atom_count(system), config);
+}
+
 }  // namespace gmd

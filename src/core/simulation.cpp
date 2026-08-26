@@ -205,6 +205,16 @@ void Simulation::initialize(RuntimeContext& runtime) {
     if (impl_->force_provider != nullptr) {
         impl_->force_provider->initialize(runtime);
     }
+        // The integrator owns the constraint solver and therefore computes the
+        // authoritative DOF count, but only the Simulation knows whether the COM
+        // velocity was removed. Hand that over before initialize() so the
+        // thermostat is given the correct DOF from the very first step.
+        auto velocity_verlet =
+            std::dynamic_pointer_cast<VelocityVerletIntegrator>(impl_->integrator);
+        if (velocity_verlet != nullptr) {
+            velocity_verlet->set_remove_center_of_mass_velocity(
+                impl_->remove_center_of_mass_velocity);
+        }
     if (impl_->integrator != nullptr) {
         impl_->integrator->initialize(*impl_->system, runtime);
     }

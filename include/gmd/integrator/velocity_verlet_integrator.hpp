@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstddef>
+#include <cstdint>
 #include <array>
 #include <memory>
 
@@ -50,6 +52,23 @@ public:
     double target_temperature() const noexcept { return target_temperature_; }
     void set_constraint_solver(std::shared_ptr<ConstraintSolver> constraints) noexcept;
     bool has_constraints() const noexcept { return constraints_ != nullptr && constraints_->enabled(); }
+    // --- Degrees of freedom ---
+    // Whether the run removes the centre-of-mass velocity. This only affects
+    // the DOF count; the removal itself is performed by VelocityInitializer.
+    // Simulation forwards its own setting here during initialize().
+    void set_remove_center_of_mass_velocity(bool enabled) noexcept;
+    bool remove_center_of_mass_velocity() const noexcept {
+        return remove_center_of_mass_velocity_;
+    }
+
+    // Number of distinct active holonomic constraints (0 when disabled).
+    // Independence is assumed, not verified; see ConstraintSolver.
+    std::size_t constraint_count() const noexcept;
+
+    // Authoritative DOF count for this run: 3N, less 3 for COM removal, less
+    // one per distinct constraint. Every temperature consumer must use this.
+    std::size_t degrees_of_freedom(const System& system) const noexcept;
+
 
     // --- Barostat ---
     void set_barostat(std::shared_ptr<Barostat> barostat) noexcept;
@@ -66,6 +85,7 @@ private:
     double target_temperature_ = 300.0;   // [K]
     double target_pressure_    = 1.0;     // user-defined pressure units
     double last_virial_trace_  = 0.0;
+    bool remove_center_of_mass_velocity_ = true;
     bool last_virial_valid_    = false;
 
     std::shared_ptr<Thermostat> thermostat_;

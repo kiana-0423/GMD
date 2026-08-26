@@ -41,6 +41,39 @@ public:
     // continue a deterministic run.
     virtual std::string checkpoint_state() const { return "stateless"; }
     virtual void load_checkpoint_state(const std::string& /*state*/) {}
+
+    // Degrees of freedom used to convert kinetic energy into temperature.
+    //
+    // initialize() installs a provisional default that assumes an unconstrained
+    // system with the centre-of-mass velocity removed. The integrator then calls
+    // set_degrees_of_freedom() with the authoritative count -- the one that also
+    // accounts for constraints and for runs that keep the COM velocity -- which
+    // additionally marks the value as authoritative.
+    //
+    // The distinction matters at restart: load_checkpoint_state() validates the
+    // checkpoint against the authoritative count and must be able to tell that
+    // the count it is checking against really came from the run configuration.
+    void set_degrees_of_freedom(std::size_t dof) noexcept {
+        dof_ = dof;
+        dof_is_authoritative_ = true;
+    }
+    std::size_t degrees_of_freedom() const noexcept { return dof_; }
+    bool degrees_of_freedom_is_authoritative() const noexcept {
+        return dof_is_authoritative_;
+    }
+
+protected:
+    // Used by initialize() to install the provisional value; deliberately does
+    // not mark it authoritative.
+    void set_default_degrees_of_freedom(std::size_t dof) noexcept {
+        dof_ = dof;
+        dof_is_authoritative_ = false;
+    }
+
+    std::size_t dof_ = 0;
+
+private:
+    bool dof_is_authoritative_ = false;
 };
 
 // --- Shared kinetic-energy helpers used by multiple thermostats ---------------
@@ -52,6 +85,38 @@ std::size_t global_atom_count(const System& system) noexcept;
 // Returns the instantaneous temperature for a system with `dof` degrees of
 // freedom.  kB is in units consistent with the rest of the code (eV/K).
 double temperature_from_twice_ke(double twice_ke, std::size_t dof) noexcept;
+
+// --- Shared degrees-of-freedom calculation ----------------------------------
+//
+// Every temperature consumer (thermostats, trajectory output, diagnostics)
+// must agree on the same DOF count, so the formula lives here and nowhere
+// else.  Starting from 3N:
+//
+//   - subtract 3 when the centre-of-mass velocity is removed (needs N >= 2,
+//     otherwise the three translational modes are all the system has),
+//   - subtract one per distinct active holonomic constraint.
+//
+// `constraint_count` is a *global* count of DISTINCT constraints. This equals
+// the number of degrees of freedom removed only when those constraints are
+// independent, which ConstraintSolver assumes rather than verifies -- see its
+// class comment. ConstraintSolver stores constraints against stable global atom
+// tags and replicates the same list on every rank, so this count must not be
+// reduced again under MPI.
+struct DegreesOfFreedomConfig {
+    bool remove_center_of_mass_velocity = true;
+    std::size_t constraint_count = 0;
+};
+
+// Global-atom-count overload. Saturates at zero rather than wrapping around:
+// an over-constrained or degenerate system reports 0 DOF, and callers treat
+// that as "temperature is undefined" instead of dividing by a huge number.
+std::size_t compute_degrees_of_freedom(std::size_t global_atom_count,
+                                       const DegreesOfFreedomConfig& config) noexcept;
+
+// Convenience overload that resolves the global atom count from `system`
+// (MPI-aware via global_atom_count()).
+std::size_t compute_degrees_of_freedom(const System& system,
+                                       const DegreesOfFreedomConfig& config) noexcept;
 
 // Boltzmann constant [eV/K].
 inline constexpr double kBoltzmann = 8.617333262e-5;

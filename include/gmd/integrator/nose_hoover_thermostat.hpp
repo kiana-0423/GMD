@@ -52,7 +52,7 @@ private:
     double tau_  = 100.0;   // relaxation time (same units as dt)
     double xi_   = 0.0;     // friction variable
     double Q_    = 0.0;     // thermostat mass, computed in initialize()
-    std::size_t dof_ = 0;
+    // dof_ is inherited from Thermostat.
     double current_temperature_ = 0.0;
 };
 

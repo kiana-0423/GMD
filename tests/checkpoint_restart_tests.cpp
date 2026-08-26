@@ -138,8 +138,16 @@ void test_state_roundtrip(int& failures) {
     gmd::System system = make_system();
     gmd::NoseHooverThermostat nh(50.0);
     nh.initialize(system);
+    // The integrator is what normally installs the authoritative DOF; do the
+    // same here, since restoring thermostat state now requires the run's own
+    // degrees of freedom to be known so the checkpoint can be validated
+    // against them (see NoseHooverThermostat::load_checkpoint_state).
+    nh.set_degrees_of_freedom(nh.degrees_of_freedom());
     const std::string nh_state = nh.checkpoint_state();
+
     gmd::NoseHooverThermostat nh_restored;
+    nh_restored.initialize(system);
+    nh_restored.set_degrees_of_freedom(nh.degrees_of_freedom());
     nh_restored.load_checkpoint_state(nh_state);
     check(nh_restored.checkpoint_state() == nh_state,
           "Nose-Hoover checkpoint state did not round-trip", failures);
