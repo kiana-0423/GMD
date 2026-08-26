@@ -1,0 +1,37 @@
+# Independent bonded reference for GMD. See README.md for the full convention
+# mapping, units and provenance.
+#
+# units real  -> energy kcal/mol, distance Angstrom, force kcal/mol/Angstrom.
+# The GMD .ff format takes exactly these units, so every coefficient below is
+# numerically identical to the one in bonded.ff. The reference generator
+# converts LAMMPS output to eV / eV per Angstrom with the same constant GMD
+# uses internally, kcal_to_eV = 4.336410e-2.
+units           real
+atom_style      molecular
+boundary        p p p
+
+read_data       bonded.data
+
+# No non-bonded contribution: this reference isolates the bonded terms.
+pair_style      zero 2.0
+pair_coeff      * *
+special_bonds   lj/coul 0.0 0.0 0.0
+
+bond_style      harmonic     # E = K (r - r0)^2
+angle_style     harmonic     # E = K (theta - theta0)^2, theta0 in degrees
+dihedral_style  charmm       # E = K [1 + cos(n phi - d)], d in degrees
+improper_style  harmonic     # E = K (chi - chi0)^2, chi0 in degrees
+
+bond_coeff      1 300.0 1.500
+angle_coeff     1 60.0 112.0
+# charmm dihedral: K n d weight; weight=0 disables the 1-4 pair term.
+dihedral_coeff  1 1.5 3 60 0.0
+# chi0 = +10 deg here corresponds to GMD phi0 = -10 deg (opposite improper
+# sign convention; derived and verified in README.md).
+improper_coeff  1 40.0 10.0
+
+thermo_style    custom step ebond eangle edihed eimp epair pe
+thermo_modify   format float %.17g
+run             0
+
+write_dump      all custom forces_intact.txt id fx fy fz modify sort id format float %.17g

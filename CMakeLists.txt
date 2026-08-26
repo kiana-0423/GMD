@@ -123,6 +123,20 @@ if(BUILD_TESTING)
     target_link_libraries(gmd_checkpoint_restart_tests PRIVATE gmd_core)
     add_executable(gmd_pme_mode_tests tests/pme_mode_tests.cpp)
     target_link_libraries(gmd_pme_mode_tests PRIVATE gmd_core)
+    add_executable(gmd_degrees_of_freedom_tests tests/degrees_of_freedom_tests.cpp)
+    target_link_libraries(gmd_degrees_of_freedom_tests PRIVATE gmd_core)
+    add_executable(gmd_box_image_flag_tests tests/box_image_flag_tests.cpp)
+    target_link_libraries(gmd_box_image_flag_tests PRIVATE gmd_core)
+    add_executable(gmd_barostat_force_refresh_tests tests/barostat_force_refresh_tests.cpp)
+    target_link_libraries(gmd_barostat_force_refresh_tests PRIVATE gmd_core)
+    add_executable(gmd_virial_finite_difference_tests tests/virial_finite_difference_tests.cpp)
+    target_link_libraries(gmd_virial_finite_difference_tests PRIVATE gmd_core)
+    add_executable(gmd_nose_hoover_restart_tests tests/nose_hoover_restart_tests.cpp)
+    target_link_libraries(gmd_nose_hoover_restart_tests PRIVATE gmd_core)
+    add_executable(gmd_constraint_validation_tests tests/constraint_validation_tests.cpp)
+    target_link_libraries(gmd_constraint_validation_tests PRIVATE gmd_core)
+    add_executable(gmd_bonded_force_gradient_tests tests/bonded_force_gradient_tests.cpp)
+    target_link_libraries(gmd_bonded_force_gradient_tests PRIVATE gmd_core)
 
     file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/tests)
     configure_file(tests/smoke_lj.xyz         ${CMAKE_CURRENT_BINARY_DIR}/tests/smoke_xyz.in       COPYONLY)
@@ -210,7 +224,32 @@ if(BUILD_TESTING)
     )
     set_tests_properties(gmd_restart_continuity_cli
         PROPERTIES LABELS "integration;restart")
+    add_test(
+        NAME gmd_nose_hoover_restart_continuity_cli
+        COMMAND Python3::Interpreter
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/nose_hoover_restart_continuity.py
+                --gmd $<TARGET_FILE:gmd>
+                --gmd-validate $<TARGET_FILE:gmd_validate>
+                --work-root ${CMAKE_CURRENT_BINARY_DIR}/tests/nh_restart_continuity_serial
+                --np 1
+    )
+    set_tests_properties(gmd_nose_hoover_restart_continuity_cli
+        PROPERTIES LABELS "integration;restart;integrator")
     add_test(NAME gmd_pme_modes COMMAND gmd_pme_mode_tests)
+    add_test(NAME gmd_degrees_of_freedom COMMAND gmd_degrees_of_freedom_tests)
+    set_tests_properties(gmd_degrees_of_freedom PROPERTIES LABELS "unit;integrator")
+    add_test(NAME gmd_box_image_flags COMMAND gmd_box_image_flag_tests)
+    set_tests_properties(gmd_box_image_flags PROPERTIES LABELS "unit;force")
+    add_test(NAME gmd_barostat_force_refresh COMMAND gmd_barostat_force_refresh_tests)
+    set_tests_properties(gmd_barostat_force_refresh PROPERTIES LABELS "unit;integrator")
+    add_test(NAME gmd_virial_finite_difference COMMAND gmd_virial_finite_difference_tests)
+    set_tests_properties(gmd_virial_finite_difference PROPERTIES LABELS "unit;force;validation")
+    add_test(NAME gmd_nose_hoover_restart COMMAND gmd_nose_hoover_restart_tests)
+    set_tests_properties(gmd_nose_hoover_restart PROPERTIES LABELS "unit;integrator;restart")
+    add_test(NAME gmd_constraint_validation COMMAND gmd_constraint_validation_tests)
+    set_tests_properties(gmd_constraint_validation PROPERTIES LABELS "unit;integrator")
+    add_test(NAME gmd_bonded_force_gradient COMMAND gmd_bonded_force_gradient_tests)
+    set_tests_properties(gmd_bonded_force_gradient PROPERTIES LABELS "unit;force;validation")
     set_tests_properties(gmd_pme_modes PROPERTIES LABELS "unit;force;pme")
 
     add_test(
@@ -286,6 +325,50 @@ if(BUILD_TESTING)
         target_link_libraries(gmd_mpi_constraint_solver_tests PRIVATE gmd_core)
         add_executable(gmd_mpi_checkpoint_restart_tests tests/mpi_checkpoint_restart.cpp)
         target_link_libraries(gmd_mpi_checkpoint_restart_tests PRIVATE gmd_core)
+        add_executable(gmd_mpi_neighbor_list_tests tests/mpi_neighbor_list.cpp)
+        target_link_libraries(gmd_mpi_neighbor_list_tests PRIVATE gmd_core)
+        add_executable(gmd_mpi_dof_virial_tests tests/mpi_dof_virial.cpp)
+        target_link_libraries(gmd_mpi_dof_virial_tests PRIVATE gmd_core)
+
+        add_test(
+            NAME gmd_mpi_degrees_of_freedom_4proc
+            COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 4
+                    $<TARGET_FILE:gmd_mpi_dof_virial_tests> dof
+        )
+        set_tests_properties(gmd_mpi_degrees_of_freedom_4proc
+            PROPERTIES
+                LABELS "mpi;parallel;integrator"
+                PROCESSORS 4)
+
+        add_test(
+            NAME gmd_mpi_virial_reduction_4proc
+            COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 4
+                    $<TARGET_FILE:gmd_mpi_dof_virial_tests> virial
+        )
+        set_tests_properties(gmd_mpi_virial_reduction_4proc
+            PROPERTIES
+                LABELS "mpi;parallel;force"
+                PROCESSORS 4)
+
+        add_test(
+            NAME gmd_mpi_neighbor_rebuild_collective_4proc
+            COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 4
+                    $<TARGET_FILE:gmd_mpi_neighbor_list_tests> rebuild
+        )
+        set_tests_properties(gmd_mpi_neighbor_rebuild_collective_4proc
+            PROPERTIES
+                LABELS "mpi;parallel"
+                PROCESSORS 4)
+
+        add_test(
+            NAME gmd_mpi_ghost_image_flags_4proc
+            COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 4
+                    $<TARGET_FILE:gmd_mpi_neighbor_list_tests> image
+        )
+        set_tests_properties(gmd_mpi_ghost_image_flags_4proc
+            PROPERTIES
+                LABELS "mpi;parallel"
+                PROCESSORS 4)
 
         add_test(
             NAME gmd_mpi_periodic_1d_ghost_exchange_2proc
@@ -345,6 +428,22 @@ if(BUILD_TESTING)
         set_tests_properties(gmd_mpi_checkpoint_restart_2proc
             PROPERTIES
                 LABELS "mpi;parallel;restart"
+                PROCESSORS 2)
+
+        add_test(
+            NAME gmd_mpi_nose_hoover_restart_continuity_cli_2proc
+            COMMAND Python3::Interpreter
+                    ${CMAKE_CURRENT_SOURCE_DIR}/tests/nose_hoover_restart_continuity.py
+                    --gmd $<TARGET_FILE:gmd>
+                    --gmd-validate $<TARGET_FILE:gmd_validate>
+                    --work-root ${CMAKE_CURRENT_BINARY_DIR}/tests/nh_restart_continuity_mpi_2
+                    --np 2
+                    --mpiexec ${MPIEXEC_EXECUTABLE}
+                    --mpiexec-np-flag=${MPIEXEC_NUMPROC_FLAG}
+        )
+        set_tests_properties(gmd_mpi_nose_hoover_restart_continuity_cli_2proc
+            PROPERTIES
+                LABELS "mpi;parallel;integration;restart;integrator"
                 PROCESSORS 2)
 
         add_test(
