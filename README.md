@@ -23,6 +23,66 @@ GMD is a C++20 molecular dynamics engine built around a small set of composable 
 | **Release evidence tooling** — collect serial/MPI configure, build, CTest, validation summaries, and environment info without touching existing build dirs | `scripts/collect_release_logs.sh` `docs/release_logs/README.md` |
 | **Manual/nightly full MPI CI** — full MPI CTest workflow separate from ordinary PR CI | `.github/workflows/full-mpi.yml` |
 
+### Correctness fixes (post-v2.4)
+
+These change simulation results for the configurations they affect.
+
+| Fix | Files |
+|---|---|
+| **Degrees of freedom now account for constraints and the COM setting** — one shared `compute_degrees_of_freedom()` replaces the hardcoded `3N - 3` in both thermostats and in trajectory temperature output. A constrained run previously reported a temperature that was too low, so the thermostat drove the system hotter than its target | `include/gmd/integrator/thermostat.hpp` `src/integrator/thermostat.cpp` `src/integrator/{nose_hoover,velocity_rescaling}_thermostat.cpp` `src/integrator/velocity_verlet_integrator.cpp` `app/gmd_main.cpp` |
+| **Neighbor-list rebuild decided collectively under MPI** *(correctness safeguard, not a result-changing fix)* — local rebuild flags are combined with a logical OR so every rank rebuilds during the same force evaluation, or none does. Under the current domain-decomposition path ghost cleanup already clears the list every step, so this is expected to be a no-op there and may not alter existing decomposed trajectories; it prevents divergent control flow wherever a valid list survives between steps, and protects future implementations | `src/core/simulation.cpp` `src/parallel/mpi_communicator.cpp` |
+| **Forces refreshed after a barostat volume change** — `VelocityVerletIntegrator::step()` no longer returns holding forces computed for the pre-scaling geometry; `Simulation::step()` skips the refresh when the cell did not change | `src/integrator/velocity_verlet_integrator.cpp` `src/core/simulation.cpp` |
+| **Physically derived virial for Ewald, PME and bonded terms** — see *Virial and pressure* below | `src/force/{ewald,pme,bonded}_force_provider.cpp` `include/gmd/force/special_pair_coulomb.hpp` |
+| **Box dimensions validated** — zero, negative and non-finite edge lengths are rejected where a box is installed, instead of reaching periodic wrapping or the neighbor builder | `include/gmd/system/box.hpp` `include/gmd/system/system.hpp` `src/system/verlet_neighbor_builder.cpp` |
+| **Proper dihedral and improper forces corrected** — the terminal-atom force had a flipped sign and the middle-atom projection used the coefficients for the opposite `b1` convention. Any run with proper dihedrals or impropers was integrating incorrect torsional forces. Found by component-wise virial validation: a torsion angle is invariant under isotropic scaling, so the error is invisible in `tr(W)` | `src/force/bonded_force_provider.cpp` |
+| **Nose-Hoover restart validates, never overwrites, the DOF** — a checkpoint's `dof` is checked against the run's authoritative count and an incompatible restart is rejected rather than silently continued with a mismatched thermostat mass | `src/integrator/nose_hoover_thermostat.cpp` `include/gmd/integrator/thermostat.hpp` |
+| **Constraint lists normalised** — `(i,j)` and `(j,i)` collapse to one constraint, exact duplicates are dropped, conflicting target distances and self-constraints are rejected, so the DOF subtraction counts distinct constraints | `src/integrator/constraint_solver.cpp` `include/gmd/integrator/constraint_solver.hpp` |
+
+---
+
+## Virial and pressure
+
+The virial tensor `W` feeds the barostats through `P = (2*KE + tr(W)) / 3V`, and
+each force term now contributes it in the form that term actually requires:
+
+| Term | Virial |
+|---|---|
+| LJ, Ewald/PME real space, special-pair Coulomb correction | pair virial `r_ij ⊗ F_ij` from the minimum-image separation |
+| Bonds, angles, dihedrals, impropers | per-interaction `Σ_a (r_a - r_ref) ⊗ F_a`, with positions taken relative to one atom of the interaction |
+| Ewald/PME reciprocal space | `Σ_k E_k [δ_ab - 2(1/4α² + 1/k²) k_a k_b]` |
+| Ewald/PME net-charge correction | isotropic `U_net · δ_ab` (the term scales as `1/V`) |
+| Ewald/PME self-energy | none — it does not depend on the cell |
+
+None of these depend on the coordinate origin or on how atoms happen to be
+wrapped into the cell. In particular the reciprocal sum is **not** computed as
+`Σ_i r_i ⊗ F_i`: the reciprocal energy depends on the cell explicitly, through
+both the `1/V` prefactor and `k = 2πn/L`, so that expression is not the virial
+at all there.
+
+All of this is checked against the definition rather than against a closed form,
+in two ways:
+
+- **Isotropic.** `tr(W)` against `-dU/ds` under `r → s·r, L → s·L`.
+- **Per-axis.** Each diagonal component `W_aa` against `-dU/dε` under a normal
+  strain on that axis alone (`L_a → (1+ε)L_a`, fractional coordinates fixed),
+  on deliberately non-cubic cells so no error hides behind cubic symmetry.
+
+`tests/virial_finite_difference_tests.cpp` runs both for LJ, bonded (intact and
+wrapped across a boundary), Ewald and PME, neutral and net-charged.
+`tests/mpi_dof_virial.cpp` repeats both under 4-way domain decomposition, where a
+virial reduced the wrong number of times fails by a factor of the rank count.
+
+**Scope of the claim.** `Box` stores three edge lengths, so the engine
+represents orthorhombic cells only and no shear strain can be applied.
+**Only the three diagonal components are validated. The off-diagonal components
+are not.** They are checked for the symmetry `W_ab == W_ba`, which is necessary
+but not sufficient. Validating them would need a triclinic box representation
+and a shear deformation, neither of which exists here.
+
+The per-axis check earns its keep: it is what exposed the dihedral force bug
+listed above, which the isotropic trace could not see because a torsion angle is
+unchanged by isotropic scaling and so contributes zero to `tr(W)` either way.
+
 ---
 
 ## What's New in v2.3
@@ -837,9 +897,13 @@ ForceProvider (interface)                                      │  MpiCommunica
 ## Known Limitations
 
 - SHAKE / RATTLE constraints use a correctness-first MPI global-gather projection; scalable local constraint communication and SETTLE/LINCS are not implemented
+- Constraint forces do not contribute to the virial. Degrees of freedom now account for constraints, so reported *temperature* is correct for constrained runs, but the *pressure* of a constrained system is missing the constraint virial and NPT with SHAKE/RATTLE should not be treated as quantitative
+- Constraint **independence is assumed, not verified**. The solver normalises its list to distinct pairs and rejects duplicates, conflicts and self-constraints, but a redundant closed topology (for example all pairs among five or more atoms) is accepted and every distinct constraint is counted, which over-subtracts degrees of freedom. Deciding this in general needs the rank of the constraint Jacobian, which is configuration dependent. Configure independent constraints
+- Off-diagonal virial components are unvalidated; see *Virial and pressure*
+- A Nose-Hoover checkpoint can only be restarted into a run with the same degrees of freedom. Changing the constraint set, the centre-of-mass removal setting or the atom count is rejected, as is a checkpoint predating constraint-aware DOF accounting (the old `3N-3` rule) whenever the two disagree. There is no migration path: the thermostat mass `Q` and friction variable `xi` belong to the DOF they were generated under. Restart from the input instead
 - No GPU execution (CUDA option present but CPU-only)
 - Checkpoint/restart uses a readable replicated text file; large-scale binary/parallel checkpoint I/O is not implemented
-- Berendsen barostat requires virial from every active force term; current `Ewald` and `PME` paths provide it via a coordinate-virial approximation; barostat pressure is computed with MPI-allreduced kinetic energy and virial
+- Berendsen barostat requires virial from every active force term; barostat pressure is computed with MPI-allreduced kinetic energy and virial. Every provider now reports a physically derived virial rather than a coordinate approximation (see *Virial and pressure* below), and each contribution is reduced exactly once across the communicator
 - `pme_mode distributed` currently uses the replicated PME numerical backend. It is an interface/prototype for workflow compatibility, dependency checks, and timing hooks; it does not reduce PME grid memory per rank, does not perform distributed FFT communication, and should not be used as evidence of scalable distributed-PME performance
 - Ewald/PME special-pair Coulomb scaling is applied with analytical `(scale - 1) q_i q_j/r` corrections; PME retains its normal mesh discretization error and still needs broader accuracy regression coverage
 - ML force provider requires `GMD_ENABLE_TORCH=ON` and a compatible TorchScript model; MPI domain decomposition is rejected because local-plus-ghost model energy ownership and message-passing halo depth are not defined
