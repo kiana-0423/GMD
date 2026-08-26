@@ -118,7 +118,18 @@ public:
             system_forces[index] = {0.0, 0.0, 0.0};
         }
         system->set_potential_energy(result.potential_energy);
-        system->set_last_virial(result.virial, result.virial_valid);
+        // Install the PROVIDER half of the reported virial. Its constraint
+        // partner comes from the RATTLE that closes the step, on these same
+        // coordinates, and is attached there. Installing a provider virial drops
+        // any constraint term left over from an earlier geometry, so a rescale or
+        // a re-evaluation can neither carry a stale contribution forward nor add
+        // one twice; while none is attached the combined virial reports invalid.
+        //
+        // The constraint virial is NOT reduced across ranks: ConstraintSolver
+        // allgathers every owned atom and works from a tag-replicated constraint
+        // list, so every rank already computed the same global tensor. Reducing
+        // it would multiply it by the rank count.
+        system->set_provider_virial(result.virial, result.virial_valid);
 
         if (mpi_comm != nullptr && domain_decomposition != nullptr) {
             mpi_comm->reverse_accumulate_ghost_forces(*system, *domain_decomposition);
@@ -280,11 +291,12 @@ void Simulation::step(RuntimeContext& runtime) {
     impl_->redistribute_owned_atoms();
 
     const double next_time = static_cast<double>(impl_->step + 1) * impl_->time_step;
-    const ForceResult next_force = impl_->evaluate_force(impl_->step + 1, next_time, runtime);
-    velocity_verlet->finish_step(*impl_->system,
-                                 step_context,
-                                 next_force.virial_valid,
-                                 next_force.virial);
+    // evaluate_force() installs the provider virial on the System; finish_step()
+    // runs RATTLE and attaches the constraint virial to it. The combined value is
+    // read back off the System, so the cached trace, the barostat, the trajectory
+    // log and the checkpoint cannot disagree about what the pressure was.
+    impl_->evaluate_force(impl_->step + 1, next_time, runtime);
+    velocity_verlet->finish_step(*impl_->system, step_context);
 
     if (velocity_verlet->has_barostat()) {
         const Box box_before = impl_->system->box();
@@ -309,7 +321,12 @@ void Simulation::step(RuntimeContext& runtime) {
         }
 
         if (box_changed) {
+            // Geometric re-projection onto the manifold the rescale moved the
+            // atoms off. Neither call is closing a step, so neither produces a
+            // constraint virial, and the re-evaluation below therefore reports an
+            // incomplete -- and so invalid -- virial while constraints are active.
             velocity_verlet->apply_position_constraints(*impl_->system);
+            velocity_verlet->apply_velocity_constraints(*impl_->system);
             impl_->redistribute_owned_atoms();
             impl_->system->mutable_neighbor_list().valid = false;
             impl_->evaluate_force(impl_->step + 1, next_time, runtime);

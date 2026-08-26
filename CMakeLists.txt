@@ -333,6 +333,22 @@ if(BUILD_TESTING)
         target_link_libraries(gmd_mpi_neighbor_list_tests PRIVATE gmd_core)
         add_executable(gmd_mpi_dof_virial_tests tests/mpi_dof_virial.cpp)
         target_link_libraries(gmd_mpi_dof_virial_tests PRIVATE gmd_core)
+        add_executable(gmd_mpi_constraint_virial_tests tests/mpi_constraint_virial.cpp)
+        target_link_libraries(gmd_mpi_constraint_virial_tests PRIVATE gmd_core)
+
+        # Same fixture at 1, 2 and 4 ranks: the constraint virial must come out
+        # identical, which is what catches a dropped or rank-multiplied value.
+        foreach(constraint_virial_np 1 2 4)
+            add_test(
+                NAME gmd_mpi_constraint_virial_${constraint_virial_np}proc
+                COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${constraint_virial_np}
+                        $<TARGET_FILE:gmd_mpi_constraint_virial_tests>
+            )
+            set_tests_properties(gmd_mpi_constraint_virial_${constraint_virial_np}proc
+                PROPERTIES
+                    LABELS "mpi;parallel;integrator;force"
+                    PROCESSORS ${constraint_virial_np})
+        endforeach()
 
         add_test(
             NAME gmd_mpi_degrees_of_freedom_4proc

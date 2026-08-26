@@ -1,26 +1,44 @@
-// Tests for the standard constrained velocity-Verlet (SHAKE/RATTLE) splitting.
+// Physics tests for the SHAKE/RATTLE constraint contribution to the virial.
 //
-// The reference is a rigid rotor, not the implementation. A dimer rotating with
-// no external force is held together entirely by its constraint, so two things
-// follow that can be written down without reference to any solver:
+// ENDPOINT, NOT STEP-AVERAGED. The integrator implements the standard
+// constrained velocity-Verlet splitting, in which the constraint force enters
+// twice per step: once through the SHAKE impulse, paired with F(t), and once
+// through the RATTLE impulse, paired with F(t+dt). The providers are evaluated
+// at r(t+dt), so the virial takes the RATTLE one, G(t+dt) = (2/dt) Lambda r_c.
+// That is an endpoint quantity. Every name, message and diagnostic below says
+// which of the two it means, and test_two_constraint_half_impulses_are_distinct
+// measures both and shows they are genuinely different quantities.
 //
-//   1. Energy. Constraint forces do no work and there is no potential, so the
-//      kinetic energy is exactly constant. This is the sharpest test of the
-//      SHAKE projection itself: correcting along the drifted bond instead of the
-//      reference gradient still lands on the constraint manifold, but is not
-//      symplectic and bleeds energy secularly.
+// The reference used here is a rigid rotor, not the implementation formula.
+// A pair (or a rigid triangle) rotating with no external force is held together
+// entirely by its constraints, so the constraint force is the centripetal force
+// and can be written down without reference to any solver:
 //
-//   2. Two half-impulses. The splitting delivers the constraint force twice per
-//      step -- through SHAKE, along r_c(t), paired with F(t), and through
-//      RATTLE, along r_c(t+dt), paired with F(t+dt). Both are measured here as
-//      the velocity change each projection actually produces, and they lie along
-//      different bonds, separated by the angle the step turned through.
+//     G_i = -m_i omega^2 (r_i - R_com)
 //
-// Both fixtures start ON the constraint manifold in BOTH position and velocity
-// (|r_ij| = d and r_ij . v_ij = 0). A state that violates either is not a
-// constrained state, and projecting it measures the size of the initial error
-// rather than any physical constraint force.
-
+// and, taking the origin at R_com so that the sum of the constraint forces
+// vanishing makes the result origin independent,
+//
+//     tr W_constraint = sum_i (r_i - R) . G_i = -omega^2 sum_i m_i |r_i - R|^2
+//                     = -I omega^2 = -2K.
+//
+// Three things follow, and all three are asserted below.
+//
+//   1. The magnitude test. For a dimer I omega^2 = mu omega^2 d^2, so the
+//      recovered ENDPOINT pair force must approach mu omega^2 d as dt -> 0. This
+//      pins the multiplier-to-force conversion factor from the outside: 1/dt --
+//      the value that would be right if the SHAKE velocity impulse were missing,
+//      so that RATTLE had to carry the whole step -- undershoots it by two.
+//
+//   2. The pressure identity. 2K + tr W_constraint = 0. A rigid body's frozen
+//      internal coordinates contribute nothing to the pressure. This is what
+//      makes it wrong to drop the constraint virial on the grounds that the
+//      velocities have been projected: the projection produces the 2K in that
+//      identity, and without the constraint term nothing cancels it -- a lone
+//      rigid rotor would report a spurious pressure of 2K/3V.
+//
+//   3. Energy. A free rigid rotor has no potential energy and constraint forces
+//      do no work, so its kinetic energy is constant. This is the sharpest test
 //      of the SHAKE projection itself: correcting along the drifted bond instead
 //      of the reference gradient still lands on the manifold, but is not
 //      symplectic and bleeds energy secularly.
@@ -112,6 +130,58 @@ public:
     }
 };
 
+// A provider with a fixed, deliberately asymmetric virial, so that a term added
+// twice or dropped is visible component by component.
+class FixedVirialForceProvider final : public gmd::ForceProvider {
+public:
+    explicit FixedVirialForceProvider(std::array<double, 9> virial)
+        : virial_(virial) {}
+    std::string_view name() const noexcept override { return "fixed_virial"; }
+    void initialize(gmd::RuntimeContext&) override {}
+    void finalize(gmd::RuntimeContext&) override {}
+    void compute(const gmd::ForceRequest& request,
+                 gmd::ForceResult& result,
+                 gmd::RuntimeContext&) override {
+        ++calls;
+        result.forces.assign(request.coordinates.size(), gmd::Force3D{0.0, 0.0, 0.0});
+        result.potential_energy = 0.0;
+        result.virial = virial_;
+        result.virial_valid = true;
+        result.success = true;
+    }
+    int calls = 0;
+
+private:
+    std::array<double, 9> virial_;
+};
+
+// Scales the box by a fixed factor on its first call, then leaves it alone.
+class OneShotScalingBarostat final : public gmd::Barostat {
+public:
+    explicit OneShotScalingBarostat(double scale) : scale_(scale) {}
+    void apply(gmd::System& system, gmd::ForceProvider&, gmd::RuntimeContext&,
+               std::uint64_t, double, double, double, double) override {
+        ++calls;
+        if (fired_) return;
+        fired_ = true;
+        gmd::Box box = system.box();
+        box.set_lengths({box.lengths[0] * scale_,
+                         box.lengths[1] * scale_,
+                         box.lengths[2] * scale_});
+        system.set_box(box);
+        auto coordinates = system.mutable_coordinates();
+        for (auto& coordinate : coordinates) {
+            for (std::size_t d = 0; d < 3; ++d) coordinate[d] *= scale_;
+        }
+    }
+    bool requires_virial() const noexcept override { return false; }
+    int calls = 0;
+
+private:
+    double scale_;
+    bool fired_ = false;
+};
+
 // --- Physically valid constrained fixtures ---------------------------------
 
 // A rigid dimer rotating in the xy-plane about its own centre of mass, which is
@@ -144,6 +214,40 @@ gmd::System make_rotating_dimer(double m0, double m1, double d, double omega,
     return system;
 }
 
+// A rigid triangle rotating about its centre of mass in the xy-plane, held by
+// three coupled distance constraints. Same guarantees as the dimer: rigid-body
+// rotation satisfies r_ij . v_ij = 0 for every pair simultaneously.
+gmd::System make_rotating_triangle(const std::array<double, 3>& masses_in,
+                                   const std::array<Vec3, 3>& offsets,
+                                   double omega,
+                                   const gmd::Box& box,
+                                   const Vec3& centre) {
+    double total = 0.0;
+    Vec3 weighted{0.0, 0.0, 0.0};
+    for (std::size_t i = 0; i < 3; ++i) {
+        total += masses_in[i];
+        for (std::size_t d = 0; d < 3; ++d) weighted[d] += masses_in[i] * offsets[i][d];
+    }
+    const Vec3 com{weighted[0] / total, weighted[1] / total, weighted[2] / total};
+
+    gmd::System system;
+    system.resize(3, 3);
+    system.set_box(box);
+    auto masses = system.mutable_masses();
+    auto tags = system.mutable_atom_tags();
+    auto coordinates = system.mutable_coordinates();
+    auto velocities = system.mutable_velocities();
+    for (std::size_t i = 0; i < 3; ++i) {
+        masses[i] = masses_in[i];
+        tags[i] = static_cast<int>(i);
+        // Position relative to the body's own centre of mass, then placed.
+        const Vec3 arm{offsets[i][0] - com[0], offsets[i][1] - com[1], offsets[i][2] - com[2]};
+        coordinates[i] = {centre[0] + arm[0], centre[1] + arm[1], centre[2] + arm[2]};
+        velocities[i] = {-omega * arm[1], omega * arm[0], 0.0};
+    }
+    return system;
+}
+
 double distance(const gmd::System& system, std::size_t a, std::size_t b) {
     const auto coordinates = system.coordinates();
     double sum = 0.0;
@@ -164,6 +268,10 @@ double twice_kinetic_energy(const gmd::System& system) {
         }
     }
     return sum;
+}
+
+double trace_of(const std::array<double, 9>& tensor) {
+    return tensor[0] + tensor[4] + tensor[8];
 }
 
 // Confirms a fixture really is a valid constrained state before it is used.
@@ -187,6 +295,603 @@ void require_on_manifold(const gmd::System& system,
                       "surface, r_ij . v_ij = " + std::to_string(dot));
     }
 }
+
+// Runs one full integrator step (half-kick, drift, SHAKE, forces, half-kick,
+// RATTLE) so that the ordering under test is the production ordering.
+void run_one_step(gmd::System& system,
+                  gmd::VelocityVerletIntegrator& integrator,
+                  gmd::ForceProvider& provider,
+                  double dt,
+                  std::uint64_t step = 0) {
+    gmd::RuntimeContext runtime;
+    integrator.initialize(system, runtime);
+    const gmd::IntegratorStepContext ctx{.step = step, .dt = dt};
+    integrator.step(system, provider, ctx, runtime);
+}
+
+// ---------------------------------------------------------------------------
+// 1. Rigid rotating dimer against the centripetal force.
+// ---------------------------------------------------------------------------
+//
+// Independent of the implementation: the constraint force of a freely rotating
+// rigid dimer IS the centripetal force mu omega^2 d, and 2K + tr W must vanish.
+// Both are checked at a sequence of timesteps, and both must converge.
+void test_rotating_dimer_against_centripetal_force() {
+    constexpr double m0 = 1.0;
+    constexpr double m1 = 3.0;
+    constexpr double bond = 1.5;
+    constexpr double omega = 0.1;
+    const double mu = (m0 * m1) / (m0 + m1);
+    const double expected_force = mu * omega * omega * bond;      // centripetal
+    const double expected_trace = -mu * omega * omega * bond * bond;
+
+    const gmd::Box box = cubic_box(30.0);
+    const std::vector<gmd::BondConstraint> constraints{{0, 1, bond}};
+
+    const std::array<double, 4> timesteps{0.4, 0.2, 0.1, 0.05};
+    std::array<double, 4> force_error{};
+    std::array<double, 4> identity_error{};
+
+    std::cout << "[constraint virial] rigid rotating dimer -- ENDPOINT constraint "
+                 "force at t+dt, mu=" << mu
+              << " omega=" << omega << " d=" << bond
+              << "  (expected |G| = " << expected_force << ")\n";
+
+    for (std::size_t k = 0; k < timesteps.size(); ++k) {
+        const double dt = timesteps[k];
+        gmd::System system = make_rotating_dimer(m0, m1, bond, omega, box, {15.0, 15.0, 15.0});
+        require_on_manifold(system, constraints, "rotating dimer");
+
+        auto solver = std::make_shared<gmd::ConstraintSolver>(constraints, tight_settings());
+        gmd::VelocityVerletIntegrator integrator(dt);
+        integrator.set_constraint_solver(solver);
+        NullForceProvider provider;
+        run_one_step(system, integrator, provider, dt);
+
+        check(system.constraint_virial_valid(),
+              "a completed step must attach a constraint virial");
+        check(system.last_virial_valid(),
+              "the combined virial must be reported valid after a completed step");
+
+        const auto& constraint_virial = system.constraint_virial();
+        // The provider contributes nothing, so the whole reported virial is the
+        // constraint term.
+        for (std::size_t index = 0; index < 9; ++index) {
+            check_close(system.last_virial()[index], constraint_virial[index], 1.0e-15,
+                        "with a null provider the reported virial is the constraint virial");
+        }
+
+        // Magnitude of the recovered ENDPOINT pair force, read back out of the
+        // tensor itself rather than out of the bookkeeping struct: for a lone
+        // central pair force tr W = -|G| d, so |G| = |tr W| / d.
+        const double measured_force = std::abs(trace_of(constraint_virial)) / bond;
+
+        // The step must leave the state on the constraint manifold in BOTH
+        // position and velocity. Positions are SHAKE's job, tangency RATTLE's.
+        check_close(distance(system, 0, 1), bond, 1.0e-12,
+                    "the step must leave the bond at its constrained length");
+        {
+            const auto coordinates = system.coordinates();
+            const auto velocities = system.velocities();
+            double dot = 0.0;
+            double speed = 0.0;
+            for (std::size_t k = 0; k < 3; ++k) {
+                const double dv = velocities[0][k] - velocities[1][k];
+                dot += (coordinates[0][k] - coordinates[1][k]) * dv;
+                speed += dv * dv;
+            }
+            check(std::abs(dot) <= 1.0e-11 * bond * std::sqrt(speed),
+                  "the step must leave the relative velocity in the tangent space, "
+                  "r_ij . v_ij = " + std::to_string(dot));
+        }
+        force_error[k] = measured_force / expected_force - 1.0;
+
+        // Sign: the constraint of a rotor pulls inward, so the trace is negative.
+        check(trace_of(constraint_virial) < 0.0,
+              "a rotating rigid dimer is held together by an attractive constraint "
+              "force, so tr W must be negative");
+
+        // The pressure identity. 2K is taken from the post-RATTLE velocities,
+        // exactly as the trajectory writer and the barostat take it.
+        const double twice_ke = twice_kinetic_energy(system);
+        identity_error[k] = (twice_ke + trace_of(constraint_virial)) / twice_ke;
+
+        std::cout << "    dt=" << std::setw(5) << dt
+                  << "  endpoint |G|=" << std::setprecision(10) << measured_force
+                  << "  rel.err=" << std::setprecision(3) << force_error[k]
+                  << "  (2K + trW)/2K=" << identity_error[k] << '\n';
+
+        // tr W against the closed form, loosely at coarse dt and tightly at fine.
+        check_close(trace_of(constraint_virial), expected_trace,
+                    std::abs(expected_trace) * 2.0e-3,
+                    "tr W must match -mu omega^2 d^2 at dt=" + std::to_string(dt));
+    }
+
+    const std::size_t last = timesteps.size() - 1;
+
+    // Convergence to the continuum value. A finite value, approached from below,
+    // with the error falling as dt^2.
+    check(std::abs(force_error[last]) < 1.0e-4,
+          "the recovered constraint force must approach mu omega^2 d; relative error "
+          "at the finest timestep was " + std::to_string(force_error[last]));
+    check(std::abs(identity_error[last]) < 1.0e-4,
+          "2K + tr W must vanish for a rigid rotor; relative residual at the finest "
+          "timestep was " + std::to_string(identity_error[last]));
+
+    for (std::size_t k = 0; k + 1 < timesteps.size(); ++k) {
+        const double force_ratio = std::abs(force_error[k]) / std::abs(force_error[k + 1]);
+        const double identity_ratio =
+            std::abs(identity_error[k]) / std::abs(identity_error[k + 1]);
+        check(force_ratio > 3.0 && force_ratio < 5.0,
+              "halving dt must cut the constraint-force error by about four "
+              "(second order); measured " + std::to_string(force_ratio));
+        check(identity_ratio > 3.0 && identity_ratio < 5.0,
+              "halving dt must cut the 2K + tr W residual by about four; measured " +
+                  std::to_string(identity_ratio));
+    }
+
+    // The conversion factor, pinned from the outside. The RATTLE impulse is the
+    // constraint share of the SECOND half-kick, so (dt/2m) G = w Lambda r and the
+    // factor is 2/dt. Halving it to 1/dt -- correct only for a scheme whose SHAKE
+    // omits its velocity impulse, leaving RATTLE to carry the whole step -- would
+    // halve every number above.
+    check(std::abs(force_error[last]) < 0.25,
+          "the multiplier-to-force conversion factor is wrong by a constant: the "
+          "measured endpoint force is " + std::to_string(1.0 + force_error[last]) +
+          "x the centripetal force (0.5x means the step-mean 1/dt factor was used)");
+}
+
+// ---------------------------------------------------------------------------
+// 2. Coupled constraints: a rigid rotating triangle.
+// ---------------------------------------------------------------------------
+//
+// Three shared-atom distance constraints solved together. The same centripetal
+// reference applies -- tr W = -I omega^2 = -2K -- and in addition the tensor must
+// come out exactly symmetric and every pair force exactly along its own bond,
+// which the scalar-multiplier formulation gives by construction rather than by
+// projecting anything away.
+void test_rotating_triangle_coupled_constraints() {
+    const std::array<double, 3> masses{1.0, 2.0, 3.0};
+    // Deliberately scalene, so no accidental symmetry can hide an error.
+    const std::array<Vec3, 3> offsets{Vec3{0.0, 0.0, 0.0},
+                                      Vec3{1.4, 0.0, 0.0},
+                                      Vec3{0.5, 1.1, 0.0}};
+    constexpr double omega = 0.08;
+    const gmd::Box box = cubic_box(40.0);
+    const Vec3 centre{20.0, 20.0, 20.0};
+
+    gmd::System reference = make_rotating_triangle(masses, offsets, omega, box, centre);
+    const std::vector<gmd::BondConstraint> constraints{
+        {0, 1, distance(reference, 0, 1)},
+        {1, 2, distance(reference, 1, 2)},
+        {0, 2, distance(reference, 0, 2)},
+    };
+    require_on_manifold(reference, constraints, "rotating triangle");
+
+    const std::array<double, 3> timesteps{0.2, 0.1, 0.05};
+    std::array<double, 3> identity_error{};
+
+    std::cout << "[constraint virial] rigid rotating triangle (three coupled constraints)\n";
+
+    for (std::size_t k = 0; k < timesteps.size(); ++k) {
+        const double dt = timesteps[k];
+        gmd::System system = make_rotating_triangle(masses, offsets, omega, box, centre);
+        auto solver = std::make_shared<gmd::ConstraintSolver>(constraints, tight_settings());
+        gmd::VelocityVerletIntegrator integrator(dt);
+        integrator.set_constraint_solver(solver);
+        NullForceProvider provider;
+        run_one_step(system, integrator, provider, dt);
+
+        const auto& virial = system.constraint_virial();
+        check(system.constraint_virial_valid(),
+              "the coupled-constraint step must attach a constraint virial");
+
+        // Exact symmetry. Not enforced anywhere: it follows from summing scalar
+        // multipliers against a bond vector that RATTLE holds fixed.
+        const double scale = std::max(1.0, std::abs(trace_of(virial)));
+        check_close(virial[1], virial[3], 1.0e-14 * scale, "W_xy must equal W_yx exactly");
+        check_close(virial[2], virial[6], 1.0e-14 * scale, "W_xz must equal W_zx exactly");
+        check_close(virial[5], virial[7], 1.0e-14 * scale, "W_yz must equal W_zy exactly");
+
+        const double twice_ke = twice_kinetic_energy(system);
+        identity_error[k] = (twice_ke + trace_of(virial)) / twice_ke;
+        std::cout << "    dt=" << std::setw(5) << dt
+                  << "  2K=" << std::setprecision(10) << twice_ke
+                  << "  trW=" << trace_of(virial)
+                  << "  (2K + trW)/2K=" << std::setprecision(3) << identity_error[k] << '\n';
+
+        for (const auto& constraint : constraints) {
+            check_close(distance(system, static_cast<std::size_t>(constraint.i),
+                                 static_cast<std::size_t>(constraint.j)),
+                        constraint.target_distance, 1.0e-12,
+                        "coupled constraints must still hold after the step");
+        }
+    }
+
+    const std::size_t last = timesteps.size() - 1;
+    check(std::abs(identity_error[last]) < 1.0e-3,
+          "2K + tr W must vanish for a rigid rotating triangle too; relative residual "
+          "at the finest timestep was " + std::to_string(identity_error[last]));
+    for (std::size_t k = 0; k + 1 < timesteps.size(); ++k) {
+        const double ratio = std::abs(identity_error[k]) / std::abs(identity_error[k + 1]);
+        check(ratio > 3.0 && ratio < 5.0,
+              "the coupled-constraint residual must fall as dt^2; measured ratio " +
+                  std::to_string(ratio));
+    }
+}
+
+// Every recovered pair force must lie exactly along its own bond, and the two
+// atoms of a pair must receive exactly opposite forces. Checked directly on the
+// solver output for the coupled case, where an iteration-path artifact would
+// show up if the formulation admitted one.
+void test_pair_forces_are_central_and_antisymmetric() {
+    const std::array<double, 3> masses{1.0, 2.0, 3.0};
+    const std::array<Vec3, 3> offsets{Vec3{0.0, 0.0, 0.0},
+                                      Vec3{1.4, 0.0, 0.0},
+                                      Vec3{0.5, 1.1, 0.0}};
+    const gmd::Box box = cubic_box(40.0);
+    gmd::System system = make_rotating_triangle(masses, offsets, 0.08, box, {20.0, 20.0, 20.0});
+    const std::vector<gmd::BondConstraint> constraints{
+        {0, 1, distance(system, 0, 1)},
+        {1, 2, distance(system, 1, 2)},
+        {0, 2, distance(system, 0, 2)},
+    };
+
+    // Drift by hand so that RATTLE has real work to do, then project.
+    constexpr double dt = 0.2;
+    {
+        auto coordinates = system.mutable_coordinates();
+        const auto velocities = system.velocities();
+        for (std::size_t i = 0; i < system.num_local_atoms(); ++i) {
+            for (std::size_t d = 0; d < 3; ++d) coordinates[i][d] += velocities[i][d] * dt;
+        }
+    }
+    gmd::ConstraintSolver solver(constraints, tight_settings());
+    solver.apply_shake(system);
+    gmd::ConstraintVirialResult result;
+    solver.apply_rattle(system, dt, result);
+
+    check(result.valid, "the RATTLE projection must produce a valid constraint virial");
+    check(result.contributions.size() == constraints.size(),
+          "one contribution per constraint");
+
+    std::array<double, 9> rebuilt{};
+    double largest = 0.0;
+    for (const auto& contribution : result.contributions) {
+        // Centrality: G x r_ij == 0.
+        const auto& r = contribution.bond;
+        const auto& g = contribution.force;
+        const double cross[3] = {r[1] * g[2] - r[2] * g[1],
+                                 r[2] * g[0] - r[0] * g[2],
+                                 r[0] * g[1] - r[1] * g[0]};
+        double magnitude = 0.0;
+        for (std::size_t d = 0; d < 3; ++d) magnitude += g[d] * g[d];
+        magnitude = std::sqrt(magnitude);
+        largest = std::max(largest, magnitude);
+        double residual = 0.0;
+        for (double component : cross) residual = std::max(residual, std::abs(component));
+        check(residual <= 1.0e-14 * std::max(1.0, magnitude),
+              "the pair force must be exactly central; |G x r| = " + std::to_string(residual));
+
+        for (std::size_t a = 0; a < 3; ++a) {
+            for (std::size_t b = 0; b < 3; ++b) rebuilt[a * 3 + b] += r[a] * g[b];
+        }
+    }
+    check(largest > 1.0e-6,
+          "the fixture must produce non-trivial constraint forces, largest was " +
+              std::to_string(largest));
+    for (std::size_t index = 0; index < 9; ++index) {
+        check_close(rebuilt[index], result.virial[index], 1.0e-13 * std::max(1.0, largest),
+                    "the tensor must be the sum of its per-constraint contributions");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 3. Periodic boundary.
+// ---------------------------------------------------------------------------
+//
+// The same rotor placed across a box face must give the identical tensor: the
+// virial is built from minimum-image bond vectors, so it cannot depend on where
+// the molecule sits or on how its atoms are wrapped.
+void test_periodic_boundary_invariance() {
+    constexpr double bond = 1.5;
+    constexpr double omega = 0.1;
+    constexpr double dt = 0.1;
+    const gmd::Box box = cubic_box(12.0);
+    const std::vector<gmd::BondConstraint> constraints{{0, 1, bond}};
+
+    auto measure = [&](const Vec3& centre) {
+        gmd::System system = make_rotating_dimer(1.0, 3.0, bond, omega, box, centre);
+        // Wrap the fixture the way the integrator would.
+        auto coordinates = system.mutable_coordinates();
+        for (auto& coordinate : coordinates) {
+            for (std::size_t d = 0; d < 3; ++d) {
+                while (coordinate[d] < 0.0) coordinate[d] += box.lengths[d];
+                while (coordinate[d] >= box.lengths[d]) coordinate[d] -= box.lengths[d];
+            }
+        }
+        auto solver = std::make_shared<gmd::ConstraintSolver>(constraints, tight_settings());
+        gmd::VelocityVerletIntegrator integrator(dt);
+        integrator.set_constraint_solver(solver);
+        NullForceProvider provider;
+        run_one_step(system, integrator, provider, dt);
+        return system.constraint_virial();
+    };
+
+    const auto interior = measure({6.0, 6.0, 6.0});
+    const auto straddling = measure({0.0, 6.0, 6.0});     // bond crosses x = 0
+    const auto corner = measure({0.0, 0.0, 0.0});
+
+    for (std::size_t index = 0; index < 9; ++index) {
+        check_close(straddling[index], interior[index], 1.0e-12,
+                    "component " + std::to_string(index) +
+                        " must not depend on the molecule straddling a boundary");
+        check_close(corner[index], interior[index], 1.0e-12,
+                    "component " + std::to_string(index) +
+                        " must not depend on the molecule sitting in a corner");
+    }
+    check(std::abs(trace_of(interior)) > 1.0e-6,
+          "the periodic fixture must produce a non-trivial virial");
+}
+
+// Translating the whole fixture must not change the tensor either.
+void test_translation_invariance() {
+    const std::array<double, 3> masses{1.0, 2.0, 3.0};
+    const std::array<Vec3, 3> offsets{Vec3{0.0, 0.0, 0.0},
+                                      Vec3{1.4, 0.0, 0.0},
+                                      Vec3{0.5, 1.1, 0.0}};
+    const gmd::Box box = cubic_box(40.0);
+    constexpr double dt = 0.1;
+
+    auto measure = [&](const Vec3& centre) {
+        gmd::System system = make_rotating_triangle(masses, offsets, 0.08, box, centre);
+        const std::vector<gmd::BondConstraint> constraints{
+            {0, 1, distance(system, 0, 1)},
+            {1, 2, distance(system, 1, 2)},
+            {0, 2, distance(system, 0, 2)},
+        };
+        auto solver = std::make_shared<gmd::ConstraintSolver>(constraints, tight_settings());
+        gmd::VelocityVerletIntegrator integrator(dt);
+        integrator.set_constraint_solver(solver);
+        NullForceProvider provider;
+        run_one_step(system, integrator, provider, dt);
+        return system.constraint_virial();
+    };
+
+    const auto here = measure({20.0, 20.0, 20.0});
+    const auto there = measure({7.25, 31.5, 12.75});
+
+    // RELATIVE, not absolute. The tensor is built from differences of
+    // coordinates that are O(30 A) here but O(1 A) apart, so the round-off floor
+    // is set by the coordinate magnitude rather than by the size of the answer.
+    // An absolute bound would be a statement about the box, not about the
+    // physics. 1e-9 of the tensor scale is still ~7 orders below any effect
+    // being tested, and the observed difference is ~8e-11 relative.
+    double scale = 0.0;
+    for (double component : here) scale = std::max(scale, std::abs(component));
+    check(scale > 1.0e-6, "the fixture must produce a non-trivial virial");
+    for (std::size_t index = 0; index < 9; ++index) {
+        check_close(there[index], here[index], 1.0e-9 * scale,
+                    "component " + std::to_string(index) +
+                        " must be independent of where the molecule sits");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 4. Integration: the combination happens once, at the right time.
+// ---------------------------------------------------------------------------
+void test_combined_virial_is_provider_plus_constraint_exactly_once() {
+    const std::array<double, 9> provider_virial{
+        1.0, 0.25, -0.5,
+        0.25, 2.0, 0.75,
+        -0.5, 0.75, 3.0};
+    constexpr double bond = 1.5;
+    constexpr double dt = 0.1;
+    const gmd::Box box = cubic_box(30.0);
+    const std::vector<gmd::BondConstraint> constraints{{0, 1, bond}};
+
+    gmd::System system = make_rotating_dimer(1.0, 3.0, bond, 0.1, box, {15.0, 15.0, 15.0});
+    auto solver = std::make_shared<gmd::ConstraintSolver>(constraints, tight_settings());
+    gmd::VelocityVerletIntegrator integrator(dt);
+    integrator.set_constraint_solver(solver);
+    FixedVirialForceProvider provider(provider_virial);
+    run_one_step(system, integrator, provider, dt);
+
+    check(system.constraint_virial_state() == gmd::ConstraintVirialState::Valid,
+          "a completed constrained step must leave the constraint virial Valid");
+    check(system.last_virial_valid(), "the combined virial must be valid");
+    for (std::size_t index = 0; index < 9; ++index) {
+        check_close(system.last_virial()[index],
+                    provider_virial[index] + system.constraint_virial()[index],
+                    1.0e-13,
+                    "component " + std::to_string(index) +
+                        " must be provider + constraint, added exactly once");
+    }
+    check(std::abs(trace_of(system.constraint_virial())) > 1.0e-6,
+          "the constraint term must be non-trivial, or the test proves nothing");
+}
+
+// An unconstrained run must be bit-for-bit what it was before any of this.
+void test_unconstrained_run_is_untouched() {
+    const std::array<double, 9> provider_virial{
+        1.0, 0.25, -0.5,
+        0.25, 2.0, 0.75,
+        -0.5, 0.75, 3.0};
+    constexpr double dt = 0.1;
+    const gmd::Box box = cubic_box(30.0);
+    gmd::System system = make_rotating_dimer(1.0, 3.0, 1.5, 0.1, box, {15.0, 15.0, 15.0});
+
+    gmd::VelocityVerletIntegrator integrator(dt);      // no constraint solver
+    FixedVirialForceProvider provider(provider_virial);
+    run_one_step(system, integrator, provider, dt);
+
+    check(system.constraint_virial_state() == gmd::ConstraintVirialState::NotApplicable,
+          "with no constraints the state must be NotApplicable");
+    check(system.last_virial_valid(),
+          "with no constraints the provider virial is complete and must stay valid");
+    for (std::size_t index = 0; index < 9; ++index) {
+        check(system.last_virial()[index] == provider_virial[index],
+              "component " + std::to_string(index) +
+                  " of an unconstrained run must be the provider virial bit-for-bit");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 5. Validity semantics.
+// ---------------------------------------------------------------------------
+
+// A barostat that rescales the cell leaves the recomputed CURRENT-GEOMETRY
+// provider virial with no contemporaneous constraint partner, so that tensor
+// must be reported INVALID rather than as a complete pressure virial missing a
+// term. The completed step's own pressure is a separate slot and is unaffected;
+// completed step's own pressure is a separate concern.
+void test_barostat_rescale_invalidates_rather_than_combining_across_it() {
+    const std::array<double, 9> provider_virial{
+        1.0, 0.0, 0.0,
+        0.0, 2.0, 0.0,
+        0.0, 0.0, 3.0};
+    constexpr double bond = 1.5;
+    constexpr double dt = 0.1;
+    const gmd::Box box = cubic_box(30.0);
+    const std::vector<gmd::BondConstraint> constraints{{0, 1, bond}};
+
+    // Rescaling barostat: the box changes, so forces and virial are recomputed.
+    {
+        gmd::System system = make_rotating_dimer(1.0, 3.0, bond, 0.1, box, {15.0, 15.0, 15.0});
+        auto solver = std::make_shared<gmd::ConstraintSolver>(constraints, tight_settings());
+        gmd::VelocityVerletIntegrator integrator(dt);
+        integrator.set_constraint_solver(solver);
+        integrator.set_barostat(std::make_shared<OneShotScalingBarostat>(1.01));
+        FixedVirialForceProvider provider(provider_virial);
+        run_one_step(system, integrator, provider, dt);
+
+        check(system.constraint_virial_state() == gmd::ConstraintVirialState::Unavailable,
+              "after a barostat rescale no constraint multiplier belongs to the new "
+              "geometry, so the state must be Unavailable");
+        check(!system.last_virial_valid(),
+              "a provider-only virial must not be reported as a complete pressure "
+              "virial while constraints are active");
+        check(provider.calls == 2,
+              "the rescale must trigger exactly one re-evaluation, saw " +
+                  std::to_string(provider.calls) + " call(s)");
+    }
+
+    // A barostat that leaves the box alone must not disturb anything.
+    {
+        gmd::System system = make_rotating_dimer(1.0, 3.0, bond, 0.1, box, {15.0, 15.0, 15.0});
+        auto solver = std::make_shared<gmd::ConstraintSolver>(constraints, tight_settings());
+        gmd::VelocityVerletIntegrator integrator(dt);
+        integrator.set_constraint_solver(solver);
+        integrator.set_barostat(std::make_shared<OneShotScalingBarostat>(1.0));
+        FixedVirialForceProvider provider(provider_virial);
+        run_one_step(system, integrator, provider, dt);
+
+        check(system.constraint_virial_state() == gmd::ConstraintVirialState::Valid,
+              "a barostat that does not rescale must leave the step's constraint "
+              "virial in place");
+        check(system.last_virial_valid(), "and the combined virial valid");
+        check(provider.calls == 1,
+              "a no-op barostat must not trigger a re-evaluation, saw " +
+                  std::to_string(provider.calls) + " call(s)");
+        for (std::size_t index = 0; index < 9; ++index) {
+            check_close(system.last_virial()[index],
+                        provider_virial[index] + system.constraint_virial()[index],
+                        1.0e-13, "component " + std::to_string(index) +
+                                     " must still be provider + constraint");
+        }
+    }
+}
+
+// Constraints active but RATTLE switched off: there is no multiplier to recover,
+// so the reported virial must be invalid rather than silently short of a term.
+void test_rattle_disabled_reports_unavailable() {
+    constexpr double bond = 1.5;
+    constexpr double dt = 0.1;
+    const gmd::Box box = cubic_box(30.0);
+    gmd::System system = make_rotating_dimer(1.0, 3.0, bond, 0.1, box, {15.0, 15.0, 15.0});
+
+    gmd::ConstraintSettings settings = tight_settings();
+    settings.enable_rattle = false;
+    auto solver = std::make_shared<gmd::ConstraintSolver>(
+        std::vector<gmd::BondConstraint>{{0, 1, bond}}, settings);
+    gmd::VelocityVerletIntegrator integrator(dt);
+    integrator.set_constraint_solver(solver);
+    FixedVirialForceProvider provider({1.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 3.0});
+    run_one_step(system, integrator, provider, dt);
+
+    check(system.constraint_virial_state() == gmd::ConstraintVirialState::Unavailable,
+          "with RATTLE disabled there is no contemporaneous multiplier");
+    check(!system.last_virial_valid(),
+          "and the reported virial must therefore be invalid");
+}
+
+// Before any step has run, a constrained system has no constraint multiplier for
+// the initial force evaluation, so the initial virial is incomplete.
+void test_initial_state_has_no_constraint_virial() {
+    constexpr double bond = 1.5;
+    const gmd::Box box = cubic_box(30.0);
+    gmd::System system = make_rotating_dimer(1.0, 3.0, bond, 0.1, box, {15.0, 15.0, 15.0});
+
+    auto solver = std::make_shared<gmd::ConstraintSolver>(
+        std::vector<gmd::BondConstraint>{{0, 1, bond}}, tight_settings());
+    gmd::VelocityVerletIntegrator integrator(0.1);
+    integrator.set_constraint_solver(solver);
+    gmd::RuntimeContext runtime;
+    integrator.initialize(system, runtime);
+    system.set_provider_virial({1.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 3.0}, true);
+
+    check(system.constraint_virial_state() == gmd::ConstraintVirialState::Unavailable,
+          "a fresh constrained run has no constraint multiplier before its first step");
+    check(!system.last_virial_valid(),
+          "so its initial reported virial must be invalid, not provider-only");
+
+    // Restoring a checkpointed value, which is what a restart does, completes it.
+    system.set_constraint_virial({-0.5, 0.0, 0.0, 0.0, -0.5, 0.0, 0.0, 0.0, -0.5});
+    check(system.last_virial_valid(),
+          "attaching the checkpointed constraint virial must make it valid again");
+    check_close(system.last_virial()[0], 0.5, 1.0e-15,
+                "and it must be added to the provider virial");
+}
+
+// ---------------------------------------------------------------------------
+// 6. The pressure a rigid rotor reports.
+// ---------------------------------------------------------------------------
+//
+// The end-to-end consequence of section 5 of the ConstraintVirialResult comment:
+// a lone rigid rotor must contribute essentially nothing to the pressure, and
+// would report 2K/3V if the constraint virial were dropped.
+void test_rigid_rotor_reports_no_pressure() {
+    constexpr double bond = 1.5;
+    constexpr double omega = 0.1;
+    constexpr double dt = 0.05;
+    const double length = 30.0;
+    const double volume = length * length * length;
+    const gmd::Box box = cubic_box(length);
+
+    gmd::System system = make_rotating_dimer(1.0, 3.0, bond, omega, box, {15.0, 15.0, 15.0});
+    auto solver = std::make_shared<gmd::ConstraintSolver>(
+        std::vector<gmd::BondConstraint>{{0, 1, bond}}, tight_settings());
+    gmd::VelocityVerletIntegrator integrator(dt);
+    integrator.set_constraint_solver(solver);
+    NullForceProvider provider;
+    run_one_step(system, integrator, provider, dt);
+
+    const double twice_ke = twice_kinetic_energy(system);
+    const double with_constraint = (twice_ke + trace_of(system.last_virial())) / (3.0 * volume);
+    const double without_constraint = twice_ke / (3.0 * volume);
+
+    std::cout << "[constraint virial] rigid rotor pressure term: with constraint virial "
+              << std::setprecision(4) << with_constraint
+              << ", without it " << without_constraint << " (eV/A^3)\n";
+
+    check(without_constraint > 1.0e-9,
+          "the fixture must have a kinetic pressure term worth cancelling");
+    check(std::abs(with_constraint) < 1.0e-4 * without_constraint,
+          "a rigid rotor must contribute essentially no pressure; got " +
+              std::to_string(with_constraint) + " against a kinetic term of " +
+              std::to_string(without_constraint));
+}
+
 
 // ---------------------------------------------------------------------------
 // 1b. The two constraint half-impulses are distinct quantities.
@@ -392,8 +1097,19 @@ int main(int argc, char** argv) {
     (void)argv;
 #endif
 
+    test_rotating_dimer_against_centripetal_force();
     test_two_constraint_half_impulses_are_distinct();
     test_free_rotor_conserves_energy();
+    test_rotating_triangle_coupled_constraints();
+    test_pair_forces_are_central_and_antisymmetric();
+    test_periodic_boundary_invariance();
+    test_translation_invariance();
+    test_combined_virial_is_provider_plus_constraint_exactly_once();
+    test_unconstrained_run_is_untouched();
+    test_barostat_rescale_invalidates_rather_than_combining_across_it();
+    test_rattle_disabled_reports_unavailable();
+    test_initial_state_has_no_constraint_virial();
+    test_rigid_rotor_reports_no_pressure();
 
     if (failures != 0) {
         std::cerr << "[constraint virial] " << failures << " check(s) failed\n";

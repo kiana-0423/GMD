@@ -33,6 +33,9 @@ def write_initial_checkpoint(path: Path) -> None:
     path.write_text(
         "\n".join(
             [
+                # Deliberately version 1: this seed doubles as coverage that a
+                # checkpoint predating the virial and pressure state block still
+                # restarts cleanly.
                 "GMD_CHECKPOINT 1",
                 "step 0",
                 "time_fs 0",
@@ -130,8 +133,10 @@ def run_gmd(args: argparse.Namespace, xyz: Path, run_file: Path, cwd: Path) -> N
 
 def read_checkpoint(path: Path) -> dict:
     lines = path.read_text().splitlines()
-    if not lines or lines[0] != "GMD_CHECKPOINT 1":
-        raise RuntimeError(f"{path} is not a version-1 GMD checkpoint")
+    # Accept any version this build writes. The seed checkpoint below is written
+    # as version 1 on purpose, so this also exercises reading an older file.
+    if not lines or not lines[0].startswith("GMD_CHECKPOINT "):
+        raise RuntimeError(f"{path} is not a GMD checkpoint")
 
     data: dict = {"atoms": {}}
     index = 1

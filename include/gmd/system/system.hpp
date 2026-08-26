@@ -263,6 +263,95 @@ public:
 		return last_virial_valid_;
 	}
 
+	// --- Provider virial + constraint virial ---------------------------------
+	//
+	// last_virial() is the COMBINED tensor everything that reports pressure
+	// reads. It is assembled here, in one place, from two parts kept separately
+	// so that either can be replaced without losing or double-counting the
+	// other:
+	//
+	//   provider_virial_    the force providers' tensor, evaluated at the
+	//                       current coordinates;
+	//   constraint_virial_  the step's constraint contribution, recovered from
+	//                       the converged RATTLE multipliers.
+	//
+	// TIME LEVELS. The two must belong to the same state. Within a step the
+	// providers run at r(t+dt) and RATTLE runs afterwards on those same
+	// coordinates, so they match. Anything that installs a provider virial for a
+	// *different* geometry -- a barostat rescale, or the initial evaluation of a
+	// fresh run -- goes through set_provider_virial(), which drops the constraint
+	// part to Unavailable. While it is Unavailable the combined tensor is
+	// reported invalid rather than being passed off as a complete pressure
+	// virial, because a provider-only virial is not one when constraints act.
+	//
+	// With no constraints in the run the state is NotApplicable and the combined
+	// value is the provider virial unchanged, so unconstrained runs are
+	// bit-for-bit unaffected by any of this.
+	const std::array<double, 9>& provider_virial() const noexcept {
+		return provider_virial_;
+	}
+
+	bool provider_virial_valid() const noexcept { return provider_virial_valid_; }
+
+	// Installs the force-provider virial for the current coordinates. Any
+	// constraint contribution that was attached to a previous evaluation is
+	// dropped: it does not necessarily belong to this geometry, and deciding
+	// that here is not possible. RATTLE re-attaches the contemporaneous one.
+	void set_provider_virial(const std::array<double, 9>& virial, bool valid) noexcept {
+		provider_virial_ = virial;
+		provider_virial_valid_ = valid;
+		if (constraint_virial_state_ == ConstraintVirialState::Valid) {
+			constraint_virial_state_ = ConstraintVirialState::Unavailable;
+		}
+		constraint_virial_ = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+		refresh_combined_virial();
+	}
+
+	// Declares whether constraints act in this run. Switching them off makes the
+	// provider virial complete again; switching them on only records that a
+	// constraint term is now required, without inventing one.
+	void set_constraints_active(bool active) noexcept {
+		if (!active) {
+			constraint_virial_ = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+			constraint_virial_state_ = ConstraintVirialState::NotApplicable;
+			refresh_combined_virial();
+		} else if (constraint_virial_state_ == ConstraintVirialState::NotApplicable) {
+			constraint_virial_state_ = ConstraintVirialState::Unavailable;
+			refresh_combined_virial();
+		}
+	}
+
+	const std::array<double, 9>& constraint_virial() const noexcept {
+		return constraint_virial_;
+	}
+
+	ConstraintVirialState constraint_virial_state() const noexcept {
+		return constraint_virial_state_;
+	}
+
+	bool constraint_virial_valid() const noexcept {
+		return constraint_virial_state_ == ConstraintVirialState::Valid;
+	}
+
+	// Attaches the constraint contribution belonging to the currently installed
+	// provider virial. Called by the integrator right after RATTLE, and by a
+	// restart restoring the value the checkpointed step ended with.
+	void set_constraint_virial(const std::array<double, 9>& virial) noexcept {
+		constraint_virial_ = virial;
+		constraint_virial_state_ = ConstraintVirialState::Valid;
+		refresh_combined_virial();
+	}
+
+	// Constraints act, but no multiplier belongs to the installed provider
+	// virial. The combined tensor becomes invalid.
+	void mark_constraint_virial_unavailable() noexcept {
+		constraint_virial_ = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+		if (constraint_virial_state_ == ConstraintVirialState::Valid) {
+			constraint_virial_state_ = ConstraintVirialState::Unavailable;
+		}
+		refresh_combined_virial();
+	}
+
 	void set_last_shake_stats(const ConstraintProjectionStats& stats) noexcept {
 		last_shake_stats_ = stats;
 	}
@@ -313,6 +402,20 @@ private:
 	std::vector<int>    atom_owners_;
 	std::vector<Vec3> coordinates_;
 	std::vector<Vec3> velocities_;
+	// The single place the reported virial is assembled. Invalid whenever a
+	// constraint term is required but not available for this geometry.
+	void refresh_combined_virial() noexcept {
+		std::array<double, 9> combined = provider_virial_;
+		if (constraint_virial_state_ == ConstraintVirialState::Valid) {
+			for (std::size_t index = 0; index < combined.size(); ++index) {
+				combined[index] += constraint_virial_[index];
+			}
+		}
+		set_last_virial(combined,
+		                provider_virial_valid_ &&
+		                constraint_virial_state_ != ConstraintVirialState::Unavailable);
+	}
+
 	std::vector<Vec3> forces_;
 	std::size_t num_local_atoms_ = 0;
 	std::array<double, 9> reverse_ghost_virial_ = {
@@ -326,6 +429,18 @@ private:
 		0.0, 0.0, 0.0
 	};
 	bool last_virial_valid_ = false;
+	std::array<double, 9> constraint_virial_ = {
+		0.0, 0.0, 0.0,
+		0.0, 0.0, 0.0,
+		0.0, 0.0, 0.0
+	};
+	std::array<double, 9> provider_virial_ = {
+		0.0, 0.0, 0.0,
+		0.0, 0.0, 0.0,
+		0.0, 0.0, 0.0
+	};
+	bool provider_virial_valid_ = false;
+	ConstraintVirialState constraint_virial_state_ = ConstraintVirialState::NotApplicable;
 	ConstraintProjectionStats last_shake_stats_;
 	ConstraintProjectionStats last_rattle_stats_;
 	double potential_energy_ = 0.0;

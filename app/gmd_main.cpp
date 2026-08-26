@@ -672,6 +672,30 @@ int main(int argc, char** argv)
 
         simulation.initialize(runtime);
 
+        if (is_restart) {
+            // Must FOLLOW initialize(): that call evaluates the forces at the
+            // checkpointed coordinates and installs the provider virial, which
+            // drops any constraint term attached to an earlier geometry.
+            //
+            // The constraint virial is the ENDPOINT RATTLE value of the step
+            // that produced this state, so it belongs to exactly these
+            // coordinates and is attached to that freshly recomputed provider
+            // virial, so the restarted run reports for this frame the same
+            // pressure the uninterrupted run reported.
+            if (restart_metadata->constraint_virial_state == "valid") {
+                if (restart_metadata->constraint_virial_time_level !=
+                    "endpoint_rattle_t_plus_dt") {
+                    throw std::runtime_error(
+                        "Checkpoint carries a constraint virial at time level '" +
+                        restart_metadata->constraint_virial_time_level +
+                        "', which this build cannot pair with the endpoint provider "
+                        "virial it evaluates at the checkpointed coordinates");
+                }
+                system.set_constraint_virial(restart_metadata->constraint_virial);
+            }
+        }
+
+
         // Degrees of freedom for every temperature the run reports. Read back
         // from the integrator rather than recomputed here, so the trajectory
         // log and the thermostat are guaranteed to use the same count: 3N,
@@ -879,6 +903,23 @@ int main(int argc, char** argv)
             metadata.barostat_state =
                 barostat != nullptr ? barostat->checkpoint_state() : "stateless";
 
+            // The constraint contribution and which multiplier it is; see
+            // CheckpointMetadata for what a restart does with it.
+            metadata.constraint_virial = system.constraint_virial();
+            switch (system.constraint_virial_state()) {
+                case gmd::ConstraintVirialState::Valid:
+                    metadata.constraint_virial_state = "valid";
+                    metadata.constraint_virial_time_level = "endpoint_rattle_t_plus_dt";
+                    break;
+                case gmd::ConstraintVirialState::Unavailable:
+                    metadata.constraint_virial_state = "unavailable";
+                    metadata.constraint_virial_time_level = "none";
+                    break;
+                case gmd::ConstraintVirialState::NotApplicable:
+                    metadata.constraint_virial_state = "not_applicable";
+                    metadata.constraint_virial_time_level = "none";
+                    break;
+            }
             gmd::CheckpointData checkpoint{
                 .metadata = metadata,
                 .system = &checkpoint_system,
