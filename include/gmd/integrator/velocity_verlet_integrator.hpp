@@ -31,16 +31,34 @@ public:
               const IntegratorStepContext& ctx,
               RuntimeContext& runtime) override;
     void begin_step(System& system, const IntegratorStepContext& ctx);
-    void finish_step(System& system,
-                     const IntegratorStepContext& ctx,
-                     bool virial_valid,
-                     const std::array<double, 9>& virial);
+    // Second half-kick, thermostat, then RATTLE.
+    //
+    // RATTLE is where the step's constraint virial comes from, so the combined
+    // virial is assembled and cached only after it has run. The provider virial
+    // must already have been installed on the System (System::set_provider_virial)
+    // before this is called; the tensor this caches for the barostat is the
+    // combined one, read back off the System.
+    void finish_step(System& system, const IntegratorStepContext& ctx);
     void apply_barostat(System& system,
                         ForceProvider& force_provider,
                         RuntimeContext& runtime,
                         const IntegratorStepContext& ctx);
+    // Geometric projection of positions onto the constraint manifold. Not a
+    // step of the dynamics -- for initial and barostat-rescaled states only.
+    // The dynamical SHAKE lives inside begin_step(), which has the reference
+    // geometry the projection must correct along.
     void apply_position_constraints(System& system);
-    void apply_velocity_constraints(System& system);
+
+    // Velocity projection (RATTLE).
+    //
+    // `dt > 0` marks the dynamical projection that closes a step, so the
+    // ENDPOINT constraint virial is recovered from the converged multipliers and
+    // attached to the provider virial already installed on the System. `dt == 0`
+    // marks a projection that is not closing a step -- the one that puts an
+    // initial or rescaled state onto the constraint manifold -- whose
+    // multipliers are a one-off correction of an invalid state rather than a
+    // constraint force; that form leaves the constraint virial unavailable.
+    void apply_velocity_constraints(System& system, double dt = 0.0);
 
     // Returns the configured default time step for this integrator instance.
     double dt() const noexcept;
@@ -81,6 +99,10 @@ public:
     void set_last_virial_trace(double virial_trace) noexcept;
 
 private:
+    // Record the thermodynamic state of the step that has just finished, before
+    // a barostat can rescale the cell out from under it.
+    void capture_step_thermodynamics(System& system);
+
     // Re-establish forces, virial and neighbor-list state after a barostat has
     // rescaled the box and coordinates.
     void refresh_after_barostat(System& system,

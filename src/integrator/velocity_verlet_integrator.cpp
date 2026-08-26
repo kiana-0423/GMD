@@ -64,6 +64,29 @@ void VelocityVerletIntegrator::initialize(System& system, RuntimeContext& runtim
     (void)runtime;
     last_virial_trace_ = 0.0;
     last_virial_valid_ = false;
+    // Tell the System whether a constraint term is required in the reported
+    // virial. With constraints on, the state starts Unavailable: no step has run
+    // yet, so no constraint multiplier belongs to the initial provider virial and
+    // the initial pressure must not be reported as complete. A restart attaches
+    // the checkpointed value afterwards (see the restart handling in gmd_main).
+    system.set_constraints_active(has_constraints());
+    // No step has completed, so there is no completed-step pressure. A restart
+    // installs the checkpointed one after initialize() (see gmd_main).
+    system.clear_step_thermodynamics();
+
+    // Put the initial state ON the constraint manifold, in position and in
+    // velocity, before any dynamics run. Without this the first RATTLE of the
+    // first step has to absorb the whole initial violation, and the multiplier it
+    // converges to is a one-off correction of an invalid state rather than a
+    // constraint force -- which would show up as a spurious pressure spike on
+    // step one. dt is deliberately omitted: this projection closes no step and
+    // must not produce a virial. A restarted run is already on the manifold, so
+    // this is a no-op there and restart continuity is unaffected.
+    if (has_constraints()) {
+        apply_position_constraints(system);
+        apply_velocity_constraints(system);
+    }
+
     auto forces = system.mutable_forces();
     for (auto& force : forces) {
         force = {0.0, 0.0, 0.0};
@@ -108,7 +131,11 @@ void VelocityVerletIntegrator::step(System& system,
                                             force_time,
                                             runtime);
     copy_forces_to_system(system, next_force);
-    finish_step(system, ctx, next_force.virial_valid, next_force.virial);
+    // The provider half of the reported virial, at r(t+dt). Its constraint
+    // partner is not known yet: it comes from the RATTLE inside finish_step,
+    // which runs on these same coordinates.
+    system.set_provider_virial(next_force.virial, next_force.virial_valid);
+    finish_step(system, ctx);
 
     // A barostat rescales the box and the coordinates *after* the forces above
     // were computed, which would leave the system holding forces for the
@@ -128,7 +155,13 @@ void VelocityVerletIntegrator::refresh_after_barostat(System& system,
     // Constraints act on the rescaled coordinates, then the stale neighbor list
     // is dropped so the provider rebuilds against the new box, and only then are
     // forces recomputed for the geometry the caller will actually see.
+    //
+    // Both projections are geometric: rescaling the cell moves the atoms, so the
+    // bonds are off their targets and the velocities are no longer tangent to
+    // them. dt is deliberately omitted from both -- these corrections close no
+    // step, so no constraint virial is recovered from them.
     apply_position_constraints(system);
+    apply_velocity_constraints(system);
     system.mutable_neighbor_list().valid = false;
 
     ForceResult rescaled = evaluate_force(system,
@@ -137,10 +170,18 @@ void VelocityVerletIntegrator::refresh_after_barostat(System& system,
                                           force_time,
                                           runtime);
     copy_forces_to_system(system, rescaled);
-    system.set_last_virial(rescaled.virial, rescaled.virial_valid);
-    last_virial_valid_ = rescaled.virial_valid;
+    // The provider virial now belongs to the rescaled geometry while the step's
+    // constraint multipliers belong to the geometry before the rescale. There is
+    // no contemporaneous constraint term for this state, and set_provider_virial
+    // drops the stale one rather than combining across the rescale. With
+    // constraints active the resulting virial is therefore reported INVALID: a
+    // provider-only tensor is not a complete pressure virial when constraints
+    // act. The next step's RATTLE restores a valid one.
+    system.set_provider_virial(rescaled.virial, rescaled.virial_valid);
+    last_virial_valid_ = system.last_virial_valid();
     if (last_virial_valid_) {
-        last_virial_trace_ = rescaled.virial[0] + rescaled.virial[4] + rescaled.virial[8];
+        const auto& combined = system.last_virial();
+        last_virial_trace_ = combined[0] + combined[4] + combined[8];
     }
 }
 
@@ -154,6 +195,15 @@ void VelocityVerletIntegrator::begin_step(System& system,
     // --- Thermostat pre-kick (Nosé-Hoover first half-kick or no-op) ---
     if (thermostat_) {
         thermostat_->apply_half_kick(system, 0.5 * dt, target_temperature_);
+    }
+
+    // The constraint geometry the step starts from. Standard SHAKE corrects
+    // along these gradients, so they must be taken BEFORE the drift moves the
+    // atoms. Collective under MPI, and replicated, like the projection itself.
+    ConstraintReference reference;
+    const bool constrained = has_constraints();
+    if (constrained) {
+        reference = constraints_->capture_reference(system);
     }
 
     const auto masses = system.masses();
@@ -175,22 +225,20 @@ void VelocityVerletIntegrator::begin_step(System& system,
         wrap_position(coordinates[atom_index], system.box());
     }
 
-    apply_position_constraints(system);
+    // Steps (2) and (3) of the SHAKE/RATTLE splitting: solve for the constraint
+    // multipliers at time level t and apply BOTH the position correction and its
+    // matching half-step velocity impulse dr/dt. The multipliers here pair with
+    // F(t); the ones the reported virial needs come from RATTLE at t+dt.
+    if (constrained) {
+        system.set_last_shake_stats(constraints_->apply_shake(system, reference, dt));
+    }
 }
 
 void VelocityVerletIntegrator::finish_step(System& system,
-                                           const IntegratorStepContext& ctx,
-                                           bool virial_valid,
-                                           const std::array<double, 9>& virial) {
+                                           const IntegratorStepContext& ctx) {
     const double dt = ctx.dt > 0.0 ? ctx.dt : dt_;
     if (dt <= 0.0) {
         throw std::runtime_error("VelocityVerletIntegrator requires a positive time step");
-    }
-
-    // Cache virial trace for barostat (uses full virial tensor if available).
-    last_virial_valid_ = virial_valid;
-    if (last_virial_valid_) {
-        last_virial_trace_ = virial[0] + virial[4] + virial[8];
     }
 
     const auto masses = system.masses();
@@ -211,7 +259,59 @@ void VelocityVerletIntegrator::finish_step(System& system,
         thermostat_->apply(system, dt, target_temperature_);
     }
 
-    apply_velocity_constraints(system);
+    // Dynamical projection closing the step. Its multipliers are the constraint
+    // partners of the forces evaluated at these coordinates, so this is where the
+    // step's constraint virial comes from and where the combined tensor is
+    // completed. Nothing may read the reported virial between the force
+    // evaluation and this call.
+    apply_velocity_constraints(system, dt);
+
+    // Cache the COMBINED trace for the barostat, read back off the System so the
+    // barostat, the trajectory log and the checkpoint cannot disagree.
+    last_virial_valid_ = system.last_virial_valid();
+    if (last_virial_valid_) {
+        const auto& combined = system.last_virial();
+        last_virial_trace_ = combined[0] + combined[4] + combined[8];
+    }
+
+    capture_step_thermodynamics(system);
+}
+
+// The thermodynamic state of the step that has just finished, recorded before
+// any barostat touches the cell.
+//
+// The whole set is taken at one instant so the reported numbers are mutually
+// consistent: P = (2K + tr W) / 3V holds among exactly these values, and the
+// potential energy is the one belonging to the same configuration and volume.
+// The pressure is bit-for-bit what BerendsenBarostat computes from the same
+// trace, the same compute_twice_ke() and the same volume, so the number that is
+// reported and the number that drives pressure control cannot diverge. A later
+// force evaluation at a rescaled geometry replaces last_virial() and the
+// System's potential energy, but deliberately leaves this record alone.
+void VelocityVerletIntegrator::capture_step_thermodynamics(System& system) {
+    // compute_twice_ke() is collective, so it is called unconditionally: every
+    // rank reaches finish_step(), and none may skip the reduction.
+    const double twice_ke = compute_twice_ke(system);
+
+    const Box& box = system.box();
+    const double volume = box.lengths[0] * box.lengths[1] * box.lengths[2];
+    if (!system.last_virial_valid() || !(volume > 0.0)) {
+        system.clear_step_thermodynamics();
+        return;
+    }
+
+    const auto& virial = system.last_virial();
+    System::StepThermodynamics record;
+    record.valid = true;
+    record.virial = virial;
+    record.twice_kinetic_energy = twice_ke;
+    record.volume = volume;
+    // The potential energy belonging to this same configuration and volume. A
+    // post-rescale re-evaluation overwrites the System's, which is why it is
+    // taken here rather than read back at write time.
+    record.potential_energy = system.potential_energy();
+    record.pressure = (twice_ke + virial[0] + virial[4] + virial[8]) / (3.0 * volume);
+    system.set_step_thermodynamics(record);
 }
 
 void VelocityVerletIntegrator::apply_barostat(System& system,
@@ -234,15 +334,35 @@ void VelocityVerletIntegrator::apply_barostat(System& system,
 }
 
 void VelocityVerletIntegrator::apply_position_constraints(System& system) {
-    if (constraints_ != nullptr && constraints_->enabled()) {
-        system.set_last_shake_stats(constraints_->apply_shake(system));
+    if (constraints_ == nullptr || !constraints_->enabled()) {
+        return;
     }
+    system.set_last_shake_stats(constraints_->apply_shake(system));
 }
 
-void VelocityVerletIntegrator::apply_velocity_constraints(System& system) {
-    if (constraints_ != nullptr && constraints_->enabled()) {
-        system.set_last_rattle_stats(constraints_->apply_rattle(system));
+void VelocityVerletIntegrator::apply_velocity_constraints(System& system, double dt) {
+    if (constraints_ == nullptr || !constraints_->enabled()) {
+        // No constraints in this run: the provider virial is complete on its own.
+        system.set_constraints_active(false);
+        return;
     }
+    system.set_constraints_active(true);
+
+    if (dt > 0.0) {
+        ConstraintVirialResult constraint_virial;
+        system.set_last_rattle_stats(constraints_->apply_rattle(system, dt, constraint_virial));
+        if (constraint_virial.valid) {
+            system.set_constraint_virial(constraint_virial.virial);
+        } else {
+            // RATTLE disabled: constraints act but no multiplier is available, so
+            // the reported virial stays incomplete rather than silently short.
+            system.mark_constraint_virial_unavailable();
+        }
+        return;
+    }
+
+    system.set_last_rattle_stats(constraints_->apply_rattle(system));
+    system.mark_constraint_virial_unavailable();
 }
 
 double VelocityVerletIntegrator::dt() const noexcept {

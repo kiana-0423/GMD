@@ -229,8 +229,9 @@ def parse_thermostat_state(state: str) -> dict:
 
 LOG_COLUMNS = [
     "step", "time", "pe", "ke", "etot", "temperature", "pressure", "volume",
-    "shake_iter", "shake_error", "rattle_iter", "rattle_error",
+    "shake_iter", "shake_error", "rattle_iter", "rattle_error", "p_valid",
 ]
+INT_COLUMNS = {"step", "shake_iter", "rattle_iter", "p_valid"}
 
 
 def read_log(path: Path) -> list[dict]:
@@ -241,7 +242,7 @@ def read_log(path: Path) -> list[dict]:
         fields = line.split()
         row = {}
         for name, raw in zip(LOG_COLUMNS, fields):
-            row[name] = int(raw) if name in {"step", "shake_iter", "rattle_iter"} else float(raw)
+            row[name] = int(raw) if name in INT_COLUMNS else float(raw)
         rows.append(row)
     return rows
 
@@ -288,6 +289,32 @@ def forces_from_checkpoint(args, work: Path, name: str, state: dict) -> list[lis
 
 def max_abs(lhs, rhs) -> float:
     return max(abs(a - b) for a, b in zip(lhs, rhs))
+
+
+# Maximum |continuous - restarted| for one log column, with every value checked
+# for finiteness FIRST.
+#
+# Aggregating with max() over abs(a - b) is not safe here. If either side is nan
+# the difference is nan, and `max(0.0, nan)` returns 0.0 in Python -- every
+# comparison against nan is False, so max() keeps its running value. A column
+# that was never reported would therefore aggregate to "zero error" and the
+# comparison would pass by having nothing to compare. A non-finite value is a
+# failure to report the quantity, so it is reported as such and never folded
+# into a metric.
+def max_finite_difference(name: str, steps, continuous: dict, restarted: dict,
+                          problems: list) -> float:
+    worst = 0.0
+    for step in steps:
+        a = continuous[step][name]
+        b = restarted[step][name]
+        if not math.isfinite(a) or not math.isfinite(b):
+            problems.append(
+                f"{name} is not finite at step {step} (continuous {a}, restarted {b}); "
+                f"a frame that reports no value cannot be compared, and folding it into "
+                f"an error metric would read as agreement")
+            continue
+        worst = max(worst, abs(a - b))
+    return worst
 
 
 def check_continuity(args, work: Path, continuous_dir: Path, split2_dir: Path) -> dict:
@@ -373,20 +400,73 @@ def check_continuity(args, work: Path, continuous_dir: Path, split2_dir: Path) -
         problems.append(f"only {len(overlap)} shared log steps; expected the whole "
                         f"post-restart region")
 
-    worst = {key: 0.0 for key in ("pe", "ke", "etot", "temperature", "pressure")}
-    for step in overlap:
-        for key in worst:
-            worst[key] = max(worst[key], abs(continuous_log[step][key] - split_log[step][key]))
+    worst = {
+        key: max_finite_difference(key, overlap, continuous_log, split_log, problems)
+        for key in ("pe", "ke", "etot", "temperature", "pressure",
+                    "volume", "shake_error", "rattle_error")
+    }
     report["log_errors"] = worst
 
     for key, tolerance in (("pe", args.energy_tolerance),
                            ("ke", args.energy_tolerance),
                            ("etot", args.energy_tolerance),
                            ("temperature", args.temperature_tolerance),
-                           ("pressure", args.pressure_tolerance)):
+                           ("pressure", args.pressure_tolerance),
+                           ("volume", args.energy_tolerance),
+                           ("shake_error", args.constraint_tolerance),
+                           ("rattle_error", args.constraint_tolerance)):
         if worst[key] > tolerance:
             problems.append(f"log {key} differs by {worst[key]} over {len(overlap)} shared "
                             f"steps (tolerance {tolerance})")
+
+    # The very first restarted frame is the one the checkpoint has to reproduce
+    # on its own: it reports the completed-step state of the step the checkpoint
+    # was written after, restored rather than recomputed. Call it out separately
+    # so a failure there is not buried in an aggregate over the whole overlap.
+    first = min(overlap)
+    report["first_restarted_step"] = first
+    for key in ("pe", "ke", "etot", "temperature", "pressure", "volume",
+                "shake_error", "rattle_error"):
+        report[f"first_frame_{key}_error"] = max_finite_difference(
+            key, [first], continuous_log, split_log, problems)
+    for key, tolerance in (("pressure", args.pressure_tolerance),
+                           ("volume", args.energy_tolerance),
+                           ("etot", args.energy_tolerance)):
+        delta = report[f"first_frame_{key}_error"]
+        if delta > tolerance:
+            problems.append(
+                f"the first restarted frame (step {first}) differs in {key} by {delta} "
+                f"(tolerance {tolerance}); this frame is restored from the checkpoint, not "
+                f"recomputed")
+    if continuous_log[first]["p_valid"] != split_log[first]["p_valid"]:
+        problems.append(
+            f"the first restarted frame reports P_valid "
+            f"{split_log[first]['p_valid']} against {continuous_log[first]['p_valid']} for the "
+            f"uninterrupted run")
+
+    # Integer diagnostics must match exactly, not within a tolerance.
+    for step in overlap:
+        if continuous_log[step]["p_valid"] != split_log[step]["p_valid"]:
+            problems.append(f"P_valid differs at step {step}")
+            break
+
+    # NON-VACUITY. Comparing two columns that are both blank proves nothing, and
+    # that is exactly what this comparison used to do under MPI: the output path
+    # never carried the pressure across, so both sides reported nothing.
+    invalid = [step for step in overlap if continuous_log[step]["p_valid"] != 1]
+    if invalid:
+        problems.append(
+            f"the uninterrupted run reports no valid pressure on steps {invalid[:8]}; the "
+            f"comparison above would be vacuous")
+    pressures = {continuous_log[step]["pressure"] for step in overlap}
+    if len(pressures) < 2 or all(value == 0.0 for value in pressures):
+        problems.append(
+            f"the compared pressure column is constant or all zero ({sorted(pressures)[:4]}); "
+            f"a restart comparison against a blank column proves nothing")
+    if max(row["shake_iter"] for row in continuous_log.values()) < 1:
+        problems.append(
+            "no SHAKE iterations were reported, so the constraint diagnostics being "
+            "compared are blank")
 
     # The restarted run must actually pick up where it left off.
     if split_log and min(split_log) <= N_FIRST - 1:

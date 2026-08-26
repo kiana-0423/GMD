@@ -672,6 +672,46 @@ int main(int argc, char** argv)
 
         simulation.initialize(runtime);
 
+        if (is_restart) {
+            // Must FOLLOW initialize(): that call evaluates the forces at the
+            // checkpointed coordinates and installs the provider virial, which
+            // drops any constraint term attached to an earlier geometry and
+            // clears the completed-step pressure.
+            //
+            // The constraint virial is the ENDPOINT RATTLE value of the step
+            // that produced this state, so it belongs to exactly these
+            // coordinates and is attached to that freshly recomputed provider
+            // virial. The completed-step pressure is installed as recorded, so
+            // the restarted run reports for this frame the identical number the
+            // uninterrupted run reported, rather than reconstructing it.
+            //
+            // metadata.provider_virial is deliberately NOT installed: the run
+            // has just recomputed it from these coordinates, and a value summed
+            // under a different rank decomposition would only differ in
+            // round-off. It is persisted for diagnosis, not for restoration.
+            if (restart_metadata->constraint_virial_state == "valid") {
+                if (restart_metadata->constraint_virial_time_level !=
+                    "endpoint_rattle_t_plus_dt") {
+                    throw std::runtime_error(
+                        "Checkpoint carries a constraint virial at time level '" +
+                        restart_metadata->constraint_virial_time_level +
+                        "', which this build cannot pair with the endpoint provider "
+                        "virial it evaluates at the checkpointed coordinates");
+                }
+                system.set_constraint_virial(restart_metadata->constraint_virial);
+            }
+            if (restart_metadata->step_pressure_valid) {
+                gmd::System::StepThermodynamics record;
+                record.valid = true;
+                record.pressure = restart_metadata->step_pressure;
+                record.virial = restart_metadata->step_pressure_virial;
+                record.twice_kinetic_energy = restart_metadata->step_pressure_twice_ke;
+                record.volume = restart_metadata->step_pressure_volume;
+                record.potential_energy = restart_metadata->step_pressure_potential_energy;
+                system.set_step_thermodynamics(record);
+            }
+        }
+
         // Degrees of freedom for every temperature the run reports. Read back
         // from the integrator rather than recomputed here, so the trajectory
         // log and the thermostat are guaranteed to use the same count: 3N,
@@ -746,7 +786,21 @@ int main(int argc, char** argv)
                         global_coordinates[offset + 2]
                     };
                 }
-                output_system.set_potential_energy(system.potential_energy());
+                // output_system holds only the gathered global coordinates; it
+                // takes part in no dynamics, so every non-atomic field the
+                // writer reads has to be brought across from the real System.
+                // Without this the frame would report the state output_system
+                // was copied from at set-up: the initial box, no constraint
+                // diagnostics and no completed-step thermodynamics.
+                //
+                // Nothing here is reduced. Every field is either replicated (the
+                // box, the constraint virial) or already global (the provider
+                // virial, allreduced by the providers, and the completed-step
+                // record, built from globally reduced quantities), so each rank
+                // already holds the identical value. Reducing would multiply
+                // them; tests/mpi_constraint_virial.cpp asserts the identity
+                // across ranks rather than leaving it assumed.
+                output_system.copy_frame_state_from(system);
                 writer.write_frame(output_system, step, time, twice_ke, dof);
             }
         };
@@ -878,6 +932,32 @@ int main(int argc, char** argv)
             metadata.barostat_type = run_config.barostat_type;
             metadata.barostat_state =
                 barostat != nullptr ? barostat->checkpoint_state() : "stateless";
+            // Virial and pressure state, each named explicitly; see
+            // CheckpointMetadata for what a restart does with each one.
+            metadata.constraint_virial = system.constraint_virial();
+            switch (system.constraint_virial_state()) {
+                case gmd::ConstraintVirialState::Valid:
+                    metadata.constraint_virial_state = "valid";
+                    metadata.constraint_virial_time_level = "endpoint_rattle_t_plus_dt";
+                    break;
+                case gmd::ConstraintVirialState::Unavailable:
+                    metadata.constraint_virial_state = "unavailable";
+                    metadata.constraint_virial_time_level = "none";
+                    break;
+                case gmd::ConstraintVirialState::NotApplicable:
+                    metadata.constraint_virial_state = "not_applicable";
+                    metadata.constraint_virial_time_level = "none";
+                    break;
+            }
+            metadata.provider_virial = system.provider_virial();
+            metadata.provider_virial_valid = system.provider_virial_valid();
+            const auto& completed = system.step_thermodynamics();
+            metadata.step_pressure_valid = completed.valid;
+            metadata.step_pressure = completed.pressure;
+            metadata.step_pressure_virial = completed.virial;
+            metadata.step_pressure_twice_ke = completed.twice_kinetic_energy;
+            metadata.step_pressure_volume = completed.volume;
+            metadata.step_pressure_potential_energy = completed.potential_energy;
 
             gmd::CheckpointData checkpoint{
                 .metadata = metadata,

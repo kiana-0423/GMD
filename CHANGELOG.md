@@ -6,6 +6,92 @@ All notable user-facing changes in GMD are documented here.
 
 ### ⚠️ Simulation-results-changing corrections
 
+- **Constrained dynamics now uses the standard velocity-Verlet SHAKE/RATTLE
+  splitting.** Two defects are corrected, and **every constrained trajectory
+  changes** as a result.
+
+  *SHAKE projected along the wrong gradient.* `sigma_c = |r_c|^2 - d_c^2` has
+  gradient `2 r_c` at the configuration the step starts from, so the projection
+  must displace atoms along `r_c(t)`. It displaced them along the drifted bond
+  `r_c(t+dt)` instead. Both land on the constraint manifold, but at different
+  points, and only the first reproduces the constrained equations of motion. The
+  second is a plain rescaling of the bond: not symplectic, and it bleeds energy
+  away steadily. A free rigid rotor lost **86% of its kinetic energy over 4000
+  steps** at `omega*dt = 0.04`, where the corrected form conserves it to 1e-13.
+
+  *The SHAKE half-step velocity impulse was missing.* The position correction
+  carries a matching velocity impulse `v += dr/dt`; without it the velocities
+  were inconsistent with the constrained positions and RATTLE had to absorb the
+  whole step's constraint impulse rather than the second half-kick's share.
+
+  A bond that turns through ~90 degrees in one step now raises a hard error
+  naming the pair, instead of producing a wild correction: the reference-gradient
+  linearisation has no solution there.
+
+- **Holonomic constraint forces now contribute to the virial, and hence to the
+  pressure.** Constrained runs previously reported a pressure that was simply
+  missing the constraint term, so **every reported pressure for a system with
+  SHAKE/RATTLE constraints changes**. Unconstrained runs are unaffected.
+
+  The contribution is the **endpoint** constraint force at `t+dt`, recovered
+  from the converged RATTLE multipliers. In the splitting above the constraint
+  force enters twice per step: through the SHAKE impulse, paired with `F(t)`,
+  and through the RATTLE impulse, paired with `F(t+dt)`. The providers are
+  evaluated at `r(t+dt)`, so the virial takes the second. Matching it against the
+  second half-kick term by term gives
+
+  ```
+  (dt/2m_i) G_i(t+dt) = w_i Lambda_c r_c(t+dt)
+  W_constraint(t+dt)  = sum_c (2 Lambda_c / dt) (r_c (x) r_c)
+  ```
+
+  in the project's `W = sum r (x) F` convention. The factor `2/dt` is exact, and
+  **both halves of the reported virial live at the same time level** — there is
+  no step-averaged quantity paired with an endpoint one anywhere. The factor was
+  established against an independent physical result, not assumed: a freely
+  rotating rigid dimer's endpoint constraint force must equal the centripetal
+  force `mu omega^2 d`, and `1/dt` undershoots it by exactly two.
+
+  Because RATTLE does not move atoms, the bond vector is fixed for the whole
+  solve and summing the *scalar* multipliers gives a pair force that is exactly
+  central and exactly antisymmetric — for coupled constraints as much as for
+  isolated ones. Nothing is projected and no residual is discarded, and the
+  tensor is symmetric by construction. It is built from minimum-image bond
+  vectors, so it is independent of the origin and of how atoms are wrapped.
+
+  **RATTLE is not redundant with the kinetic term.** `2K` and the configurational
+  constraint virial are different quantities; projecting the velocities does not
+  remove the need for the second. For a rigid rotor `2K = mu omega^2 d^2` and
+  `tr W_constraint = -mu omega^2 d^2`, so `2K + tr W = 0` — a rigid body's frozen
+  internal coordinate contributes nothing to the pressure. Omitting the
+  constraint virial leaves `2K` uncancelled and reports a spurious `2K/3V`.
+
+  Validated against the centripetal force of a rigid rotor, a reference
+  independent of the implementation, for a dimer and for a rigid triangle of
+  three coupled constraints: endpoint force magnitude, sign, trace, the identity
+  `2K + tr W = 0`, and second-order convergence of both errors in `dt`. Plus
+  exact symmetry and centrality, the two constraint half-impulses being measured
+  separately and shown to differ, free-rotor energy conservation, additivity,
+  translation and periodic-wrapping invariance, rank invariance at 1, 2 and 4
+  ranks, and restart continuity of the reported pressure. No independent
+  external reference is claimed; see *Remaining limitations*.
+
+- **The reported pressure is now the completed step's, not the post-rescale
+  geometry's.** The pressure of the step that just finished and the virial
+  attached to the geometry a barostat has since rescaled are different things,
+  and they are now stored separately. The completed-step pressure is captured at
+  the end of the step, before any barostat runs, and is bit-for-bit the value the
+  barostat itself consumed; a later force evaluation cannot destroy it.
+
+  This is what makes constrained NPT report a pressure at all. The post-rescale
+  re-evaluation has no constraint partner, so under the previous arrangement a
+  constrained run under a cell-rescaling barostat had nothing complete to report.
+
+  For unconstrained runs the two definitions differ only on a step that actually
+  rescales; all eight validation cases are unchanged, and in the NPT case this
+  was checked rather than assumed — with `mc_frequency 20` against
+  `output_interval 10`, no logged frame is itself a rescale step.
+
 Every item in this section changes numerical results for the configurations it
 affects. **Trajectories, energies, temperatures and pressures produced by
 earlier versions are not reproducible after upgrading** for systems using
@@ -51,11 +137,72 @@ one analysis.
   compatibility* below. Runs that previously restarted and silently continued
   with a mismatched thermostat mass now stop with an error.
 
+### MPI trajectory output reported stale frame state
+
+**Bug fix, MPI runs only.** The MPI output path writes a separate `System`
+holding the gathered global coordinates. That object was copied from the real
+system at start-up and thereafter received only coordinates and the potential
+energy, so every other frame field it reported was frozen at its start-up value.
+In practice an MPI log reported the **initial box** — so the volume column of an
+MPI NPT run never moved — and **zeroed SHAKE/RATTLE iteration counts and
+residuals**. Both predate this release.
+
+All non-atomic frame state is now carried across explicitly, and serial, `np=2`
+and `np=4` runs of the real executable are compared column by column over whole
+logs.
+
+### Trajectory-log format
+
+The energy log gains a trailing **`P_valid`** column, and an unavailable pressure
+is now written as **`nan`** rather than `0`.
+
+**`PE`, `KE`, `E_total`, `T`, `P` and `V` in a row now describe one state**: the
+completed step, captured together before any barostat rescale. They are mutually
+consistent, and `E_total` is the energy of the configuration that produced the
+reported pressure. Previously `P` came from one state and `PE`/`V` from the
+post-rescale geometry. For a run without a barostat nothing changes — there is
+no rescale to be on either side of. Under a barostat the row's `V` now lags the
+`.xyz` coordinates by one rescale: the coordinates are the current ones, since
+snapshotting them per step would cost an `N x 3` copy for a difference no
+thermodynamic quantity in the row depends on.
+
+A numerical zero is a perfectly ordinary pressure, so it must never double as a
+sentinel for "no pressure available". The only case that produces one today is
+the initial frame of a *constrained* run: no step has completed, so there is no
+completed-step pressure, and the initial force evaluation has no RATTLE
+multiplier to pair with. Unconstrained runs report a valid pressure on every
+frame, initial one included.
+
+The column is appended, so parsers that read the log by position are unaffected.
+
 ### Checkpoint compatibility
 
-The on-disk checkpoint format is **unchanged**, and parsing remains
-backward-compatible: every field, name and ordering is the same, so old
-checkpoints are read exactly as before.
+The checkpoint format moves to **version 2**, which appends three explicitly
+named blocks. Reading stays backward-compatible — version 1 files are still
+accepted, and every existing field keeps its name, order and meaning.
+
+- `constraint_virial <state> <time_level> <9 components>` — the constraint
+  contribution, its validity (`not_applicable` / `unavailable` / `valid`) and
+  **which multiplier it is**. The only time level this build writes is
+  `endpoint_rattle_t_plus_dt`, and a restart refuses any other rather than
+  pairing an unknown time level with the endpoint provider virial it computes.
+  Nothing in the checkpointed state determines this value — it is a property of
+  the step that reached the state, which is why it has to be persisted.
+- `provider_virial <valid> <9 components>` — the current-geometry provider
+  virial. Recorded for diagnosis but **not** installed on restart: the restarted
+  run recomputes it from the checkpointed coordinates, which is where it came
+  from, and reinstalling a value summed under a different rank decomposition
+  would only introduce a discrepancy.
+- `step_pressure <valid> <P> <2K> <V> <9 components>` — the completed step's
+  pressure and the pieces it was built from. Installed on restart, so the
+  restarted run reports for that frame the identical number the uninterrupted
+  run reported rather than reconstructing it.
+
+A version-1 checkpoint carries none of these. A constrained run restarted from
+one reports its first frame's pressure as unavailable (`nan`, `P_valid 0`); every
+subsequent step is unaffected, because each closes with its own RATTLE.
+
+Older builds cannot read a version-2 checkpoint.
 
 What changed is validation of the Nosé-Hoover `dof` field. It is now checked
 against the degrees of freedom the current run computes, and **never installed**.
@@ -145,9 +292,19 @@ instead.
 
 ### Known limitations (unchanged by this release)
 
-- **Constraint forces do not contribute to the virial.** Temperature is now
-  correct for constrained runs, but the pressure of a constrained system is
-  missing the constraint virial, so NPT with SHAKE/RATTLE is not quantitative.
+- **The constraint virial has no independent external reference.** It is
+  validated against the analytical centripetal-force result for a rigid rotor,
+  plus invariance and convergence properties, but not against LAMMPS or OpenMM:
+  neither exposes a separately extractable constraint virial whose definition
+  could be *proven* equivalent to this one, and the quantity is dynamical, so it
+  cannot be compared from a static configuration. Only the analytical claim is
+  made.
+- **The initial frame of a constrained run has no complete pressure.** No step
+  has completed, and the initial force evaluation has no RATTLE multiplier to
+  pair with. It is reported as `nan` with `P_valid 0`, never as a number.
+- **A bond may not turn through ~90 degrees in one step.** The SHAKE
+  reference-gradient linearisation has no solution there; this is diagnosed as a
+  hard error naming the pair and asking for a smaller time step.
 - **Only the diagonal virial components are validated.** `Box` stores three edge
   lengths, so the engine is orthorhombic-only and no shear strain can be applied.
   Off-diagonal components are checked for symmetry `W_ab == W_ba`, which is

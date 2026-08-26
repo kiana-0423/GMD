@@ -137,6 +137,8 @@ if(BUILD_TESTING)
     target_link_libraries(gmd_constraint_validation_tests PRIVATE gmd_core)
     add_executable(gmd_bonded_force_gradient_tests tests/bonded_force_gradient_tests.cpp)
     target_link_libraries(gmd_bonded_force_gradient_tests PRIVATE gmd_core)
+    add_executable(gmd_constraint_virial_tests tests/constraint_virial_tests.cpp)
+    target_link_libraries(gmd_constraint_virial_tests PRIVATE gmd_core)
 
     file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/tests)
     configure_file(tests/smoke_lj.xyz         ${CMAKE_CURRENT_BINARY_DIR}/tests/smoke_xyz.in       COPYONLY)
@@ -250,6 +252,21 @@ if(BUILD_TESTING)
     set_tests_properties(gmd_constraint_validation PROPERTIES LABELS "unit;integrator")
     add_test(NAME gmd_bonded_force_gradient COMMAND gmd_bonded_force_gradient_tests)
     set_tests_properties(gmd_bonded_force_gradient PROPERTIES LABELS "unit;force;validation")
+    add_test(NAME gmd_constraint_virial COMMAND gmd_constraint_virial_tests)
+    set_tests_properties(gmd_constraint_virial PROPERTIES LABELS "unit;integrator;force")
+
+    # Constrained NVE energy conservation and constrained Berendsen NPT pressure
+    # reporting, through the real CLI: many consecutive rescaling steps, and the
+    # reported pressure column must never silently become zeros.
+    add_test(
+        NAME gmd_constrained_pressure_reporting
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/constrained_pressure_reporting.py
+                --gmd $<TARGET_FILE:gmd>
+                --work-root ${CMAKE_CURRENT_BINARY_DIR}/tests/constrained_pressure
+    )
+    set_tests_properties(gmd_constrained_pressure_reporting
+        PROPERTIES LABELS "integration;integrator;force")
     set_tests_properties(gmd_pme_modes PROPERTIES LABELS "unit;force;pme")
 
     add_test(
@@ -329,6 +346,43 @@ if(BUILD_TESTING)
         target_link_libraries(gmd_mpi_neighbor_list_tests PRIVATE gmd_core)
         add_executable(gmd_mpi_dof_virial_tests tests/mpi_dof_virial.cpp)
         target_link_libraries(gmd_mpi_dof_virial_tests PRIVATE gmd_core)
+        add_executable(gmd_mpi_constraint_virial_tests tests/mpi_constraint_virial.cpp)
+        target_link_libraries(gmd_mpi_constraint_virial_tests PRIVATE gmd_core)
+
+        # Same fixture at 1, 2 and 4 ranks: the constraint virial must come out
+        # identical, which is what catches a dropped or rank-multiplied value.
+        # The MPI CLI output path: write_global_frame() copies frame state onto a
+        # separate output System, so only a real run through the executable
+        # covers it. Each of these also runs the same fixture serially and
+        # compares the two logs column by column.
+        foreach(pressure_np 2 4)
+            add_test(
+                NAME gmd_mpi_constrained_pressure_reporting_${pressure_np}proc
+                COMMAND ${Python3_EXECUTABLE}
+                        ${CMAKE_CURRENT_SOURCE_DIR}/tests/constrained_pressure_reporting.py
+                        --gmd $<TARGET_FILE:gmd>
+                        --work-root ${CMAKE_CURRENT_BINARY_DIR}/tests/constrained_pressure_mpi_${pressure_np}
+                        --np ${pressure_np}
+                        --mpiexec ${MPIEXEC_EXECUTABLE}
+                        --mpiexec-np-flag=${MPIEXEC_NUMPROC_FLAG}
+            )
+            set_tests_properties(gmd_mpi_constrained_pressure_reporting_${pressure_np}proc
+                PROPERTIES
+                    LABELS "mpi;parallel;integration;integrator;force"
+                    PROCESSORS ${pressure_np})
+        endforeach()
+
+        foreach(constraint_virial_np 1 2 4)
+            add_test(
+                NAME gmd_mpi_constraint_virial_${constraint_virial_np}proc
+                COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${constraint_virial_np}
+                        $<TARGET_FILE:gmd_mpi_constraint_virial_tests>
+            )
+            set_tests_properties(gmd_mpi_constraint_virial_${constraint_virial_np}proc
+                PROPERTIES
+                    LABELS "mpi;parallel;integrator;force"
+                    PROCESSORS ${constraint_virial_np})
+        endforeach()
 
         add_test(
             NAME gmd_mpi_degrees_of_freedom_4proc
@@ -445,6 +499,21 @@ if(BUILD_TESTING)
             PROPERTIES
                 LABELS "mpi;parallel;integration;restart;integrator"
                 PROCESSORS 2)
+        add_test(
+            NAME gmd_mpi_nose_hoover_restart_continuity_cli_4proc
+            COMMAND Python3::Interpreter
+                    ${CMAKE_CURRENT_SOURCE_DIR}/tests/nose_hoover_restart_continuity.py
+                    --gmd $<TARGET_FILE:gmd>
+                    --gmd-validate $<TARGET_FILE:gmd_validate>
+                    --work-root ${CMAKE_CURRENT_BINARY_DIR}/tests/nh_restart_continuity_mpi_4
+                    --np 4
+                    --mpiexec ${MPIEXEC_EXECUTABLE}
+                    --mpiexec-np-flag=${MPIEXEC_NUMPROC_FLAG}
+        )
+        set_tests_properties(gmd_mpi_nose_hoover_restart_continuity_cli_4proc
+            PROPERTIES
+                LABELS "mpi;parallel;integration;restart;integrator"
+                PROCESSORS 4)
 
         add_test(
             NAME gmd_mpi_restart_continuity_cli_2proc
