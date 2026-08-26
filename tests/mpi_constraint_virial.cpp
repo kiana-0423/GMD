@@ -30,7 +30,10 @@
 #include <vector>
 
 #include "gmd/core/runtime_context.hpp"
+#include "gmd/force/force_provider.hpp"
 #include "gmd/integrator/constraint_solver.hpp"
+#include "gmd/integrator/integrator.hpp"
+#include "gmd/integrator/velocity_verlet_integrator.hpp"
 #include "gmd/parallel/domain_decomposition.hpp"
 #include "gmd/parallel/mpi_environment.hpp"
 #include "gmd/system/box.hpp"
@@ -113,6 +116,85 @@ gmd::System local_share(const gmd::DomainDecomposition& dd, const gmd::Box& box,
         system.mutable_velocities()[k] = atoms[index].velocity;
     }
     return system;
+}
+
+// A provider with a fixed, deliberately asymmetric virial. Real providers
+// allreduce their own virial before returning it, so every rank seeing the same
+// tensor is what production looks like.
+class FixedVirialForceProvider final : public gmd::ForceProvider {
+public:
+    std::string_view name() const noexcept override { return "fixed_virial"; }
+    void initialize(gmd::RuntimeContext&) override {}
+    void finalize(gmd::RuntimeContext&) override {}
+    void compute(const gmd::ForceRequest& request,
+                 gmd::ForceResult& result,
+                 gmd::RuntimeContext&) override {
+        result.forces.assign(request.coordinates.size(), gmd::Force3D{0.0, 0.0, 0.0});
+        result.potential_energy = 0.0;
+        result.virial = {1.0, 0.25, -0.5, 0.25, 2.0, 0.75, -0.5, 0.75, 3.0};
+        result.virial_valid = true;
+        result.success = true;
+    }
+};
+
+// The completed-step record the trajectory writer reports must be IDENTICAL on
+// every rank, because the MPI output path copies it from whichever rank happens
+// to be writing without reducing it. That is an assumption, so it is checked
+// rather than left implicit: every field is either replicated (the box, the
+// constraint virial, which every rank computes from the same allgathered atoms)
+// or already global (the provider virial, which providers allreduce, and 2K,
+// which compute_twice_ke allreduces). Bitwise equality is the correct
+// expectation, so bitwise equality is what is asserted.
+void check_step_thermodynamics_agree_across_ranks(int rank, int size, int& failures) {
+    gmd::Box box;
+    box.set_lengths({kBox, kBox, kBox});
+    gmd::DomainDecomposition dd;
+    dd.create_decomposition(box, size, rank, 4.0, 1.0, {true, true, true});
+
+    gmd::System system = local_share(dd, box, rank);
+    auto solver = std::make_shared<gmd::ConstraintSolver>(
+        std::vector<gmd::BondConstraint>{{0, 1, kBond}}, tight_settings());
+    gmd::VelocityVerletIntegrator integrator(kTimeStep);
+    integrator.set_constraint_solver(solver);
+    FixedVirialForceProvider provider;
+    gmd::RuntimeContext runtime;
+    integrator.initialize(system, runtime);
+    const gmd::IntegratorStepContext ctx{.step = 0, .dt = kTimeStep};
+    integrator.step(system, provider, ctx, runtime);
+
+    const auto& completed = system.step_thermodynamics();
+    check(completed.valid, "a completed constrained step must record its thermodynamics",
+          rank, failures);
+
+    auto agrees = [&](double value, const std::string& what) {
+        double lo = 0.0;
+        double hi = 0.0;
+        MPI_Allreduce(&value, &lo, 1, MPI_DOUBLE, MPI_MIN, MPI_COMM_WORLD);
+        MPI_Allreduce(&value, &hi, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+        check(hi == lo,
+              "ranks disagree on " + what + " (min " + std::to_string(lo) + ", max " +
+                  std::to_string(hi) + "); the MPI output path copies this from one rank "
+                  "without reducing it, so it has to be identical everywhere",
+              rank, failures);
+    };
+    agrees(completed.pressure, "the completed-step pressure");
+    agrees(completed.twice_kinetic_energy, "the completed-step 2K");
+    agrees(completed.volume, "the completed-step volume");
+    agrees(completed.potential_energy, "the completed-step potential energy");
+    for (std::size_t k = 0; k < 9; ++k) {
+        agrees(completed.virial[k],
+               "completed-step virial component " + std::to_string(k));
+    }
+
+    // Non-vacuity: the record must carry a real constraint contribution, or the
+    // agreement above would be an agreement about nothing.
+    const double provider_trace = 1.0 + 2.0 + 3.0;
+    check(std::abs(completed.virial[0] + completed.virial[4] + completed.virial[8] -
+                   provider_trace) > 1.0e-6,
+          "the completed-step virial must differ from the provider virial alone, or "
+          "the constraint term never reached it", rank, failures);
+    check(completed.twice_kinetic_energy > 1.0e-9,
+          "the fixture must carry kinetic energy", rank, failures);
 }
 
 int run(int rank, int size) {
@@ -220,6 +302,8 @@ int run(int rank, int size) {
           "2K + tr W must vanish for a rigid rotor at any rank count; residual "
           "fraction " + std::to_string((twice_ke + result.trace()) / twice_ke),
           rank, failures);
+
+    check_step_thermodynamics_agree_across_ranks(rank, size, failures);
 
     return failures;
 }

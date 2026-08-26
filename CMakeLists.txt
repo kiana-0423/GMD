@@ -254,6 +254,19 @@ if(BUILD_TESTING)
     set_tests_properties(gmd_bonded_force_gradient PROPERTIES LABELS "unit;force;validation")
     add_test(NAME gmd_constraint_virial COMMAND gmd_constraint_virial_tests)
     set_tests_properties(gmd_constraint_virial PROPERTIES LABELS "unit;integrator;force")
+
+    # Constrained NVE energy conservation and constrained Berendsen NPT pressure
+    # reporting, through the real CLI: many consecutive rescaling steps, and the
+    # reported pressure column must never silently become zeros.
+    add_test(
+        NAME gmd_constrained_pressure_reporting
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/constrained_pressure_reporting.py
+                --gmd $<TARGET_FILE:gmd>
+                --work-root ${CMAKE_CURRENT_BINARY_DIR}/tests/constrained_pressure
+    )
+    set_tests_properties(gmd_constrained_pressure_reporting
+        PROPERTIES LABELS "integration;integrator;force")
     set_tests_properties(gmd_pme_modes PROPERTIES LABELS "unit;force;pme")
 
     add_test(
@@ -338,6 +351,27 @@ if(BUILD_TESTING)
 
         # Same fixture at 1, 2 and 4 ranks: the constraint virial must come out
         # identical, which is what catches a dropped or rank-multiplied value.
+        # The MPI CLI output path: write_global_frame() copies frame state onto a
+        # separate output System, so only a real run through the executable
+        # covers it. Each of these also runs the same fixture serially and
+        # compares the two logs column by column.
+        foreach(pressure_np 2 4)
+            add_test(
+                NAME gmd_mpi_constrained_pressure_reporting_${pressure_np}proc
+                COMMAND ${Python3_EXECUTABLE}
+                        ${CMAKE_CURRENT_SOURCE_DIR}/tests/constrained_pressure_reporting.py
+                        --gmd $<TARGET_FILE:gmd>
+                        --work-root ${CMAKE_CURRENT_BINARY_DIR}/tests/constrained_pressure_mpi_${pressure_np}
+                        --np ${pressure_np}
+                        --mpiexec ${MPIEXEC_EXECUTABLE}
+                        --mpiexec-np-flag=${MPIEXEC_NUMPROC_FLAG}
+            )
+            set_tests_properties(gmd_mpi_constrained_pressure_reporting_${pressure_np}proc
+                PROPERTIES
+                    LABELS "mpi;parallel;integration;integrator;force"
+                    PROCESSORS ${pressure_np})
+        endforeach()
+
         foreach(constraint_virial_np 1 2 4)
             add_test(
                 NAME gmd_mpi_constraint_virial_${constraint_virial_np}proc

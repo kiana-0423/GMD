@@ -744,7 +744,7 @@ void test_unconstrained_run_is_untouched() {
 // provider virial with no contemporaneous constraint partner, so that tensor
 // must be reported INVALID rather than as a complete pressure virial missing a
 // term. The completed step's own pressure is a separate slot and is unaffected;
-// completed step's own pressure is a separate concern.
+// test_completed_step_pressure_survives_a_barostat_rescale covers it.
 void test_barostat_rescale_invalidates_rather_than_combining_across_it() {
     const std::array<double, 9> provider_virial{
         1.0, 0.0, 0.0,
@@ -1087,6 +1087,79 @@ void test_free_rotor_conserves_energy() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// 4b. A barostat rescale must not destroy the completed step's pressure.
+// ---------------------------------------------------------------------------
+//
+// The pressure of the step that just finished and the virial attached to the
+// post-rescale geometry are different things. The first is complete and is what
+// the barostat consumed; the second has no constraint partner. Keeping them in
+// one slot would force the complete one to be thrown away.
+void test_completed_step_pressure_survives_a_barostat_rescale() {
+    const std::array<double, 9> provider_virial{
+        1.0, 0.0, 0.0,
+        0.0, 2.0, 0.0,
+        0.0, 0.0, 3.0};
+    constexpr double bond = 1.5;
+    constexpr double dt = 0.1;
+    const gmd::Box box = cubic_box(30.0);
+    const std::vector<gmd::BondConstraint> constraints{{0, 1, bond}};
+
+    gmd::System system = make_rotating_dimer(1.0, 3.0, bond, 0.1, box, {15.0, 15.0, 15.0});
+    auto solver = std::make_shared<gmd::ConstraintSolver>(constraints, tight_settings());
+    gmd::VelocityVerletIntegrator integrator(dt);
+    integrator.set_constraint_solver(solver);
+    integrator.set_barostat(std::make_shared<OneShotScalingBarostat>(1.01));
+    FixedVirialForceProvider provider(provider_virial);
+    run_one_step(system, integrator, provider, dt);
+
+    const auto& completed = system.step_thermodynamics();
+    check(completed.valid,
+          "the completed step's pressure must survive the rescale that followed it");
+    check(provider.calls == 2,
+          "the rescale must trigger exactly one re-evaluation, saw " +
+              std::to_string(provider.calls) + " call(s)");
+
+    // It is the COMPLETE pressure: provider + constraint, at the pre-rescale
+    // volume, which is not the volume the system now has.
+    const double pre_rescale_volume = 30.0 * 30.0 * 30.0;
+    check_close(completed.volume, pre_rescale_volume, 1.0e-9,
+                "the completed-step pressure must use the pre-rescale volume");
+    check(std::abs(completed.volume - system.box().lengths[0] * system.box().lengths[1] *
+                                          system.box().lengths[2]) > 1.0,
+          "the fixture must actually have rescaled, or the test proves nothing");
+    // The constraint part it carries cannot be read back off the System -- the
+    // rescale cleared that, which is the whole point -- so it is recovered by
+    // subtracting the known provider virial, and checked against the rotor's own
+    // identity: a rigid pair's constraint virial has trace -2K.
+    std::array<double, 9> constraint_part{};
+    for (std::size_t index = 0; index < 9; ++index) {
+        constraint_part[index] = completed.virial[index] - provider_virial[index];
+    }
+    check(std::abs(trace_of(constraint_part)) > 1.0e-6,
+          "the completed-step virial must actually carry a constraint term, or the "
+          "test proves nothing");
+    check_close(trace_of(constraint_part), -completed.twice_kinetic_energy,
+                1.0e-3 * completed.twice_kinetic_energy,
+                "the constraint term the completed step recorded must satisfy the "
+                "rigid-rotor identity tr W = -2K");
+    check_close(constraint_part[1], constraint_part[3], 1.0e-14,
+                "and must still be the symmetric tensor RATTLE produced");
+    const double expected =
+        (completed.twice_kinetic_energy + completed.virial[0] + completed.virial[4] +
+         completed.virial[8]) / (3.0 * completed.volume);
+    check_close(completed.pressure, expected, 1.0e-15,
+                "the recorded pressure must be (2K + tr W) / 3V of the recorded pieces");
+    check_close(completed.potential_energy, 0.0, 1.0e-15,
+                "and it must carry the potential energy of that same state");
+
+    // Meanwhile the CURRENT-GEOMETRY virial is incomplete and says so.
+    check(system.constraint_virial_state() == gmd::ConstraintVirialState::Unavailable,
+          "after a rescale no constraint multiplier belongs to the new geometry");
+    check(!system.last_virial_valid(),
+          "so the current-geometry virial must not pass for a complete pressure virial");
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -1109,6 +1182,7 @@ int main(int argc, char** argv) {
     test_barostat_rescale_invalidates_rather_than_combining_across_it();
     test_rattle_disabled_reports_unavailable();
     test_initial_state_has_no_constraint_virial();
+    test_completed_step_pressure_survives_a_barostat_rescale();
     test_rigid_rotor_reports_no_pressure();
 
     if (failures != 0) {

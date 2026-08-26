@@ -70,6 +70,9 @@ void VelocityVerletIntegrator::initialize(System& system, RuntimeContext& runtim
     // the initial pressure must not be reported as complete. A restart attaches
     // the checkpointed value afterwards (see the restart handling in gmd_main).
     system.set_constraints_active(has_constraints());
+    // No step has completed, so there is no completed-step pressure. A restart
+    // installs the checkpointed one after initialize() (see gmd_main).
+    system.clear_step_thermodynamics();
 
     // Put the initial state ON the constraint manifold, in position and in
     // velocity, before any dynamics run. Without this the first RATTLE of the
@@ -271,6 +274,44 @@ void VelocityVerletIntegrator::finish_step(System& system,
         last_virial_trace_ = combined[0] + combined[4] + combined[8];
     }
 
+    capture_step_thermodynamics(system);
+}
+
+// The thermodynamic state of the step that has just finished, recorded before
+// any barostat touches the cell.
+//
+// The whole set is taken at one instant so the reported numbers are mutually
+// consistent: P = (2K + tr W) / 3V holds among exactly these values, and the
+// potential energy is the one belonging to the same configuration and volume.
+// The pressure is bit-for-bit what BerendsenBarostat computes from the same
+// trace, the same compute_twice_ke() and the same volume, so the number that is
+// reported and the number that drives pressure control cannot diverge. A later
+// force evaluation at a rescaled geometry replaces last_virial() and the
+// System's potential energy, but deliberately leaves this record alone.
+void VelocityVerletIntegrator::capture_step_thermodynamics(System& system) {
+    // compute_twice_ke() is collective, so it is called unconditionally: every
+    // rank reaches finish_step(), and none may skip the reduction.
+    const double twice_ke = compute_twice_ke(system);
+
+    const Box& box = system.box();
+    const double volume = box.lengths[0] * box.lengths[1] * box.lengths[2];
+    if (!system.last_virial_valid() || !(volume > 0.0)) {
+        system.clear_step_thermodynamics();
+        return;
+    }
+
+    const auto& virial = system.last_virial();
+    System::StepThermodynamics record;
+    record.valid = true;
+    record.virial = virial;
+    record.twice_kinetic_energy = twice_ke;
+    record.volume = volume;
+    // The potential energy belonging to this same configuration and volume. A
+    // post-rescale re-evaluation overwrites the System's, which is why it is
+    // taken here rather than read back at write time.
+    record.potential_energy = system.potential_energy();
+    record.pressure = (twice_ke + virial[0] + virial[4] + virial[8]) / (3.0 * volume);
+    system.set_step_thermodynamics(record);
 }
 
 void VelocityVerletIntegrator::apply_barostat(System& system,

@@ -99,6 +99,10 @@ public:
     void set_last_virial_trace(double virial_trace) noexcept;
 
 private:
+    // Record the thermodynamic state of the step that has just finished, before
+    // a barostat can rescale the cell out from under it.
+    void capture_step_thermodynamics(System& system);
+
     // Re-establish forces, virial and neighbor-list state after a barostat has
     // rescaled the box and coordinates.
     void refresh_after_barostat(System& system,

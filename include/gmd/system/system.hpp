@@ -352,6 +352,81 @@ public:
 		refresh_combined_virial();
 	}
 
+	// --- Completed-step thermodynamics ---------------------------------------
+	//
+	// The thermodynamic state OF THE STEP THAT JUST FINISHED, and the force
+	// state attached to the CURRENT GEOMETRY, are different things, and a
+	// barostat separates them: it rescales the cell after the step is complete,
+	// and the forces are then re-evaluated so the next step starts consistent.
+	// That re-evaluation produces a virial and a potential energy for a geometry
+	// no dynamics ever integrated, at a volume the completed step never had.
+	//
+	// So the completed step's numbers are captured together, once, at the end of
+	// finish_step() and before any barostat runs, and are NOT touched by a later
+	// force evaluation. Reported as a set they are mutually consistent:
+	// P = (2K + tr W) / 3V holds among exactly these values, and E_total = PE + K
+	// is the energy of the state that produced them. The pressure here is also
+	// bit-for-bit the value the barostat itself consumed.
+	//
+	// last_virial() remains the current-geometry tensor and is not this.
+	struct StepThermodynamics {
+		bool valid = false;
+		double pressure = 0.0;               // (2K + tr W) / 3V  [eV/A^3]
+		std::array<double, 9> virial{};      // provider + constraint, both at t+dt
+		double twice_kinetic_energy = 0.0;
+		double volume = 0.0;
+		double potential_energy = 0.0;
+	};
+
+	const StepThermodynamics& step_thermodynamics() const noexcept {
+		return step_thermodynamics_;
+	}
+
+	void set_step_thermodynamics(const StepThermodynamics& value) noexcept {
+		step_thermodynamics_ = value;
+	}
+
+	void clear_step_thermodynamics() noexcept {
+		step_thermodynamics_ = StepThermodynamics{};
+	}
+
+	// Everything a trajectory frame needs that is NOT per-atom.
+	//
+	// This exists for the MPI output path, which writes a separate System holding
+	// gathered global coordinates. That System takes part in no dynamics, so
+	// without this it would report the state it was copied from -- the initial
+	// box, no constraint diagnostics, no completed-step thermodynamics -- while
+	// the real System moved on. Keeping the list here, next to the members it
+	// copies, is what stops a newly added frame field from being forgotten there.
+	//
+	// Nothing here is reduced across ranks: every field is either replicated (the
+	// box, the constraint virial) or already global (the provider virial, which
+	// the providers allreduce, and the completed-step record, which is built from
+	// globally reduced quantities). Reducing again would multiply them.
+	void copy_frame_state_from(const System& other) {
+		set_box(other.box());
+		set_potential_energy(other.potential_energy());
+		set_step_thermodynamics(other.step_thermodynamics());
+		set_last_shake_stats(other.last_shake_stats());
+		set_last_rattle_stats(other.last_rattle_stats());
+		// Provider first: installing one drops any constraint term, so the
+		// constraint state has to be re-established afterwards.
+		set_provider_virial(other.provider_virial_, other.provider_virial_valid_);
+		switch (other.constraint_virial_state_) {
+			case ConstraintVirialState::NotApplicable:
+				set_constraints_active(false);
+				break;
+			case ConstraintVirialState::Unavailable:
+				set_constraints_active(true);
+				mark_constraint_virial_unavailable();
+				break;
+			case ConstraintVirialState::Valid:
+				set_constraints_active(true);
+				set_constraint_virial(other.constraint_virial_);
+				break;
+		}
+	}
+
 	void set_last_shake_stats(const ConstraintProjectionStats& stats) noexcept {
 		last_shake_stats_ = stats;
 	}
@@ -441,6 +516,7 @@ private:
 	};
 	bool provider_virial_valid_ = false;
 	ConstraintVirialState constraint_virial_state_ = ConstraintVirialState::NotApplicable;
+	StepThermodynamics step_thermodynamics_;
 	ConstraintProjectionStats last_shake_stats_;
 	ConstraintProjectionStats last_rattle_stats_;
 	double potential_energy_ = 0.0;

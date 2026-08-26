@@ -167,10 +167,24 @@ void write_checkpoint(const std::filesystem::path& path,
     out << "thermostat_state " << md.thermostat_state << '\n';
     out << "barostat_type " << md.barostat_type << '\n';
     out << "barostat_state " << md.barostat_state << '\n';
-    // Constraint virial state; see CheckpointMetadata for what it means.
+    // Virial and pressure state; see CheckpointMetadata for what each one means.
     out << "constraint_virial " << md.constraint_virial_state
         << ' ' << md.constraint_virial_time_level;
     for (double component : md.constraint_virial) {
+        out << ' ' << component;
+    }
+    out << '\n';
+    out << "provider_virial " << (md.provider_virial_valid ? 1 : 0);
+    for (double component : md.provider_virial) {
+        out << ' ' << component;
+    }
+    out << '\n';
+    out << "step_pressure " << (md.step_pressure_valid ? 1 : 0)
+        << ' ' << md.step_pressure
+        << ' ' << md.step_pressure_twice_ke
+        << ' ' << md.step_pressure_volume
+        << ' ' << md.step_pressure_potential_energy;
+    for (double component : md.step_pressure_virial) {
         out << ' ' << component;
     }
     out << '\n';
@@ -260,9 +274,9 @@ CheckpointMetadata read_checkpoint(const std::filesystem::path& path,
     require_key(input, "barostat_state");
     md.barostat_state = read_rest_of_line(input);
 
-    // Version 1 predates the constraint virial state. Such a checkpoint restarts
-    // exactly as it always did; its first reported frame simply has no
-    // constraint contribution to restore.
+    // Version 1 predates the virial and pressure state. Such a checkpoint
+    // restarts exactly as it always did; its first reported frame simply has no
+    // completed-step pressure to restore, and falls back to the current geometry.
     if (version >= 2) {
         require_key(input, "constraint_virial");
         if (!(input >> md.constraint_virial_state >> md.constraint_virial_time_level)) {
@@ -280,6 +294,30 @@ CheckpointMetadata read_checkpoint(const std::filesystem::path& path,
             }
         }
 
+        require_key(input, "provider_virial");
+        int provider_flag = 0;
+        if (!(input >> provider_flag)) {
+            throw std::runtime_error("Invalid checkpoint provider_virial flag");
+        }
+        for (double& component : md.provider_virial) {
+            if (!(input >> component)) {
+                throw std::runtime_error("Invalid checkpoint provider_virial entry");
+            }
+        }
+        md.provider_virial_valid = provider_flag != 0;
+
+        require_key(input, "step_pressure");
+        int pressure_flag = 0;
+        if (!(input >> pressure_flag >> md.step_pressure >> md.step_pressure_twice_ke >>
+              md.step_pressure_volume >> md.step_pressure_potential_energy)) {
+            throw std::runtime_error("Invalid checkpoint step_pressure entry");
+        }
+        for (double& component : md.step_pressure_virial) {
+            if (!(input >> component)) {
+                throw std::runtime_error("Invalid checkpoint step_pressure virial entry");
+            }
+        }
+        md.step_pressure_valid = pressure_flag != 0;
     }
 
     std::size_t atom_count = 0;
