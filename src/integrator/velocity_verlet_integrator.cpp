@@ -64,6 +64,18 @@ void VelocityVerletIntegrator::initialize(System& system, RuntimeContext& runtim
     (void)runtime;
     last_virial_trace_ = 0.0;
     last_virial_valid_ = false;
+
+    // Put the initial state ON the constraint manifold, in position and in
+    // velocity, before any dynamics run. A state that satisfies neither is not a
+    // constrained state, and projecting it on the first step would make that
+    // step's multipliers a one-off correction of an invalid state rather than a
+    // constraint force. A restarted run is already on the manifold, so this is a
+    // no-op there and restart continuity is unaffected.
+    if (has_constraints()) {
+        apply_position_constraints(system);
+        apply_velocity_constraints(system);
+    }
+
     auto forces = system.mutable_forces();
     for (auto& force : forces) {
         force = {0.0, 0.0, 0.0};
@@ -156,6 +168,15 @@ void VelocityVerletIntegrator::begin_step(System& system,
         thermostat_->apply_half_kick(system, 0.5 * dt, target_temperature_);
     }
 
+    // The constraint geometry the step starts from. Standard SHAKE corrects
+    // along these gradients, so they must be taken BEFORE the drift moves the
+    // atoms. Collective under MPI, and replicated, like the projection itself.
+    ConstraintReference reference;
+    const bool constrained = has_constraints();
+    if (constrained) {
+        reference = constraints_->capture_reference(system);
+    }
+
     const auto masses = system.masses();
     const auto forces = system.forces();
     auto coordinates = system.mutable_coordinates();
@@ -175,7 +196,12 @@ void VelocityVerletIntegrator::begin_step(System& system,
         wrap_position(coordinates[atom_index], system.box());
     }
 
-    apply_position_constraints(system);
+    // Steps (2) and (3) of the SHAKE/RATTLE splitting: solve for the constraint
+    // multipliers at time level t and apply BOTH the position correction and its
+    // matching half-step velocity impulse dr/dt.
+    if (constrained) {
+        system.set_last_shake_stats(constraints_->apply_shake(system, reference, dt));
+    }
 }
 
 void VelocityVerletIntegrator::finish_step(System& system,

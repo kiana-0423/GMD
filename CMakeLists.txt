@@ -137,6 +137,8 @@ if(BUILD_TESTING)
     target_link_libraries(gmd_constraint_validation_tests PRIVATE gmd_core)
     add_executable(gmd_bonded_force_gradient_tests tests/bonded_force_gradient_tests.cpp)
     target_link_libraries(gmd_bonded_force_gradient_tests PRIVATE gmd_core)
+    add_executable(gmd_constraint_virial_tests tests/constraint_virial_tests.cpp)
+    target_link_libraries(gmd_constraint_virial_tests PRIVATE gmd_core)
 
     file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/tests)
     configure_file(tests/smoke_lj.xyz         ${CMAKE_CURRENT_BINARY_DIR}/tests/smoke_xyz.in       COPYONLY)
@@ -250,6 +252,8 @@ if(BUILD_TESTING)
     set_tests_properties(gmd_constraint_validation PROPERTIES LABELS "unit;integrator")
     add_test(NAME gmd_bonded_force_gradient COMMAND gmd_bonded_force_gradient_tests)
     set_tests_properties(gmd_bonded_force_gradient PROPERTIES LABELS "unit;force;validation")
+    add_test(NAME gmd_constraint_virial COMMAND gmd_constraint_virial_tests)
+    set_tests_properties(gmd_constraint_virial PROPERTIES LABELS "unit;integrator;force")
     set_tests_properties(gmd_pme_modes PROPERTIES LABELS "unit;force;pme")
 
     add_test(
