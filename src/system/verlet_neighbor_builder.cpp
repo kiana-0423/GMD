@@ -95,6 +95,10 @@ void VerletNeighborBuilder::rebuild(System& system,
     const Box& box     = system.box();
     NeighborList& nl   = system.mutable_neighbor_list();
 
+    // Guard the cell-size division below and the ghost-shift loops further
+    // down: both assume finite, strictly positive edge lengths.
+    Box::validate_lengths(box.lengths);
+
     const double r_list_sq = r_list() * r_list();
 
     // -----------------------------------------------------------------------
@@ -188,30 +192,25 @@ void VerletNeighborBuilder::rebuild(System& system,
                         coords[i][1] - coords[j][1],
                         coords[i][2] - coords[j][2]
                     };
-                    // Integer shift S: edge_shift = S * box.lengths
-                    // Such that r_j + edge_shift - r_i gives the MIC bond vector.
+                    // Integer shift S, defined so that
+                    //     r_j + S * box.lengths - r_i
+                    // is the minimum-image displacement from i to j. Since
+                    // dr = r_i - r_j, that is S = round(dr / L).
+                    //
+                    // This is correct for ghosts as well as for local atoms.
+                    // A ghost's stored coordinate is already the periodic image
+                    // adjacent to this rank's subdomain (exchange_ghost_coordinates
+                    // applies the wrap when it packs the halo), so r_j - r_i is
+                    // the true separation and S comes out as zero. An earlier
+                    // ghost-specific override recomputed S by wrapping the ghost
+                    // back into the subdomain with unbounded while-loops; because
+                    // every ghost lies inside [lo, hi) by construction, neither
+                    // loop ever ran and it always reproduced this same value.
                     std::array<int, 3> S = {
                         static_cast<int>(std::round(dr[0] / box.lengths[0])),
                         static_cast<int>(std::round(dr[1] / box.lengths[1])),
                         static_cast<int>(std::round(dr[2] / box.lengths[2]))
                     };
-                    if (!system.is_local_atom(static_cast<std::size_t>(j)) &&
-                        domain_decomposition_ != nullptr) {
-                        const DomainInfo& domain = domain_decomposition_->info();
-                        for (int dim = 0; dim < 3; ++dim) {
-                            double ghost_coord = coords[static_cast<std::size_t>(j)][dim];
-                            int ghost_shift = 0;
-                            while (ghost_coord < domain.lo[dim]) {
-                                ghost_coord += box.lengths[dim];
-                                ++ghost_shift;
-                            }
-                            while (ghost_coord >= domain.hi[dim]) {
-                                ghost_coord -= box.lengths[dim];
-                                --ghost_shift;
-                            }
-                            S[dim] = ghost_shift;
-                        }
-                    }
                     apply_minimum_image(dr, box);
                     const double r2 = dr[0]*dr[0] + dr[1]*dr[1] + dr[2]*dr[2];
                     if (r2 < r_list_sq) {

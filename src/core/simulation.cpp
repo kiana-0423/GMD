@@ -47,6 +47,30 @@ public:
         sync_domain_box();
         mpi_comm->redistribute_atoms(*system, *domain_decomposition);
     }
+    // Decide, identically on every rank, whether the neighbor list must be
+    // rebuilt this force evaluation.
+    //
+    // VerletNeighborBuilder::needs_rebuild() only inspects locally owned atoms.
+    // A ghost atom owned by another rank can drift past skin/2 without this rank
+    // noticing: the owner rebuilds, this rank does not, and this rank silently
+    // keeps using a stale list that is missing pairs which have moved inside the
+    // cutoff. Combining the local flags with a logical OR makes every rank
+    // rebuild during the same force evaluation, or none of them.
+    //
+    // The reduction is unconditional once a builder exists — an invalid list
+    // takes part in it too — so no rank can skip the collective and leave the
+    // others waiting.
+    bool rebuild_needed_collectively(std::uint64_t force_step) const {
+        bool local_rebuild =
+            !system->neighbor_list().valid || neighbor_builder->needs_rebuild(*system, force_step);
+
+        if (mpi_comm != nullptr) {
+            local_rebuild = mpi_comm->allreduce_logical_or(local_rebuild);
+        }
+
+        return local_rebuild;
+    }
+
 
     void prepare_force_evaluation(RuntimeContext& runtime, std::uint64_t force_step) {
         if (system == nullptr) {
@@ -58,8 +82,7 @@ public:
             mpi_comm->exchange_ghost_coordinates(*system, *domain_decomposition);
         }
 
-        if (neighbor_builder != nullptr &&
-            (!system->neighbor_list().valid || neighbor_builder->needs_rebuild(*system, force_step))) {
+        if (neighbor_builder != nullptr && rebuild_needed_collectively(force_step)) {
             neighbor_builder->rebuild(*system, runtime, nullptr);
         }
     }
@@ -204,6 +227,7 @@ void Simulation::initialize(RuntimeContext& runtime) {
 
     if (impl_->force_provider != nullptr) {
         impl_->force_provider->initialize(runtime);
+    if (impl_->integrator != nullptr) {
     }
         // The integrator owns the constraint solver and therefore computes the
         // authoritative DOF count, but only the Simulation knows whether the COM
@@ -215,7 +239,6 @@ void Simulation::initialize(RuntimeContext& runtime) {
             velocity_verlet->set_remove_center_of_mass_velocity(
                 impl_->remove_center_of_mass_velocity);
         }
-    if (impl_->integrator != nullptr) {
         impl_->integrator->initialize(*impl_->system, runtime);
     }
 
