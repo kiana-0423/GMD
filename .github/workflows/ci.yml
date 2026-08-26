@@ -47,7 +47,7 @@ jobs:
           if-no-files-found: ignore
 
   mpi:
-    name: MPI build and small tests
+    name: MPI build and tests
     runs-on: ubuntu-latest
 
     steps:
@@ -78,13 +78,22 @@ jobs:
       - name: List registered MPI tests
         run: ctest --test-dir build-mpi -N
 
-      - name: Run small MPI tests
+      # The whole MPI suite, not a hardcoded name list. The previous -R filter
+      # had to be edited by hand whenever a test was added, and had silently
+      # fallen behind: the neighbour-rebuild, ghost-image-flag, degrees-of-
+      # freedom, virial-reduction and Nose-Hoover restart tests were never run
+      # on pull requests. The full suite takes seconds, so there is no reason
+      # to select a subset.
+      #
+      # Some tests request 8 ranks, which exceeds the runner's core count, so
+      # oversubscription must be allowed. OMPI_MCA_* covers Open MPI 4.x (what
+      # Ubuntu ships) and PRTE_MCA_* covers Open MPI 5.x, so this keeps working
+      # if the runner image moves on.
+      - name: Run MPI tests
         env:
           OMPI_MCA_rmaps_base_oversubscribe: "1"
-        run: >
-          ctest --test-dir build-mpi --output-on-failure --verbose
-          -R
-          "gmd_mpi_periodic_1d_ghost_exchange_2proc|gmd_mpi_periodic_1d_force_consistency_2proc|gmd_mpi_periodic_1d_migration_2proc|gmd_mpi_special_pair_consistency_2proc|gmd_mpi_constraint_solver_2proc|gmd_mpi_checkpoint_restart_2proc|gmd_mpi_restart_continuity_cli_2proc|gmd_smoke_mpi_lj_2proc|gmd_smoke_mpi_ewald_2proc|gmd_smoke_mpi_pme_2proc|gmd_smoke_mpi_molecular_2proc"
+          PRTE_MCA_rmaps_default_mapping_policy: ":oversubscribe"
+        run: ctest --test-dir build-mpi --output-on-failure
 
       - name: Upload CTest logs
         if: failure()
