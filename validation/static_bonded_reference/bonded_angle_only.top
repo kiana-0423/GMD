@@ -1,0 +1,9 @@
+bonds 0
+
+angles 3
+  1 2 3  angle_type 1
+  2 3 4  angle_type 1
+  2 3 5  angle_type 1
+
+dihedrals 0
+impropers 0

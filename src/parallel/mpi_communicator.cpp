@@ -138,6 +138,19 @@ void MpiCommunicator::allreduce_vector(const std::vector<double>& local,
     global = local;
 }
 
+bool MpiCommunicator::allreduce_logical_or(bool local_value) const {
+#ifdef GMD_ENABLE_MPI
+    if (mpi_is_available()) {
+        int local_flag = local_value ? 1 : 0;
+        int global_flag = 0;
+        MPI_Allreduce(&local_flag, &global_flag, 1, MPI_INT, MPI_LOR, MPI_COMM_WORLD);
+        return global_flag != 0;
+    }
+#endif
+
+    return local_value;
+}
+
 void MpiCommunicator::broadcast_box(Box& box, int root) const {
 #ifdef GMD_ENABLE_MPI
     if (mpi_is_available()) {

@@ -2,6 +2,163 @@
 
 All notable user-facing changes in GMD are documented here.
 
+## [Unreleased]
+
+### ⚠️ Simulation-results-changing corrections
+
+Every item in this section changes numerical results for the configurations it
+affects. **Trajectories, energies, temperatures and pressures produced by
+earlier versions are not reproducible after upgrading** for systems using
+constraints, proper dihedrals, impropers, charged NPT, or MPI barostat runs.
+Re-run anything you intend to compare against; do not mix old and new output in
+one analysis.
+
+- **Proper dihedral and improper forces were wrong.** *This is the most serious
+  item here.* **Earlier versions could produce incorrect trajectories for any
+  system using proper dihedral or improper terms.** The terminal-atom force had
+  a flipped overall sign, and the middle-atom projection used the coefficients
+  belonging to the opposite `b1 = r_i - r_j` convention while `b1` is built as
+  `r_j - r_i`. Energies were unaffected — only forces — so the error was
+  invisible to energy-only checks and drove torsions toward the wrong states.
+  It is also invisible in the virial trace, because a torsion angle is
+  unchanged by isotropic scaling. Now validated externally against LAMMPS
+  (`validation/static_bonded_reference`) and internally against the energy
+  gradient (`tests/bonded_force_gradient_tests.cpp`).
+- **Temperature and thermostat degrees of freedom now account for
+  constraints.** All temperature consumers previously hardcoded `3N - 3`,
+  ignoring both SHAKE/RATTLE constraints and the centre-of-mass removal setting.
+  A constrained run therefore reported a temperature that was too low, and the
+  thermostat compensated by driving the system hotter than its target. The DOF
+  count is now `3N`, less 3 when the COM velocity is removed, less one per
+  distinct constraint, computed in one shared place and used by both thermostats
+  and by trajectory output.
+- **Periodic bonded and reciprocal-space virial accounting corrected.** The
+  bonded virial was formed from absolute wrapped coordinates and silently
+  changed value when a molecule crossed a periodic boundary; it is now built
+  per interaction from minimum-image separations. The Ewald/PME reciprocal
+  virial was computed as `Σ r_i ⊗ F_i`, which is not the virial for an energy
+  that depends on the cell explicitly; it now uses the analytic k-space form.
+  Ewald was additionally double-counting its reciprocal contribution. **Pressure
+  and NPT behaviour change for any charged system**, and for molecular systems
+  whose molecules straddle a boundary.
+- **Forces are refreshed after a barostat volume change.**
+  `VelocityVerletIntegrator::step()` previously returned holding forces computed
+  for the pre-scaling geometry, which the next step's half-kick then integrated.
+  NPT trajectories change. `Simulation::step()` conversely no longer re-evaluates
+  forces when the cell did not change (a rejected Monte Carlo trial, or a step
+  with no volume move), removing a redundant force evaluation.
+- **Incompatible Nosé-Hoover checkpoints are now rejected.** See *Checkpoint
+  compatibility* below. Runs that previously restarted and silently continued
+  with a mismatched thermostat mass now stop with an error.
+
+### Checkpoint compatibility
+
+The on-disk checkpoint format is **unchanged**, and parsing remains
+backward-compatible: every field, name and ordering is the same, so old
+checkpoints are read exactly as before.
+
+What changed is validation of the Nosé-Hoover `dof` field. It is now checked
+against the degrees of freedom the current run computes, and **never installed**.
+
+| Old checkpoint | Outcome |
+|---|---|
+| Nosé-Hoover, unconstrained, COM velocity removed | **Accepted.** The old `3N - 3` equals the new count, so these restart unchanged and deterministically. |
+| Nosé-Hoover, with constraints active | **Rejected.** The old `3N - 3` disagrees with the constraint-aware count. |
+| Nosé-Hoover, COM velocity kept (`remove_com_velocity false`) | **Rejected.** The old rule subtracted 3 regardless. |
+| Restart into a different constraint set, COM setting, or atom count | **Rejected.** |
+| Velocity-rescaling thermostat, or no thermostat | **Accepted.** These carry no extended-system state to invalidate. |
+| Any non-thermostat checkpoint content (positions, velocities, box, topology) | **Accepted**, unchanged. |
+
+A rejection names both the checkpoint's DOF and the run's DOF, and lists the
+likely causes.
+
+**Why mismatched Nosé-Hoover state cannot be migrated.** The thermostat mass
+`Q = dof · k_B · T_target · τ²` and the friction variable `ξ` were both
+generated under the checkpoint's DOF, and `ξ` carries the accumulated history of
+an extended system defined by that value. Changing the DOF defines a *different*
+extended system. Rescaling `Q` would not reconstruct the `ξ` trajectory that the
+new system would have produced, so no rescaling makes the continued run a
+continuation of the original one. Silently rescaling would produce a plausible
+but unfaithful trajectory, which is worse than stopping. Restart from the input
+instead.
+
+### Added
+
+- **External bonded reference case** `validation/static_bonded_reference`,
+  independently validating, for bond, angle, proper dihedral and improper terms:
+  the **functional forms**, the **angle and sign conventions** (including the
+  proper-dihedral phase sign, proven with a sign-sensitive δ = 60° case, and the
+  derived improper sign mapping GMD `φ0 = -χ0`), **periodic wrapping
+  behaviour**, and the resulting **energies and per-atom forces** — against
+  LAMMPS `22 Jul 2025 - Update 5`, intact and wrapped across a periodic
+  boundary, in a non-cubic box.
+
+  The reference is converted to eV using GMD's own declared
+  `kcal_to_eV = 4.336410e-2`, so that constant cancels out of the comparison.
+  **The numerical value of the unit-conversion constant is therefore not
+  independently verified by this case**; everything downstream of it is. Units,
+  conventions, atom ordering and tolerances are documented in the case README.
+
+  The suite reads the checked-in `reference.json`, so running validation does
+  not invoke or require LAMMPS.
+- **Component-wise virial validation.** Each diagonal component is checked
+  independently against a per-axis finite difference on non-cubic cells, serial
+  and under 4-rank decomposition.
+- **Bonded force-gradient tests** verifying every bonded force against
+  `-dU/dx`.
+- **End-to-end constrained Nosé-Hoover restart tests** driving the real CLI
+  through configuration parsing, `Simulation::initialize()`, checkpoint loading,
+  thermostat validation and continued integration — serial and MPI — plus
+  negative cases for a changed COM setting and a changed constraint set.
+- **Constraint-list normalisation diagnostics.** Repeated atom pairs are
+  classified as exact duplicates, tolerance-equivalent duplicates, or conflicts,
+  and counted separately. `ConstraintSolver` performs no logging itself; it
+  exposes `normalization_diagnostics()` and `gmd` reports them at start-up.
+- **Box-dimension validation.** Zero, negative and non-finite edge lengths are
+  rejected where a box is installed.
+- **`.gitignore`**, and 295 generated build artifacts removed from Git tracking.
+
+### Changed
+
+- **Neighbor-list rebuild decisions are collective under MPI** — a correctness
+  safeguard, not a result-changing fix. `VerletNeighborBuilder::needs_rebuild()`
+  inspects only locally owned atoms, so in principle one rank could rebuild
+  while another kept a stale list. Local flags are now combined with a logical
+  OR, so every rank rebuilds during the same force evaluation or none does.
+
+  In the current domain-decomposition path this is expected to be a no-op:
+  `reverse_accumulate_ghost_forces()` ends in `clear_ghost_atoms()`, which
+  clears the neighbor list, so the `!valid` term already forces a rebuild on
+  every rank every step and `needs_rebuild()` is never reached. **This change
+  therefore may not alter existing domain-decomposed trajectories.** Its value
+  is that it makes the all-or-nothing invariant explicit and enforced: it
+  prevents divergent control flow on any path where a valid neighbor list
+  survives between steps (as it does today when a communicator is used without
+  a domain decomposition), and it protects future implementations — for example
+  one that stops discarding the list during ghost cleanup — from silently
+  reintroducing the divergence.
+- `(i, j)` and `(j, i)` are now the same constraint; repeated pairs collapse to
+  one entry with deterministic first-value-wins semantics, and a repeat whose
+  target distance differs by more than the constraint tolerance is rejected.
+- Constraint terminology no longer claims independence the implementation cannot
+  prove: counts are of *distinct* constraints.
+
+### Known limitations (unchanged by this release)
+
+- **Constraint forces do not contribute to the virial.** Temperature is now
+  correct for constrained runs, but the pressure of a constrained system is
+  missing the constraint virial, so NPT with SHAKE/RATTLE is not quantitative.
+- **Only the diagonal virial components are validated.** `Box` stores three edge
+  lengths, so the engine is orthorhombic-only and no shear strain can be applied.
+  Off-diagonal components are checked for symmetry `W_ab == W_ba`, which is
+  necessary but not sufficient. They are **not** validated.
+- **Constraint independence is assumed, not verified.** A redundant closed
+  topology (for example all pairs among five or more atoms) is accepted and every
+  distinct constraint counted, which over-subtracts degrees of freedom.
+- The virial is not compared against LAMMPS; its per-term decomposition and
+  GMD's do not have proven-equivalent semantics for the reference fixture.
+- TorchScript `edge_shift` output remains untested (requires LibTorch).
+
 ## [v2.4] - 2026-05-24
 
 ### Added

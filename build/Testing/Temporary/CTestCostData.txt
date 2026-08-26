@@ -1,2 +1,0 @@
-gmd_smoke_inline_lj 1 0.00386362
----

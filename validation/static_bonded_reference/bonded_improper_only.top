@@ -1,0 +1,6 @@
+bonds 0
+angles 0
+dihedrals 0
+
+impropers 1
+  1 2 3 5  improper_type 1

@@ -1,0 +1,28 @@
+# Bonded-only force field for the external (LAMMPS) reference case.
+#
+# Units follow the GMD molecular .ff convention documented in
+# src/io/config_loader.cpp: energies in kcal/mol, distances in Angstrom,
+# angles in degrees. They are converted to eV internally with
+# kcal_to_eV = 4.336410e-2.
+#
+# The LJ cutoff is deliberately shorter than the closest interatomic distance,
+# so the non-bonded energy is exactly zero and the reported total is purely
+# bonded. All charges are zero, so there is no Coulomb term either.
+force_field molecular
+
+lj_cutoff 1.2
+
+type 1 C mass 12.011 epsilon 0.0700 sigma 3.400 charge 0.0
+type 2 N mass 14.007 epsilon 0.0715 sigma 3.310 charge 0.0
+
+# V_bond     = k (r - r0)^2                  <-> LAMMPS bond_style harmonic
+bond_type 1 k 300.0 r0 1.500
+# V_angle    = k (theta - theta0)^2          <-> LAMMPS angle_style harmonic
+angle_type 1 k 60.0 theta0 112.0
+# V_dihedral = k [1 + cos(n phi - delta)]    <-> LAMMPS dihedral_style charmm
+dihedral_type 1 k 1.5 n 3 delta 60.0
+# V_improper = k (phi - phi0)^2              <-> LAMMPS improper_style harmonic
+# phi0 = -10 deg here maps to LAMMPS chi0 = +10 deg: GMD measures the improper
+# with the torsion-angle sign convention, LAMMPS with the opposite one.
+# See README.md, "Improper sign convention".
+improper_type 1 k 40.0 phi0 -10.0

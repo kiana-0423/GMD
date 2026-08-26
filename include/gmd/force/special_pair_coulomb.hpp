@@ -115,15 +115,24 @@ inline void apply_special_pair_coulomb_corrections(const ForceRequest& req,
         if (r2 < 1.0e-12) continue;
         const double r = std::sqrt(r2);
         const double correction = delta * coulomb_constant * qa * qb;
+        const double ff = correction / (r2 * r);
         if (index_a >= 0) {
             res.potential_energy += correction / r;
-            const double ff = correction / (r2 * r);
             for (std::size_t d = 0; d < 3; ++d) {
                 res.forces[static_cast<std::size_t>(index_a)][d] += ff * dr[d];
             }
+
+            // Pair virial W_ab = r_ab (x) F_ab for this correction, accumulated
+            // under exactly the same ownership condition as the energy so that
+            // each pair is counted once across all ranks. dr is the
+            // minimum-image separation, so the result is origin-independent.
+            for (std::size_t a = 0; a < 3; ++a) {
+                for (std::size_t b = 0; b < 3; ++b) {
+                    res.virial[a * 3 + b] += dr[a] * (ff * dr[b]);
+                }
+            }
         }
         if (index_b >= 0) {
-            const double ff = correction / (r2 * r);
             for (std::size_t d = 0; d < 3; ++d) {
                 res.forces[static_cast<std::size_t>(index_b)][d] -= ff * dr[d];
             }

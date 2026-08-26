@@ -10,6 +10,7 @@ SHORT_CASES = [
     "static_lj_cluster",
     "static_special_pairs",
     "static_coulomb",
+    "static_bonded_reference",
 ]
 
 LONG_CASES = [

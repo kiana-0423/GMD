@@ -148,7 +148,11 @@ public:
 		neighbor_list_.clear();
 	}
 
-	void set_box(const Box& box) noexcept {
+	void set_box(const Box& box) {
+		// set_box() copies a whole Box, bypassing Box::set_lengths(), so the
+		// dimensions are validated here as well. This is the other entry point
+		// through which a degenerate box could reach wrapping and ghost shifts.
+		Box::validate_lengths(box.lengths);
 		box_ = box;
 	}
 

@@ -1,0 +1,98 @@
+{
+  "atom_order": "GMD .xyz line order == LAMMPS atom-ID order (1..5)",
+  "energy_ev": {
+    "intact": {
+      "angle": 0.686154296170388,
+      "bond": 0.14211468970331526,
+      "dihedral": 0.0975304240661949,
+      "improper": 1.060075219783252,
+      "pair": 0.0,
+      "total": 1.98587462972315
+    },
+    "wrapped": {
+      "angle": 0.686154296170388,
+      "bond": 0.14211468970331373,
+      "dihedral": 0.09753042406619493,
+      "improper": 1.0600752197832513,
+      "pair": 0.0,
+      "total": 1.985874629723148
+    }
+  },
+  "engine": {
+    "command": "lmp_serial -in lammps.in -log lammps.log",
+    "name": "LAMMPS",
+    "styles": {
+      "angle": "harmonic      E = K (theta - theta0)^2",
+      "bond": "harmonic       E = K (r - r0)^2",
+      "dihedral": "charmm    E = K [1 + cos(n phi - d)]",
+      "improper": "harmonic  E = K (chi - chi0)^2",
+      "pair": "zero 2.0 (no non-bonded contribution)"
+    },
+    "units": "real (kcal/mol, Angstrom); converted to eV with kcal_to_eV = 0.0433641",
+    "version": "22 Jul 2025 - Update 5"
+  },
+  "externally_validated_terms": [
+    "bond",
+    "angle",
+    "dihedral",
+    "improper"
+  ],
+  "force_ev_per_angstrom": {
+    "intact": [
+      [
+        -0.5756022252090677,
+        2.6081121705452057,
+        -2.182727654790366
+      ],
+      [
+        3.1020051785447658,
+        -2.8735737243271102,
+        5.381227117152306
+      ],
+      [
+        -0.347993303301597,
+        0.14908274296485405,
+        -3.8618121403347647
+      ],
+      [
+        -0.8533718102654744,
+        -0.4569946186408796,
+        -0.6164187084220719
+      ],
+      [
+        -1.3250378397686264,
+        0.5733734294579299,
+        1.2797313863948974
+      ]
+    ],
+    "wrapped": [
+      [
+        -0.5756022252090226,
+        2.608112170545214,
+        -2.182727654790356
+      ],
+      [
+        3.102005178544718,
+        -2.8735737243271227,
+        5.381227117152294
+      ],
+      [
+        -0.3479933033015933,
+        0.14908274296485785,
+        -3.861812140334763
+      ],
+      [
+        -0.8533718102654744,
+        -0.45699461864087954,
+        -0.6164187084220719
+      ],
+      [
+        -1.325037839768627,
+        0.5733734294579294,
+        1.2797313863948976
+      ]
+    ]
+  },
+  "notes": "The improper term is compared under a derived sign mapping: GMD phi0 = -chi0. See README.md.",
+  "source": "lammps"
+}

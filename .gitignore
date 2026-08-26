@@ -1,0 +1,89 @@
+# --- CMake build directories ------------------------------------------------
+# Anchored to the repository root so a source directory that happens to be
+# called "build" deeper in the tree is not ignored by accident.
+/build/
+/build-*/
+/cmake-build-*/
+/out/
+
+# CMake output that can appear if someone configures in-source.
+/CMakeCache.txt
+/CMakeFiles/
+/CTestTestfile.cmake
+/cmake_install.cmake
+/DartConfiguration.tcl
+/Testing/
+/Makefile
+install_manifest.txt
+compile_commands.json
+
+# --- Compiled objects, dependency files and libraries ------------------------
+*.o
+*.obj
+*.d
+*.a
+*.lib
+*.so
+*.so.*
+*.dylib
+*.dll
+*.gcda
+*.gcno
+*.gcov
+
+# --- Executables -------------------------------------------------------------
+# The project's own binaries when configured in-source. Listed by name rather
+# than by a bare wildcard so no extensionless source file is caught.
+/gmd
+/gmd_validate
+/gmd_*_tests
+*.exe
+a.out
+
+# --- Python caches -----------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.venv/
+
+# --- Validation run output ---------------------------------------------------
+# The validation runner writes its work tree under --work-root, which is
+# normally inside a build directory and already covered above. These patterns
+# catch the case where it is pointed at the source tree instead.
+#
+# Note the deliberate omissions: validation/*/reference.json and
+# validation/*/tolerance.json are the checked-in scientific baselines and must
+# stay tracked, as must the .xyz/.run/lammps.in inputs.
+/validation/**/summary.json
+/validation/**/result.json
+/validation/**/series.csv
+/validation/**/output.log
+/validation/**/output.xyz
+/validation/**/ewald.json
+/validation/**/pme.json
+/validation/**/chain.json
+/validation/**/chain_variant.json
+
+# --- External reference-engine run output ------------------------------------
+# The LAMMPS inputs, data files and the small reference.json are tracked; its
+# run output is regenerable by generate_reference.py and is not.
+/validation/**/lammps*.log
+/validation/**/forces_*.txt
+log.lammps
+log.cite
+
+# --- Simulation output in the source tree ------------------------------------
+*.gmdchk
+
+# --- Editor and platform files ----------------------------------------------
+.DS_Store
+._*
+.AppleDouble
+Thumbs.db
+desktop.ini
+*.swp
+*~
+.idea/
+.vscode/
+.cache/

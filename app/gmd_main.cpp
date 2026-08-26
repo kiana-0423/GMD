@@ -560,9 +560,23 @@ int main(int argc, char** argv)
                 throw std::runtime_error(
                     "constraints are enabled, but no explicit constraints or constrained bond types were found");
             }
-            integrator->set_constraint_solver(std::make_shared<gmd::ConstraintSolver>(
-                std::move(constraints), run_config.constraint_settings));
+            auto constraint_solver = std::make_shared<gmd::ConstraintSolver>(
+                std::move(constraints), run_config.constraint_settings);
+            integrator->set_constraint_solver(constraint_solver);
             if (is_root_rank) {
+                // ConstraintSolver does not log; it exposes what it normalised
+                // and the application reports it here, once.
+                const auto& diagnostics = constraint_solver->normalization_diagnostics();
+                if (!diagnostics.empty()) {
+                    std::cout << log_prefix << "Constraints: collapsed "
+                              << diagnostics.exact_duplicates << " exact duplicate(s) and "
+                              << diagnostics.tolerance_equivalent_duplicates
+                              << " tolerance-equivalent duplicate(s)\n";
+                    for (const auto& entry : diagnostics.discarded_targets) {
+                        std::cout << log_prefix << "  discarded constraint target: "
+                                  << entry << "\n";
+                    }
+                }
                 std::cout << log_prefix << "Constraints: SHAKE/RATTLE enabled  tolerance="
                           << run_config.constraint_settings.tolerance
                           << "  max_iterations="
@@ -656,10 +670,24 @@ int main(int argc, char** argv)
                       << " and energy log to " << output_stem.string() << ".log\n";
         }
 
-        // Degrees of freedom = 3N - 3 (after COM velocity removal).
-        const std::size_t dof = global_atom_count > 1 ? 3 * global_atom_count - 3 : 3;
-
         simulation.initialize(runtime);
+
+        // Degrees of freedom for every temperature the run reports. Read back
+        // from the integrator rather than recomputed here, so the trajectory
+        // log and the thermostat are guaranteed to use the same count: 3N,
+        // less 3 when the COM velocity is removed, less one per constraint.
+        const std::size_t dof = integrator->degrees_of_freedom(system);
+        if (is_root_rank) {
+            std::cout << log_prefix << "Degrees of freedom: " << dof
+                      << "  (3N=" << 3 * global_atom_count
+                      << (run_config.remove_center_of_mass_velocity ? ", -3 COM" : ", COM kept")
+                      << ", -" << integrator->constraint_count() << " constraints)\n";
+        }
+        if (dof == 0) {
+            throw std::runtime_error(
+                "System has zero degrees of freedom after removing centre-of-mass "
+                "motion and constraints; temperature is undefined");
+        }
         if (is_restart) {
             if (restart_metadata->thermostat_type != run_config.thermostat_type) {
                 throw std::runtime_error(

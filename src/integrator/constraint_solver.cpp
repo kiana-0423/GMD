@@ -2,7 +2,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <stdexcept>
+#include <string>
 #include <unordered_map>
 
 #include "gmd/system/minimum_image.hpp"
@@ -154,18 +156,86 @@ ConstraintProjectionStats make_stats(const char* stage) {
 
 ConstraintSolver::ConstraintSolver(std::vector<BondConstraint> constraints,
                                    ConstraintSettings settings)
-    : constraints_(std::move(constraints)),
-      settings_(settings) {
+    : settings_(settings) {
     if (settings_.tolerance <= 0.0) {
         throw std::invalid_argument("Constraint tolerance must be positive");
     }
     if (settings_.max_iterations <= 0) {
         throw std::invalid_argument("Constraint max_iterations must be positive");
     }
-    for (const auto& constraint : constraints_) {
-        if (constraint.i < 0 || constraint.j < 0 || constraint.target_distance <= 0.0) {
-            throw std::invalid_argument("BondConstraint requires non-negative atoms and positive distance");
+
+    // Normalise the incoming list into distinct constraints. See the class
+    // comment for what this does and does not guarantee: pairs are made
+    // order-independent and duplicates removed, but independence of the
+    // resulting set is assumed, not proven.
+    constraints_.reserve(constraints.size());
+    std::unordered_map<std::uint64_t, std::size_t> seen;
+    seen.reserve(constraints.size());
+
+    for (const auto& incoming : constraints) {
+        if (incoming.i < 0 || incoming.j < 0) {
+            throw std::invalid_argument(
+                "BondConstraint requires non-negative atom tags, got (" +
+                std::to_string(incoming.i) + ", " + std::to_string(incoming.j) + ")");
         }
+        if (incoming.i == incoming.j) {
+            throw std::invalid_argument(
+                "BondConstraint cannot constrain atom " + std::to_string(incoming.i) +
+                " to itself");
+        }
+        if (!std::isfinite(incoming.target_distance) || incoming.target_distance <= 0.0) {
+            throw std::invalid_argument(
+                "BondConstraint requires a finite, strictly positive target distance, got " +
+                std::to_string(incoming.target_distance));
+        }
+
+        // (i, j) and (j, i) denote the same constraint.
+        const int lo = std::min(incoming.i, incoming.j);
+        const int hi = std::max(incoming.i, incoming.j);
+        const auto key = (static_cast<std::uint64_t>(static_cast<std::uint32_t>(lo)) << 32U) |
+                          static_cast<std::uint64_t>(static_cast<std::uint32_t>(hi));
+
+        const auto found = seen.find(key);
+        if (found == seen.end()) {
+            seen.emplace(key, constraints_.size());
+            constraints_.push_back(BondConstraint{lo, hi, incoming.target_distance});
+            continue;
+        }
+
+        // The pair is already present. Classify the repeat by how far its
+        // target sits from the one already kept.
+        const double existing = constraints_[found->second].target_distance;
+        const double difference = std::abs(existing - incoming.target_distance);
+
+        if (difference > settings_.tolerance) {
+            // No geometry satisfies both; silently keeping one would hide a
+            // bad input.
+            throw std::invalid_argument(
+                "Conflicting constraints for atom pair (" + std::to_string(lo) + ", " +
+                std::to_string(hi) + "): target distances " + std::to_string(existing) +
+                " and " + std::to_string(incoming.target_distance) + " differ by " +
+                std::to_string(difference) +
+                ", which exceeds the constraint tolerance " +
+                std::to_string(settings_.tolerance));
+        }
+
+        if (difference == 0.0) {
+            ++diagnostics_.exact_duplicates;
+            continue;
+        }
+
+        // Tolerance-equivalent: SHAKE converges to within `tolerance`, so the
+        // two targets are not distinguishable by the solver. Keep the first
+        // value -- which makes the outcome deterministic and independent of the
+        // orientation each pair was supplied in -- and record what was dropped
+        // so the caller can report it.
+        ++diagnostics_.tolerance_equivalent_duplicates;
+        diagnostics_.discarded_targets.push_back(
+            "atom pair (" + std::to_string(lo) + ", " + std::to_string(hi) +
+            "): kept target distance " + std::to_string(existing) +
+            ", discarded " + std::to_string(incoming.target_distance) +
+            " (differ by " + std::to_string(difference) +
+            ", within constraint tolerance " + std::to_string(settings_.tolerance) + ")");
     }
 }
 

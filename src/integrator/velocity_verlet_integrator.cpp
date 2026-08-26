@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <stdexcept>
 
+#include "gmd/system/box.hpp"
 #include "gmd/system/periodic_boundary.hpp"
 #include "gmd/force/force_provider.hpp"
 #include "gmd/integrator/constraint_solver.hpp"
@@ -69,22 +70,78 @@ void VelocityVerletIntegrator::initialize(System& system, RuntimeContext& runtim
     }
     if (thermostat_) {
         thermostat_->initialize(system);
+        // initialize() only knows the atom count, so it installs the
+        // unconstrained/COM-removed default. Override it with the count that
+        // also accounts for constraints and for the run's COM-removal setting.
+        thermostat_->set_degrees_of_freedom(degrees_of_freedom(system));
     }
+}
+
+void VelocityVerletIntegrator::set_remove_center_of_mass_velocity(bool enabled) noexcept {
+    remove_center_of_mass_velocity_ = enabled;
+}
+
+std::size_t VelocityVerletIntegrator::constraint_count() const noexcept {
+    // ConstraintSolver normalises its list to distinct pairs and replicates the
+    // same tag-based list on every rank, so this is already a global count and
+    // must not be reduced again. It counts *distinct* constraints; independence
+    // is assumed rather than proven (see the ConstraintSolver class comment).
+    return has_constraints() ? constraints_->active_constraint_count() : 0;
+}
+
+std::size_t VelocityVerletIntegrator::degrees_of_freedom(const System& system) const noexcept {
+    return compute_degrees_of_freedom(
+        system,
+        DegreesOfFreedomConfig{remove_center_of_mass_velocity_, constraint_count()});
 }
 
 void VelocityVerletIntegrator::step(System& system,
                                     ForceProvider& force_provider,
                                     const IntegratorStepContext& ctx,
                                     RuntimeContext& runtime) {
+    const double force_time = (ctx.step + 1) * (ctx.dt > 0.0 ? ctx.dt : dt_);
+
     begin_step(system, ctx);
     ForceResult next_force = evaluate_force(system,
                                             force_provider,
                                             ctx.step + 1,
-                                            (ctx.step + 1) * (ctx.dt > 0.0 ? ctx.dt : dt_),
+                                            force_time,
                                             runtime);
     copy_forces_to_system(system, next_force);
     finish_step(system, ctx, next_force.virial_valid, next_force.virial);
+
+    // A barostat rescales the box and the coordinates *after* the forces above
+    // were computed, which would leave the system holding forces for the
+    // pre-scaling geometry. Detect an accepted volume change and refresh.
+    const Box box_before = system.box();
     apply_barostat(system, force_provider, runtime, ctx);
+    if (!box_lengths_equal(box_before, system.box())) {
+        refresh_after_barostat(system, force_provider, runtime, ctx.step + 1, force_time);
+    }
+}
+
+void VelocityVerletIntegrator::refresh_after_barostat(System& system,
+                                                      ForceProvider& force_provider,
+                                                      RuntimeContext& runtime,
+                                                      std::uint64_t force_step,
+                                                      double force_time) {
+    // Constraints act on the rescaled coordinates, then the stale neighbor list
+    // is dropped so the provider rebuilds against the new box, and only then are
+    // forces recomputed for the geometry the caller will actually see.
+    apply_position_constraints(system);
+    system.mutable_neighbor_list().valid = false;
+
+    ForceResult rescaled = evaluate_force(system,
+                                          force_provider,
+                                          force_step,
+                                          force_time,
+                                          runtime);
+    copy_forces_to_system(system, rescaled);
+    system.set_last_virial(rescaled.virial, rescaled.virial_valid);
+    last_virial_valid_ = rescaled.virial_valid;
+    if (last_virial_valid_) {
+        last_virial_trace_ = rescaled.virial[0] + rescaled.virial[4] + rescaled.virial[8];
+    }
 }
 
 void VelocityVerletIntegrator::begin_step(System& system,

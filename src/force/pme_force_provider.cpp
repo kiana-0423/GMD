@@ -363,24 +363,13 @@ void PMEForceProvider::compute(const ForceRequest& req,
     compute_reciprocal_pme(req, res);
     compute_self_correction(req, res);
 
-    // Accumulate coordinate virial W_αβ = Σ_i r_iα · F_iβ.
-    // This is the same approximation used in EwaldForceProvider; it is
-    // origin-dependent after PBC wrapping, but sufficient for Berendsen NPT.
-    res.virial = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
-    const std::size_t nv = std::min(req.coordinates.size(), res.forces.size());
-    for (std::size_t i = 0; i < nv; ++i) {
-        const auto& r = req.coordinates[i];
-        const auto& f = res.forces[i];
-        res.virial[0] += r[0] * f[0];
-        res.virial[1] += r[0] * f[1];
-        res.virial[2] += r[0] * f[2];
-        res.virial[3] += r[1] * f[0];
-        res.virial[4] += r[1] * f[1];
-        res.virial[5] += r[1] * f[2];
-        res.virial[6] += r[2] * f[0];
-        res.virial[7] += r[2] * f[1];
-        res.virial[8] += r[2] * f[2];
-    }
+    // Each stage above accumulated its own virial contribution in the form
+    // appropriate to that term: a pair virial for real space and for the
+    // special-pair correction, the analytic mesh tensor for the reciprocal
+    // sum, and an isotropic term for the net-charge correction. Nothing is
+    // recomputed from sum_i r_i (x) F_i, which is origin-dependent once
+    // coordinates are wrapped and is not the virial at all for a
+    // volume-dependent reciprocal energy.
     allreduce_virial(res.virial);
     // virial_valid was set true at the top of compute(); no need to repeat.
 }
@@ -435,6 +424,18 @@ void PMEForceProvider::compute_real_space(const ForceRequest& req,
         res.forces[j][0] -= ff * dr[0];
         res.forces[j][1] -= ff * dr[1];
         res.forces[j][2] -= ff * dr[2];
+
+        // Pair virial from the minimum-image separation: origin-independent,
+        // unlike an outer product of absolute (wrapped) coordinates.
+        res.virial[0] += dr[0] * (ff * dr[0]);
+        res.virial[1] += dr[0] * (ff * dr[1]);
+        res.virial[2] += dr[0] * (ff * dr[2]);
+        res.virial[3] += dr[1] * (ff * dr[0]);
+        res.virial[4] += dr[1] * (ff * dr[1]);
+        res.virial[5] += dr[1] * (ff * dr[2]);
+        res.virial[6] += dr[2] * (ff * dr[0]);
+        res.virial[7] += dr[2] * (ff * dr[1]);
+        res.virial[8] += dr[2] * (ff * dr[2]);
     };
 
     if (req.neighbor_list != nullptr && req.neighbor_list->valid) {
@@ -544,18 +545,75 @@ void PMEForceProvider::compute_reciprocal_pme(const ForceRequest& req,
     t_forward_fft_ms = elapsed_ms(stage_start, stage_end);
 
     // Compute energy: ½ Σ_m G(m)|Q̂(m)|²  and apply influence function.
+    //
+    // The reciprocal virial is accumulated in the same sweep. The mesh charges
+    // Q̂(m) depend only on fractional coordinates r/L, which an isotropic
+    // rescaling leaves invariant, and the B-spline correction b_corr depends
+    // only on the integer mesh indices. So the entire cell dependence of E_rec
+    // sits in G(m) = k_e*4*pi/(V*k^2)*exp(-k^2/4a^2)*b_corr, exactly as in
+    // exact Ewald, and the same strain derivative applies:
+    //
+    //   W_ab = E_m * [ d_ab - 2*(1/(4a^2) + 1/k^2) * k_a * k_b ]
+    //
+    // The k-vector is rebuilt here rather than cached, matching the index
+    // convention used by precompute_influence().
     stage_start = Clock::now();
     double e_recip = 0.0;
-    for (std::size_t idx = 0; idx < mesh_.size(); ++idx) {
-        const double g   = influence_[idx];
-        const double re  = std::real(mesh_[idx]);
-        const double im  = std::imag(mesh_[idx]);
-        e_recip   += 0.5 * g * (re*re + im*im);
-        mesh_[idx] *= g;
+    std::array<double, 9> w_recip = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+    {
+        const double Lx = req.box->lengths[0];
+        const double Ly = req.box->lengths[1];
+        const double Lz = req.box->lengths[2];
+        const double inv_4a2 = 1.0 / (4.0 * alpha_sq_);
+        const int K1 = grid_[0], K2 = grid_[1], K3 = grid_[2];
+
+        for (int m1 = 0; m1 < K1; ++m1) {
+            const int n1 = (m1 <= K1 / 2) ? m1 : m1 - K1;
+            const double kx = 2.0 * std::numbers::pi * n1 / Lx;
+
+            for (int m2 = 0; m2 < K2; ++m2) {
+                const int n2 = (m2 <= K2 / 2) ? m2 : m2 - K2;
+                const double ky = 2.0 * std::numbers::pi * n2 / Ly;
+
+                for (int m3 = 0; m3 < K3; ++m3) {
+                    const int n3 = (m3 <= K3 / 2) ? m3 : m3 - K3;
+                    const double kz = 2.0 * std::numbers::pi * n3 / Lz;
+
+                    const std::size_t idx = static_cast<std::size_t>(
+                        m1 * K2 * K3 + m2 * K3 + m3);
+
+                    const double g  = influence_[idx];
+                    const double re = std::real(mesh_[idx]);
+                    const double im = std::imag(mesh_[idx]);
+                    const double e_m = 0.5 * g * (re * re + im * im);
+                    e_recip += e_m;
+
+                    // influence_ is exactly zero at the DC term, where k = 0
+                    // and the 1/k^2 below would divide by zero.
+                    if (g != 0.0) {
+                        const double k2 = kx * kx + ky * ky + kz * kz;
+                        const double coeff = 2.0 * (inv_4a2 + 1.0 / k2);
+                        const double kvec[3] = {kx, ky, kz};
+                        for (std::size_t a = 0; a < 3; ++a) {
+                            for (std::size_t b = 0; b < 3; ++b) {
+                                const double delta = (a == b) ? 1.0 : 0.0;
+                                w_recip[a * 3 + b] +=
+                                    e_m * (delta - coeff * kvec[a] * kvec[b]);
+                            }
+                        }
+                    }
+
+                    mesh_[idx] *= g;
+                }
+            }
+        }
     }
     // The FFT result is now replicated. Store one equal share so the existing
     // Simulation energy allreduce produces one global reciprocal energy.
     res.potential_energy += e_recip / static_cast<double>(mpi_size());
+    for (std::size_t i = 0; i < w_recip.size(); ++i) {
+        res.virial[i] += w_recip[i] / static_cast<double>(mpi_size());
+    }
     stage_end = Clock::now();
     t_green_ms = elapsed_ms(stage_start, stage_end);
 
@@ -672,10 +730,18 @@ void PMEForceProvider::compute_self_correction(const ForceRequest& req,
         const double V = req.box->lengths[0]
                        * req.box->lengths[1]
                        * req.box->lengths[2];
-        res.potential_energy -=
-            kPMECoulomb * std::numbers::pi / (2.0 * V * alpha_sq_)
+        const double e_net =
+            -kPMECoulomb * std::numbers::pi / (2.0 * V * alpha_sq_)
             * Q_net * Q_net / static_cast<double>(mpi_size());
+        res.potential_energy += e_net;
+
+        // U_net scales as 1/V, so W_ab = U_net * d_ab (trace 3*U_net = -dU/ds).
+        res.virial[0] += e_net;
+        res.virial[4] += e_net;
+        res.virial[8] += e_net;
     }
+    // U_self depends only on alpha and the charges, never on the cell, so it
+    // contributes nothing to the virial.
 }
 
 // ---------------------------------------------------------------------------

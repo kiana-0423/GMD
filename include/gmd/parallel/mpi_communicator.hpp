@@ -15,6 +15,11 @@ public:
     void allreduce_vector(const std::vector<double>& local,
                           std::vector<double>& global) const;
 
+    // Logical OR across every rank. Used for decisions that must be taken
+    // identically on all ranks (e.g. whether to rebuild the neighbor list),
+    // so that control flow cannot diverge and desynchronise later collectives.
+    bool allreduce_logical_or(bool local_value) const;
+
     void broadcast_box(Box& box, int root) const;
     void barrier() const;
 
