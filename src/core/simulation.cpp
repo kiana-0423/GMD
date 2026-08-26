@@ -8,6 +8,7 @@
 #include "gmd/force/force_provider.hpp"
 #include "gmd/integrator/integrator.hpp"
 #include "gmd/integrator/velocity_verlet_integrator.hpp"
+#include "gmd/system/box.hpp"
 #include "gmd/system/neighbor_builder.hpp"
 #include "gmd/system/verlet_neighbor_builder.hpp"
 #include "gmd/parallel/domain_decomposition.hpp"
@@ -47,6 +48,7 @@ public:
         sync_domain_box();
         mpi_comm->redistribute_atoms(*system, *domain_decomposition);
     }
+
     // Decide, identically on every rank, whether the neighbor list must be
     // rebuilt this force evaluation.
     //
@@ -70,7 +72,6 @@ public:
 
         return local_rebuild;
     }
-
 
     void prepare_force_evaluation(RuntimeContext& runtime, std::uint64_t force_step) {
         if (system == nullptr) {
@@ -227,8 +228,8 @@ void Simulation::initialize(RuntimeContext& runtime) {
 
     if (impl_->force_provider != nullptr) {
         impl_->force_provider->initialize(runtime);
-    if (impl_->integrator != nullptr) {
     }
+    if (impl_->integrator != nullptr) {
         // The integrator owns the constraint solver and therefore computes the
         // authoritative DOF count, but only the Simulation knows whether the COM
         // velocity was removed. Hand that over before initialize() so the
@@ -267,8 +268,7 @@ void Simulation::step(RuntimeContext& runtime) {
         }
 
         if (impl_->neighbor_builder != nullptr &&
-            (!impl_->system->neighbor_list().valid ||
-             impl_->neighbor_builder->needs_rebuild(*impl_->system, impl_->step))) {
+            impl_->rebuild_needed_collectively(impl_->step)) {
             impl_->neighbor_builder->rebuild(*impl_->system, runtime, nullptr);
         }
         impl_->integrator->step(*impl_->system, *impl_->force_provider, step_context, runtime);
@@ -287,14 +287,33 @@ void Simulation::step(RuntimeContext& runtime) {
                                  next_force.virial);
 
     if (velocity_verlet->has_barostat()) {
+        const Box box_before = impl_->system->box();
         velocity_verlet->apply_barostat(*impl_->system,
                                         *impl_->force_provider,
                                         runtime,
                                         step_context);
-        velocity_verlet->apply_position_constraints(*impl_->system);
-        impl_->redistribute_owned_atoms();
-        impl_->system->mutable_neighbor_list().valid = false;
-        impl_->evaluate_force(impl_->step + 1, next_time, runtime);
+
+        // Only redo the (expensive, collective) force evaluation when the
+        // barostat actually rescaled the cell. A Monte Carlo trial that was
+        // rejected, or a step on which no volume move was attempted, leaves the
+        // box byte-identical and the forces already valid.
+        //
+        // The decision is reduced across ranks for the same reason the rebuild
+        // decision is: evaluate_force() issues collectives, so all ranks must
+        // agree on whether it runs. Berendsen derives its scale factor from
+        // globally reduced quantities and is already rank-consistent; the
+        // reduction guards against any future barostat that is not.
+        bool box_changed = !box_lengths_equal(box_before, impl_->system->box());
+        if (impl_->mpi_comm != nullptr) {
+            box_changed = impl_->mpi_comm->allreduce_logical_or(box_changed);
+        }
+
+        if (box_changed) {
+            velocity_verlet->apply_position_constraints(*impl_->system);
+            impl_->redistribute_owned_atoms();
+            impl_->system->mutable_neighbor_list().valid = false;
+            impl_->evaluate_force(impl_->step + 1, next_time, runtime);
+        }
     }
 
     ++impl_->step;
