@@ -139,6 +139,8 @@ if(BUILD_TESTING)
     target_link_libraries(gmd_bonded_force_gradient_tests PRIVATE gmd_core)
     add_executable(gmd_constraint_virial_tests tests/constraint_virial_tests.cpp)
     target_link_libraries(gmd_constraint_virial_tests PRIVATE gmd_core)
+    add_executable(gmd_constraint_independence_tests tests/constraint_independence_tests.cpp)
+    target_link_libraries(gmd_constraint_independence_tests PRIVATE gmd_core)
 
     file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/tests)
     configure_file(tests/smoke_lj.xyz         ${CMAKE_CURRENT_BINARY_DIR}/tests/smoke_xyz.in       COPYONLY)
@@ -254,6 +256,8 @@ if(BUILD_TESTING)
     set_tests_properties(gmd_bonded_force_gradient PROPERTIES LABELS "unit;force;validation")
     add_test(NAME gmd_constraint_virial COMMAND gmd_constraint_virial_tests)
     set_tests_properties(gmd_constraint_virial PROPERTIES LABELS "unit;integrator;force")
+    add_test(NAME gmd_constraint_independence COMMAND gmd_constraint_independence_tests)
+    set_tests_properties(gmd_constraint_independence PROPERTIES LABELS "unit;integrator")
 
     # Constrained NVE energy conservation and constrained Berendsen NPT pressure
     # reporting, through the real CLI: many consecutive rescaling steps, and the
@@ -348,6 +352,21 @@ if(BUILD_TESTING)
         target_link_libraries(gmd_mpi_dof_virial_tests PRIVATE gmd_core)
         add_executable(gmd_mpi_constraint_virial_tests tests/mpi_constraint_virial.cpp)
         target_link_libraries(gmd_mpi_constraint_virial_tests PRIVATE gmd_core)
+        add_executable(gmd_mpi_constraint_independence_tests tests/mpi_constraint_independence.cpp)
+        target_link_libraries(gmd_mpi_constraint_independence_tests PRIVATE gmd_core)
+
+        # The independence verdict must not depend on how atoms are distributed.
+        foreach(independence_np 1 2 4)
+            add_test(
+                NAME gmd_mpi_constraint_independence_${independence_np}proc
+                COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${independence_np}
+                        $<TARGET_FILE:gmd_mpi_constraint_independence_tests>
+            )
+            set_tests_properties(gmd_mpi_constraint_independence_${independence_np}proc
+                PROPERTIES
+                    LABELS "mpi;parallel;integrator"
+                    PROCESSORS ${independence_np})
+        endforeach()
 
         # Same fixture at 1, 2 and 4 ranks: the constraint virial must come out
         # identical, which is what catches a dropped or rank-multiplied value.

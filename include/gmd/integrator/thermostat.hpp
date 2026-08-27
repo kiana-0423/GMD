@@ -96,12 +96,13 @@ double temperature_from_twice_ke(double twice_ke, std::size_t dof) noexcept;
 //     otherwise the three translational modes are all the system has),
 //   - subtract one per distinct active holonomic constraint.
 //
-// `constraint_count` is a *global* count of DISTINCT constraints. This equals
-// the number of degrees of freedom removed only when those constraints are
-// independent, which ConstraintSolver assumes rather than verifies -- see its
-// class comment. ConstraintSolver stores constraints against stable global atom
-// tags and replicates the same list on every rank, so this count must not be
-// reduced again under MPI.
+// `constraint_count` is a *global* count of constraints, and it is the number
+// of degrees of freedom they remove because a dependent set is rejected before
+// dynamics start: VelocityVerletIntegrator::initialize() calls
+// ConstraintSolver::require_independent(), which throws unless the count equals
+// the rank of the mass-weighted constraint Jacobian. ConstraintSolver stores
+// constraints against stable global atom tags and replicates the same list on
+// every rank, so this count must not be reduced again under MPI.
 struct DegreesOfFreedomConfig {
     bool remove_center_of_mass_velocity = true;
     std::size_t constraint_count = 0;
