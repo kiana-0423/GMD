@@ -109,6 +109,107 @@ which is the physically required answer — a rigid body's frozen internal
 coordinate contributes nothing to the pressure. Drop the constraint virial and
 `2K` is left uncancelled, reporting a spurious `2K/3V`.
 
+### Constraint independence
+
+A constraint set is rejected before any dynamics run unless it removes as many
+degrees of freedom as it has constraints. **Distinct is not independent**: every
+pair among five atoms is ten distinct constraints over a body with at most nine
+internal degrees of freedom, and any three collinear atoms have three distinct
+pair distances of which only two are free. Neither is visible to a duplicate
+check.
+
+**The criterion.** A constraint `σ_c = |r_c|² − d_c²` removes a degree of freedom
+only if its gradient is independent of the others *in the metric the dynamics
+uses*. The constrained equations of motion involve `J M⁻¹ Jᵀ`, so the matrix that
+matters is the mass-weighted Jacobian
+
+```
+J_M = J M^(−1/2)      J_M[c, 3i+a] = +2 r_c[a] / √m_i
+                      J_M[c, 3j+a] = −2 r_c[a] / √m_j
+```
+
+and the number of degrees of freedom removed is `rank(J_M)`, never the number of
+constraints supplied. `J M⁻¹ Jᵀ` is singular exactly when `J_M` is rank
+deficient, which is also when SHAKE and RATTLE have no unique multiplier to
+converge to — so a dependent set is not merely a bookkeeping problem.
+
+**Per component.** Constraints sharing no atom have Jacobian rows with disjoint
+support, so rank is additive over connected components of the constraint graph.
+The analysis works component by component, which keeps the linear algebra on
+matrices the size of a molecule rather than of the system.
+
+**Numerics.** Singular values come from a one-sided Jacobi SVD of the gradient
+columns, not from the eigenvalues of `J_M J_Mᵀ`: squaring the matrix squares the
+condition number and halves the digits in exactly the small singular values that
+decide the rank. **Convergence is checked, not assumed** — after every sweep the
+scale-free off-orthogonality residual `max_{p<q} |a_p·a_q| / (|a_p||a_q|)` must
+fall below `cols · ε`, and reaching the sweep limit throws rather than returning a
+rank derived from an unconverged decomposition. The threshold is dimension aware
+because orthogonalising a later pair perturbs an earlier one by `O(ε)` each time,
+so what a converged sweep can leave behind grows with the column count. The rank
+tolerance is
+
+```
+tol = max(rows, cols) · ε · σ_max
+```
+
+Each factor earns its place. `σ_max` makes the test **relative**: the entries of
+`J_M` are `2r/√m`, whose magnitude depends entirely on the unit system and on how
+long the bonds are, so an absolute threshold would mean one thing for a 1 Å bond
+and another for a 10 Å one. `ε` is the unit round-off, the floor below which a
+computed singular value carries no information. `max(rows, cols)` accounts for
+error accumulating over the `O(max(rows, cols))` operations behind each singular
+value. This is the standard LAPACK rank convention.
+
+**The geometry that decides is the projected one.** Rank is a property of the
+configuration, and the configuration the dynamics start from is the one on the
+constraint manifold, not the one supplied — which can differ by a lot. The
+supplied geometry is analysed only for early diagnostics; the authoritative check
+runs on the converged projection, and velocities are projected only once it has
+passed. Degrees of freedom are computed from that accepted state.
+
+**Degenerate targets are caught earlier still, from the targets alone.** For three
+atoms all constrained to each other, the triangle inequality decides everything:
+`c > a + b` admits no configuration at all, and `c = a + b` admits only collinear
+ones, where three distances have two independent gradients. That is checked at
+construction, before any geometry exists, because a set like it is rank deficient
+at *every* geometry it can reach and the projection would simply stall trying.
+How degenerate a thin triple is gets measured as a **length** — the triangle
+height `h = √(2ab·slack/(a+b))` the targets imply, compared against the solver's
+own distance tolerance — because the triangle-inequality slack itself is a
+second-order quantity, `slack ≈ h²(a+b)/2ab`, and comparing it to a distance
+tolerance would reject thin but perfectly resolvable triangles.
+
+**The policy is to reject.** `require_independent()` throws, naming the connected
+component, its atom tags, the rank against the count, the singular values and
+whether the dependence is structural (more constraints than the rigid-body limit
+`3K − 6`) or geometric (within the limit, but degenerate at this configuration).
+It also names **which** rows are redundant, when a column-pivoted rank-revealing
+factorisation agrees with the singular values about how many there are — which
+member of a dependent group gets named is not unique, so the pivoted choice is
+used because it is deterministic and independent of the order the constraints
+were supplied in. When the two disagree the report says so and falls back to
+listing the whole component. Silently substituting the rank would keep the run
+going with non-unique multipliers and hide what is almost always a topology
+error. After `require_independent()` returns, the constraint count **is** the
+rank, so the DOF subtraction is exact.
+
+A set that is independent but close to degenerate is **accepted with a warning**
+— rejecting a valid geometry for being awkward would be worse than the problem.
+The threshold is `σ_max/σ_min > 1/√ε ≈ 6.7×10⁷`, the point at which roughly half
+the significant digits of the multipliers are lost.
+
+Detected and reported: exact duplicates, the same pair listed in reverse order
+*relative to its first occurrence*, tolerance-equivalent duplicates, conflicting
+targets, infeasible and degenerate target triples, linearly dependent
+constraints, over-constrained components, degenerate (zero-length) gradients,
+non-finite Jacobian entries and ill-conditioned sets.
+
+The SVD kernel is exposed as `jacobi_singular_values()` so it can be validated
+against matrices with independently known singular values — built as `A = U S Vᵀ`
+from orthonormal factors, and cross-checked against a long-double Gram-matrix
+eigensolver — rather than only against itself.
+
 ### Reported pressure vs current-geometry virial
 
 These are two different things and the engine stores them separately.
@@ -163,11 +264,18 @@ is therefore **not** reduced — an allreduce would multiply it by the rank coun
 `tests/mpi_constraint_virial.cpp` runs the same fixture at 1, 2 and 4 ranks,
 which catches both a dropped and a rank-multiplied contribution.
 
-**Validated scope.** Against the centripetal force of a rigid rotor — a
-reference independent of the implementation — for a dimer and for a rigid
-triangle of three coupled constraints: the magnitude of the recovered endpoint
-force, the sign, the trace, the identity `2K + tr W = 0`, and second-order
-convergence of both errors in `dt`. Plus exact tensor symmetry, exact centrality
+**Validated scope, all nine components.** Against the centripetal force of a
+rigid rotor — a reference independent of the implementation — for a dimer and for
+a rigid triangle of three coupled constraints, both in a **general 3D
+orientation** so that no tensor entry is trivially zero. For the tilted dimer the
+reference is `W_ab = −μω²d² û_a û_b` with `û` the endpoint bond direction; for the
+tilted triangle it is `W = −ω² Σ_i m_i a_i ⊗ a_i`, the body's second-moment
+tensor, both written down from rigid-body mechanics without touching the
+accumulation under test. Every component, diagonal and off-diagonal, converges to
+its reference as `dt²`. The tensor is also checked to transform covariantly,
+`W → R W Rᵀ`, under a rotation with no special relationship to the axes. Plus the
+magnitude of the recovered endpoint force, the sign, the trace, the identity
+`2K + tr W = 0`, and second-order convergence of both errors in `dt`. Plus exact tensor symmetry, exact centrality
 of every pair force, the two constraint half-impulses being measurably distinct,
 energy conservation of a free rotor, per-constraint additivity, translation
 invariance, invariance across a periodic boundary, rank invariance, and restart
@@ -1022,10 +1130,10 @@ ForceProvider (interface)                                      │  MpiCommunica
 
 - SHAKE / RATTLE constraints use a correctness-first MPI global-gather projection; scalable local constraint communication and SETTLE/LINCS are not implemented
 - Constraint forces contribute to the virial as an endpoint quantity at `t+dt` (see *Virial and pressure*), so constrained pressure is complete and single-time-level. It has **no independent external reference**, only an analytical one
-- Constraint **independence is assumed, not verified**. The solver normalises its list to distinct pairs and rejects duplicates, conflicts and self-constraints, but a redundant closed topology (for example all pairs among five or more atoms) is accepted and every distinct constraint is counted, which over-subtracts degrees of freedom. Deciding this in general needs the rank of the constraint Jacobian, which is configuration dependent. Configure independent constraints
+- Constraint **independence is verified at the initial geometry only**. The rank of the mass-weighted constraint Jacobian is configuration dependent, and a set that is independent at the start can become degenerate later in a trajectory (three constrained atoms drifting collinear, a ring flattening). That is not re-checked during the run, because the analysis is collective and per-step cost would be significant; a set that is heading that way is flagged as ill-conditioned at start-up, which is the warning signal
 - The **initial frame of a constrained run** has no completed step behind it and no RATTLE multiplier for its force evaluation, so it has no complete pressure. It is reported as `nan` with `P_valid 0`, never as a number
 - The SHAKE reference-gradient linearisation has no solution when a bond turns through ~90° in a single step (`r(t+dt)·r(t) → 0`). That is diagnosed as a hard error naming the pair and asking for a smaller time step, rather than being allowed to produce a wild correction
-- Off-diagonal virial components are unvalidated; see *Virial and pressure*
+- Off-diagonal virial components are validated for the **constraint** term only (see *Constraint independence*, below, and *Virial and pressure*). The force providers' own off-diagonal virial is still unvalidated: `Box` stores three edge lengths, so the engine is orthorhombic-only and no shear strain can be applied to finite-difference it
 - A Nose-Hoover checkpoint can only be restarted into a run with the same degrees of freedom. Changing the constraint set, the centre-of-mass removal setting or the atom count is rejected, as is a checkpoint predating constraint-aware DOF accounting (the old `3N-3` rule) whenever the two disagree. There is no migration path: the thermostat mass `Q` and friction variable `xi` belong to the DOF they were generated under. Restart from the input instead
 - No GPU execution (CUDA option present but CPU-only)
 - Checkpoint/restart uses a readable replicated text file; large-scale binary/parallel checkpoint I/O is not implemented

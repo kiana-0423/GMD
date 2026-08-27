@@ -137,6 +137,47 @@ one analysis.
   compatibility* below. Runs that previously restarted and silently continued
   with a mismatched thermostat mass now stop with an error.
 
+### Dependent constraint sets are now rejected
+
+**Results-changing for any run whose constraints were not independent** — such a
+run now stops at start-up instead of reporting a temperature that was too high.
+
+Distinct was not independent. The solver collapsed duplicates and rejected
+conflicts, but a redundant closed topology (every pair among five atoms: ten
+constraints over a body with nine internal degrees of freedom) or any three
+collinear atoms was accepted, and every distinct constraint was subtracted from
+the degrees of freedom. The redundant rows also make `J M⁻¹ Jᵀ` singular, so the
+multipliers SHAKE and RATTLE converged to were not unique.
+
+`ConstraintSolver::analyze_independence()` computes the rank of the mass-weighted
+constraint Jacobian `J_M = J M^(−1/2)`, per connected component of the constraint
+graph, using a one-sided Jacobi SVD with the standard `max(rows, cols)·ε·σ_max`
+relative rank tolerance. The decomposition's convergence is verified against a
+scale-free off-orthogonality residual and throws rather than returning a rank
+from an unconverged factorisation.
+
+`VelocityVerletIntegrator::initialize()` analyses the supplied geometry for early
+diagnostics, projects positions onto the constraint manifold, and then calls
+`require_independent()` on the **converged projected geometry**, which is the
+authoritative report; velocities are projected only after it passes, and degrees
+of freedom are computed from that accepted state. Rank is a property of the
+configuration, and a set that is full rank as supplied can project onto a
+degenerate one. Targets that admit no non-degenerate configuration at all — a
+constrained triple whose distances violate or exactly meet the triangle
+inequality — are rejected at construction, before any geometry exists.
+
+The diagnostic names the component, its atom tags, the singular values, whether
+the dependence is structural or geometric, and which rows are redundant when a
+column-pivoted rank-revealing factorisation agrees with the singular values about
+how many there are. After `require_independent()` returns the constraint count
+**is** the rank, so the degrees-of-freedom subtraction is exact rather than
+assumed.
+
+A set that is independent but ill-conditioned (`σ_max/σ_min > 1/√ε`) is accepted
+with a warning rather than rejected. Reversed duplicate pairs — the same bond
+listed as `(i, j)` and `(j, i)` — are now counted and reported separately, since
+a topology that does that is usually a generation bug.
+
 ### MPI trajectory output reported stale frame state
 
 **Bug fix, MPI runs only.** The MPI output path writes a separate `System`
