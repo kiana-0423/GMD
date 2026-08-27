@@ -118,6 +118,166 @@ gmd::System local_share(const gmd::DomainDecomposition& dd, const gmd::Box& box,
     return system;
 }
 
+// --- Tilted rotor: every tensor component, at every rank count -------------
+
+Vec3 normalised(Vec3 v) {
+    const double n = std::sqrt(v[0]*v[0] + v[1]*v[1] + v[2]*v[2]);
+    for (double& c : v) c /= n;
+    return v;
+}
+
+Vec3 cross(const Vec3& a, const Vec3& b) {
+    return {a[1]*b[2] - a[2]*b[1], a[2]*b[0] - a[0]*b[2], a[0]*b[1] - a[1]*b[0]};
+}
+
+// Rodrigues rotation of `v` by `angle` about the unit axis `axis`.
+Vec3 rotate_about(const Vec3& axis, double angle, const Vec3& v) {
+    const double c = std::cos(angle);
+    const double s = std::sin(angle);
+    const Vec3 k = cross(axis, v);
+    const double kd = axis[0]*v[0] + axis[1]*v[1] + axis[2]*v[2];
+    Vec3 out{};
+    for (std::size_t d = 0; d < 3; ++d) {
+        out[d] = v[d] * c + k[d] * s + axis[d] * kd * (1.0 - c);
+    }
+    return out;
+}
+
+const char* component_name(std::size_t index) {
+    static const char* names[9] = {"W_xx","W_xy","W_xz","W_yx","W_yy","W_yz",
+                                   "W_zx","W_zy","W_zz"};
+    return names[index];
+}
+
+// (2, 3, 6) has length exactly 7, so every component of the bond direction --
+// and so every entry of u (x) u -- is non-zero and distinct. Centred on x = 10,
+// a domain boundary for 2 and 4 ranks, so the pair still straddles two owners.
+const Vec3 kTiltDirection = normalised({2.0, 3.0, 6.0});
+const Vec3 kTiltAxis = normalised(cross(kTiltDirection, {0.0, 0.0, 1.0}));
+
+std::vector<Atom> tilted_dimer() {
+    const double total = kMass0 + kMass1;
+    const double s0 = (kMass1 / total) * kBond;
+    const double s1 = -(kMass0 / total) * kBond;
+    const Vec3 tangent = cross(kTiltAxis, kTiltDirection);
+    Atom a{}, b{};
+    for (std::size_t d = 0; d < 3; ++d) {
+        const double centre = 10.0;
+        a.position[d] = centre + s0 * kTiltDirection[d];
+        b.position[d] = centre + s1 * kTiltDirection[d];
+        a.velocity[d] = kOmega * s0 * tangent[d];
+        b.velocity[d] = kOmega * s1 * tangent[d];
+    }
+    a.mass = kMass0;
+    b.mass = kMass1;
+    return {a, b};
+}
+
+// Every one of the nine components must equal the analytical rigid-rotor value
+// and must be identical on every rank. A contribution reduced when it is already
+// global shows up as a factor of the rank count in EVERY component, which is
+// checked component by component rather than only in the trace.
+void check_tilted_rotor_components(int rank, int size, int& failures) {
+    gmd::Box box;
+    box.set_lengths({kBox, kBox, kBox});
+    gmd::DomainDecomposition dd;
+    dd.create_decomposition(box, size, rank, 4.0, 1.0, {true, true, true});
+
+    const auto atoms = tilted_dimer();
+    std::vector<int> owned;
+    for (std::size_t i = 0; i < atoms.size(); ++i) {
+        if (dd.owner_rank(box, atoms[i].position) == rank) owned.push_back(static_cast<int>(i));
+    }
+    gmd::System system;
+    system.resize(owned.size(), owned.size());
+    system.set_box(box);
+    for (std::size_t k = 0; k < owned.size(); ++k) {
+        const auto index = static_cast<std::size_t>(owned[k]);
+        system.mutable_masses()[k] = atoms[index].mass;
+        system.mutable_atom_tags()[k] = owned[k];
+        system.mutable_atom_owners()[k] = rank;
+        system.mutable_coordinates()[k] = atoms[index].position;
+        system.mutable_velocities()[k] = atoms[index].velocity;
+    }
+
+    int local_atoms = static_cast<int>(system.num_local_atoms());
+    int max_on_one_rank = 0;
+    MPI_Allreduce(&local_atoms, &max_on_one_rank, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+    if (size > 1) {
+        check(max_on_one_rank == 1,
+              "the tilted pair must span two ranks; one rank holds " +
+                  std::to_string(max_on_one_rank), rank, failures);
+    }
+
+    gmd::ConstraintSolver solver({gmd::BondConstraint{0, 1, kBond}}, tight_settings());
+    const gmd::ConstraintReference reference = solver.capture_reference(system);
+    {
+        auto coordinates = system.mutable_coordinates();
+        const auto velocities = system.velocities();
+        for (std::size_t i = 0; i < system.num_local_atoms(); ++i) {
+            for (std::size_t d = 0; d < 3; ++d) coordinates[i][d] += velocities[i][d] * kTimeStep;
+        }
+    }
+    solver.apply_shake(system, reference, kTimeStep);
+    gmd::ConstraintVirialResult result;
+    solver.apply_rattle(system, kTimeStep, result);
+    check(result.valid, "the tilted rotor must produce a valid constraint virial",
+          rank, failures);
+
+    // Analytical endpoint reference: W_ab = -mu omega^2 d^2 u_a u_b, with u the
+    // bond direction after the step, which for a free rigid rotor is the initial
+    // one rotated by omega*dt about the spin axis.
+    const double mu = (kMass0 * kMass1) / (kMass0 + kMass1);
+    const Vec3 u = rotate_about(kTiltAxis, kOmega * kTimeStep, kTiltDirection);
+    std::array<double, 9> expected{};
+    for (std::size_t a = 0; a < 3; ++a) {
+        for (std::size_t b = 0; b < 3; ++b) {
+            expected[a * 3 + b] = -mu * kOmega * kOmega * kBond * kBond * u[a] * u[b];
+        }
+    }
+    const double scale =
+        std::abs(expected[0] + expected[4] + expected[8]);
+    // The endpoint estimator's discretisation error is (omega dt)^2 / 4 relative,
+    // which is 6.25e-6 here. The bound below is set from that, not fitted.
+    const double bound = scale * 1.0e-4;
+
+    for (std::size_t index = 0; index < 9; ++index) {
+        check(std::abs(expected[index]) > 0.02 * scale,
+              std::string("reference ") + component_name(index) +
+                  " must be non-trivial, or this proves nothing", rank, failures);
+        check_close(result.virial[index], expected[index], bound,
+                    std::string(component_name(index)) +
+                        " must match the analytical tilted-rotor value at any rank count",
+                    rank, failures);
+
+        // Rank invariance, component by component and exact: every rank runs the
+        // same arithmetic over the same allgathered atoms.
+        double local = result.virial[index];
+        double lo = 0.0;
+        double hi = 0.0;
+        MPI_Allreduce(&local, &lo, 1, MPI_DOUBLE, MPI_MIN, MPI_COMM_WORLD);
+        MPI_Allreduce(&local, &hi, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+        check(hi == lo,
+              std::string("ranks disagree on ") + component_name(index) +
+                  " (min " + std::to_string(lo) + ", max " + std::to_string(hi) + ")",
+              rank, failures);
+
+        // And name the rank-multiplication failure mode explicitly.
+        const double ratio = result.virial[index] / expected[index];
+        check(std::abs(ratio - 1.0) < 1.0e-3,
+              std::string(component_name(index)) + " is " + std::to_string(ratio) +
+                  "x its analytical value; ~" + std::to_string(size) +
+                  "x means the already-global constraint virial was reduced across "
+                  "ranks, and ~0 means non-owning ranks dropped it",
+              rank, failures);
+    }
+
+    if (rank == 0) {
+        std::cout << "[mpi constraint virial] tilted rotor: all nine components match "
+                     "the analytical value on " << size << " rank(s)\n";
+    }
+}
+
 // A provider with a fixed, deliberately asymmetric virial. Real providers
 // allreduce their own virial before returning it, so every rank seeing the same
 // tensor is what production looks like.
@@ -303,6 +463,7 @@ int run(int rank, int size) {
           "fraction " + std::to_string((twice_ke + result.trace()) / twice_ke),
           rank, failures);
 
+    check_tilted_rotor_components(rank, size, failures);
     check_step_thermodynamics_agree_across_ranks(rank, size, failures);
 
     return failures;

@@ -248,6 +248,99 @@ gmd::System make_rotating_triangle(const std::array<double, 3>& masses_in,
     return system;
 }
 
+// --- General-orientation helpers -------------------------------------------
+
+Vec3 normalised(Vec3 v) {
+    const double n = std::sqrt(v[0]*v[0] + v[1]*v[1] + v[2]*v[2]);
+    for (double& c : v) c /= n;
+    return v;
+}
+
+Vec3 cross(const Vec3& a, const Vec3& b) {
+    return {a[1]*b[2] - a[2]*b[1], a[2]*b[0] - a[0]*b[2], a[0]*b[1] - a[1]*b[0]};
+}
+
+double dot3(const Vec3& a, const Vec3& b) { return a[0]*b[0] + a[1]*b[1] + a[2]*b[2]; }
+
+// Rotation by `angle` about the unit axis `axis` (Rodrigues), row-major.
+std::array<double, 9> rotation_matrix(const Vec3& axis, double angle) {
+    const double c = std::cos(angle);
+    const double s = std::sin(angle);
+    const double t = 1.0 - c;
+    const double x = axis[0], y = axis[1], z = axis[2];
+    return {t*x*x + c,    t*x*y - s*z,  t*x*z + s*y,
+            t*x*y + s*z,  t*y*y + c,    t*y*z - s*x,
+            t*x*z - s*y,  t*y*z + s*x,  t*z*z + c};
+}
+
+Vec3 apply_rotation(const std::array<double, 9>& R, const Vec3& v) {
+    return {R[0]*v[0] + R[1]*v[1] + R[2]*v[2],
+            R[3]*v[0] + R[4]*v[1] + R[5]*v[2],
+            R[6]*v[0] + R[7]*v[1] + R[8]*v[2]};
+}
+
+// R A R^T, row-major throughout.
+std::array<double, 9> conjugate(const std::array<double, 9>& R,
+                                const std::array<double, 9>& A) {
+    std::array<double, 9> RA{};
+    for (std::size_t i = 0; i < 3; ++i) {
+        for (std::size_t j = 0; j < 3; ++j) {
+            double sum = 0.0;
+            for (std::size_t k = 0; k < 3; ++k) sum += R[i*3 + k] * A[k*3 + j];
+            RA[i*3 + j] = sum;
+        }
+    }
+    std::array<double, 9> out{};
+    for (std::size_t i = 0; i < 3; ++i) {
+        for (std::size_t j = 0; j < 3; ++j) {
+            double sum = 0.0;
+            for (std::size_t k = 0; k < 3; ++k) sum += RA[i*3 + k] * R[j*3 + k];  // R^T
+            out[i*3 + j] = sum;
+        }
+    }
+    return out;
+}
+
+const char* component_name(std::size_t index) {
+    static const char* names[9] = {"W_xx","W_xy","W_xz","W_yx","W_yy","W_yz",
+                                   "W_zx","W_zy","W_zz"};
+    return names[index];
+}
+
+// A rigid dimer rotating about `axis` with its bond along `direction`, centre of
+// mass at rest at `centre`. Both must be unit and mutually orthogonal, which is
+// checked: the velocity constraint r_ij . v_ij = 0 holds only then.
+gmd::System make_oriented_rotating_dimer(double m0, double m1, double d, double omega,
+                                         const Vec3& direction, const Vec3& axis,
+                                         const gmd::Box& box, const Vec3& centre) {
+    const double total = m0 + m1;
+    gmd::System system;
+    system.resize(2, 2);
+    system.set_box(box);
+    auto masses = system.mutable_masses();
+    auto tags = system.mutable_atom_tags();
+    auto coordinates = system.mutable_coordinates();
+    auto velocities = system.mutable_velocities();
+
+    masses[0] = m0;
+    masses[1] = m1;
+    tags[0] = 0;
+    tags[1] = 1;
+    const double s0 = (m1 / total) * d;
+    const double s1 = -(m0 / total) * d;
+    for (std::size_t k = 0; k < 3; ++k) {
+        coordinates[0][k] = centre[k] + s0 * direction[k];
+        coordinates[1][k] = centre[k] + s1 * direction[k];
+    }
+    // v = omega * axis x (r - centre), so purely tangential with zero net momentum.
+    const Vec3 tangent = cross(axis, direction);
+    for (std::size_t k = 0; k < 3; ++k) {
+        velocities[0][k] = omega * s0 * tangent[k];
+        velocities[1][k] = omega * s1 * tangent[k];
+    }
+    return system;
+}
+
 double distance(const gmd::System& system, std::size_t a, std::size_t b) {
     const auto coordinates = system.coordinates();
     double sum = 0.0;
@@ -1160,6 +1253,396 @@ void test_completed_step_pressure_survives_a_barostat_rescale() {
           "so the current-geometry virial must not pass for a complete pressure virial");
 }
 
+
+// ---------------------------------------------------------------------------
+// 7. Every component, against an analytical reference: a tilted rigid rotor.
+// ---------------------------------------------------------------------------
+//
+// The rotor cases above all put the bond along x, so their virial has one
+// non-zero component and says nothing about the off-diagonals. Tilt the bond so
+// it has non-zero x, y AND z, and every entry of the tensor becomes non-trivial.
+//
+// The reference is written down from rigid-body mechanics, not from the solver:
+// a freely rotating rigid dimer is held together entirely by its constraint, so
+// the constraint force is the centripetal force
+//
+//     G_i = -mu omega^2 d u,        u = the unit bond vector
+//
+// and, since W = r_ij (x) G_i for a pair,
+//
+//     W_ab = (d u_a)(-mu omega^2 d u_b) = -mu omega^2 d^2 u_a u_b
+//
+// which fixes ALL NINE components independently of how they are computed.
+void test_tilted_rotor_every_component_against_analytical_reference() {
+    constexpr double m0 = 1.0;
+    constexpr double m1 = 3.0;
+    constexpr double bond = 1.5;
+    constexpr double omega = 0.1;
+    const double mu = (m0 * m1) / (m0 + m1);
+
+    // (2, 3, 6) has length exactly 7, so the direction is exact in binary and
+    // every one of its components -- and so every product u_a u_b -- is
+    // non-zero and distinct.
+    const Vec3 direction = normalised({2.0, 3.0, 6.0});
+    // Orthogonal to the bond, so the fixture starts in the tangent space.
+    const Vec3 axis = normalised(cross(direction, {0.0, 0.0, 1.0}));
+    const gmd::Box box = cubic_box(30.0);
+    const std::vector<gmd::BondConstraint> constraints{{0, 1, bond}};
+
+    // The measured tensor is the ENDPOINT one, at r(t+dt), so the reference has
+    // to be evaluated there too. A free rigid rotor's exact motion is a rigid
+    // rotation by omega*dt about the spin axis, so the endpoint bond direction is
+    // written down analytically rather than read back from the integrator.
+    // Comparing against the t=0 direction instead would leave an O(dt) mismatch
+    // that has nothing to do with the virial.
+    auto reference_at = [&](double dt) {
+        const Vec3 u = apply_rotation(rotation_matrix(axis, omega * dt), direction);
+        std::array<double, 9> W{};
+        for (std::size_t a = 0; a < 3; ++a) {
+            for (std::size_t b = 0; b < 3; ++b) {
+                W[a * 3 + b] = -mu * omega * omega * bond * bond * u[a] * u[b];
+            }
+        }
+        return W;
+    };
+    const std::array<double, 9> reference = reference_at(0.0);
+
+    check(std::abs(dot3(direction, axis)) < 1.0e-15,
+          "the rotation axis must be perpendicular to the bond");
+    // Every off-diagonal must be a real number, or the test proves nothing.
+    const double scale = std::abs(trace_of(reference));
+    for (const std::size_t index : {1u, 2u, 3u, 5u, 6u, 7u}) {
+        check(std::abs(reference[index]) > 0.05 * scale,
+              std::string("reference ") + component_name(index) +
+                  " must be a substantial fraction of the trace, or the off-diagonal "
+                  "assertion is vacuous; got " + std::to_string(reference[index]));
+    }
+
+    std::cout << "[constraint virial] tilted rigid rotor, u = ("
+              << std::setprecision(6) << direction[0] << ", " << direction[1] << ", "
+              << direction[2] << "); analytical W_ab = -mu omega^2 d^2 u_a u_b\n";
+    std::cout << "    reference tensor:";
+    for (std::size_t index = 0; index < 9; ++index) {
+        if (index % 3 == 0) std::cout << "\n      ";
+        std::cout << std::setw(15) << std::setprecision(8) << reference[index];
+    }
+    std::cout << '\n';
+
+    const std::array<double, 3> timesteps{0.2, 0.1, 0.05};
+    std::array<std::array<double, 9>, 3> errors{};
+
+    for (std::size_t k = 0; k < timesteps.size(); ++k) {
+        const double dt = timesteps[k];
+        gmd::System system = make_oriented_rotating_dimer(
+            m0, m1, bond, omega, direction, axis, box, {15.0, 15.0, 15.0});
+        require_on_manifold(system, constraints, "tilted rotor");
+
+        auto solver = std::make_shared<gmd::ConstraintSolver>(constraints, tight_settings());
+        gmd::VelocityVerletIntegrator integrator(dt);
+        integrator.set_constraint_solver(solver);
+        NullForceProvider provider;
+        run_one_step(system, integrator, provider, dt);
+
+        const auto expected = reference_at(dt);
+        const auto& measured = system.constraint_virial();
+        for (std::size_t index = 0; index < 9; ++index) {
+            errors[k][index] = std::abs(measured[index] - expected[index]) / scale;
+        }
+        std::cout << "    dt=" << std::setw(5) << dt << "  max relative component error "
+                  << std::setprecision(3)
+                  << *std::max_element(errors[k].begin(), errors[k].end())
+                  << "  (off-diagonals:";
+        for (const std::size_t index : {1u, 2u, 3u, 5u, 6u, 7u}) {
+            std::cout << ' ' << component_name(index) << '=' << errors[k][index];
+        }
+        std::cout << ")\n";
+    }
+
+    const std::size_t last = timesteps.size() - 1;
+    for (std::size_t index = 0; index < 9; ++index) {
+        // The discretisation error of the endpoint estimator is (omega dt)^2/4
+        // relative; at the finest step that is 6.25e-6, so 1e-4 leaves more than
+        // an order of margin without being loose enough to hide a wrong tensor.
+        check(errors[last][index] < 1.0e-4,
+              std::string(component_name(index)) +
+                  " must match the analytical rigid-rotor value; relative error at the "
+                  "finest timestep was " + std::to_string(errors[last][index]));
+        for (std::size_t k = 0; k + 1 < timesteps.size(); ++k) {
+            const double ratio = errors[k][index] / errors[k + 1][index];
+            check(ratio > 3.0 && ratio < 5.0,
+                  std::string(component_name(index)) +
+                      " must converge as dt^2; halving dt changed its error by a factor "
+                      "of " + std::to_string(ratio));
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 8. A coupled constraint set in a general 3D orientation.
+// ---------------------------------------------------------------------------
+//
+// A rigid triangle, tilted out of every coordinate plane, spinning about the
+// normal to its own plane. The reference again comes from rigid-body mechanics
+// and never touches the accumulation being tested: each atom's acceleration is
+// centripetal about the centre of mass, so
+//
+//     G_i = -m_i omega^2 (r_i - R),
+//     W   = sum_i (r_i - R) (x) G_i = -omega^2 sum_i m_i (r_i - R) (x) (r_i - R)
+//
+// (using r_i - R rather than r_i is legitimate because the constraint forces sum
+// to zero, which makes W independent of the origin). That is the second-moment
+// tensor of the body, and in a general orientation every one of its nine entries
+// is non-zero.
+void test_tilted_triangle_against_rigid_body_reference() {
+    const std::array<double, 3> masses{1.0, 2.0, 3.0};
+    // Scalene, then tilted by a rotation with no special relationship to the axes.
+    const std::array<Vec3, 3> flat{Vec3{0.0, 0.0, 0.0}, Vec3{1.4, 0.0, 0.0},
+                                   Vec3{0.5, 1.1, 0.0}};
+    const auto tilt = rotation_matrix(normalised({1.0, -2.0, 3.0}), 0.7);
+    constexpr double omega = 0.08;
+    const gmd::Box box = cubic_box(40.0);
+    const Vec3 centre{20.0, 20.0, 20.0};
+    const Vec3 spin_axis = apply_rotation(tilt, {0.0, 0.0, 1.0});   // the plane normal
+
+    // Body-frame offsets about the centre of mass, tilted.
+    double total = 0.0;
+    Vec3 weighted{0.0, 0.0, 0.0};
+    for (std::size_t i = 0; i < 3; ++i) {
+        total += masses[i];
+        for (std::size_t d = 0; d < 3; ++d) weighted[d] += masses[i] * flat[i][d];
+    }
+    std::array<Vec3, 3> arms{};
+    for (std::size_t i = 0; i < 3; ++i) {
+        const Vec3 flat_arm{flat[i][0] - weighted[0] / total,
+                            flat[i][1] - weighted[1] / total,
+                            flat[i][2] - weighted[2] / total};
+        arms[i] = apply_rotation(tilt, flat_arm);
+    }
+
+    auto build = [&]() {
+        gmd::System system;
+        system.resize(3, 3);
+        system.set_box(box);
+        for (std::size_t i = 0; i < 3; ++i) {
+            system.mutable_masses()[i] = masses[i];
+            system.mutable_atom_tags()[i] = static_cast<int>(i);
+            for (std::size_t d = 0; d < 3; ++d) {
+                system.mutable_coordinates()[i][d] = centre[d] + arms[i][d];
+            }
+            const Vec3 v = cross(spin_axis, arms[i]);
+            for (std::size_t d = 0; d < 3; ++d) {
+                system.mutable_velocities()[i][d] = omega * v[d];
+            }
+        }
+        return system;
+    };
+
+    // W_ref = -omega^2 sum_i m_i arm_i (x) arm_i, at the ENDPOINT configuration:
+    // the measured tensor is taken at r(t+dt), and a free rigid body's exact
+    // motion over the step is a rigid rotation by omega*dt about the spin axis.
+    // The arms are rotated analytically, not read back from the integrator.
+    auto reference_at = [&](double dt) {
+        const auto step_rotation = rotation_matrix(spin_axis, omega * dt);
+        std::array<double, 9> W{};
+        for (std::size_t i = 0; i < 3; ++i) {
+            const Vec3 arm = apply_rotation(step_rotation, arms[i]);
+            for (std::size_t a = 0; a < 3; ++a) {
+                for (std::size_t b = 0; b < 3; ++b) {
+                    W[a * 3 + b] -= omega * omega * masses[i] * arm[a] * arm[b];
+                }
+            }
+        }
+        return W;
+    };
+    const std::array<double, 9> reference = reference_at(0.0);
+    const double scale = std::abs(trace_of(reference));
+
+    gmd::System probe = build();
+    const std::vector<gmd::BondConstraint> constraints{
+        {0, 1, distance(probe, 0, 1)},
+        {1, 2, distance(probe, 1, 2)},
+        {0, 2, distance(probe, 0, 2)},
+    };
+    require_on_manifold(probe, constraints, "tilted triangle");
+    for (const std::size_t index : {1u, 2u, 3u, 5u, 6u, 7u}) {
+        check(std::abs(reference[index]) > 0.02 * scale,
+              std::string("tilted triangle reference ") + component_name(index) +
+                  " must be non-trivial, got " + std::to_string(reference[index]));
+    }
+
+    std::cout << "[constraint virial] tilted rigid triangle, three coupled constraints;"
+                 " reference W = -omega^2 sum_i m_i a_i (x) a_i\n";
+    std::cout << "    reference tensor:";
+    for (std::size_t index = 0; index < 9; ++index) {
+        if (index % 3 == 0) std::cout << "\n      ";
+        std::cout << std::setw(15) << std::setprecision(8) << reference[index];
+    }
+    std::cout << '\n';
+
+    const std::array<double, 3> timesteps{0.2, 0.1, 0.05};
+    std::array<std::array<double, 9>, 3> errors{};
+    for (std::size_t k = 0; k < timesteps.size(); ++k) {
+        const double dt = timesteps[k];
+        gmd::System system = build();
+        auto solver = std::make_shared<gmd::ConstraintSolver>(constraints, tight_settings());
+        gmd::VelocityVerletIntegrator integrator(dt);
+        integrator.set_constraint_solver(solver);
+        NullForceProvider provider;
+        run_one_step(system, integrator, provider, dt);
+
+        const auto expected = reference_at(dt);
+        const auto& measured = system.constraint_virial();
+        for (std::size_t index = 0; index < 9; ++index) {
+            errors[k][index] = std::abs(measured[index] - expected[index]) / scale;
+        }
+        std::cout << "    dt=" << std::setw(5) << dt << "  max relative component error "
+                  << std::setprecision(3)
+                  << *std::max_element(errors[k].begin(), errors[k].end())
+                  << "  (off-diagonals:";
+        for (const std::size_t index : {1u, 2u, 3u, 5u, 6u, 7u}) {
+            std::cout << ' ' << component_name(index) << '=' << errors[k][index];
+        }
+        std::cout << ")\n";
+    }
+
+    const std::size_t last = timesteps.size() - 1;
+    for (std::size_t index = 0; index < 9; ++index) {
+        check(errors[last][index] < 1.0e-4,
+              std::string(component_name(index)) +
+                  " of a tilted rigid triangle must match the rigid-body reference; "
+                  "relative error " + std::to_string(errors[last][index]));
+        for (std::size_t k = 0; k + 1 < timesteps.size(); ++k) {
+            const double ratio = errors[k][index] / errors[k + 1][index];
+            check(ratio > 3.0 && ratio < 5.0,
+                  std::string(component_name(index)) +
+                      " of a tilted triangle must converge as dt^2; measured ratio " +
+                      std::to_string(ratio));
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 9. The tensor must transform covariantly.
+// ---------------------------------------------------------------------------
+//
+// W is a rank-2 Cartesian tensor built from vectors, so rotating the whole
+// system by an orthogonal R must take W to R W R^T exactly -- not approximately,
+// and not only in its trace. A formula that mixed up an index, or summed
+// r_a F_b where it meant r_b F_a, would satisfy the trace and the diagonal of an
+// axis-aligned fixture and fail here.
+void test_virial_transforms_covariantly_under_rotation() {
+    constexpr double bond = 1.5;
+    constexpr double omega = 0.1;
+    constexpr double dt = 0.05;
+    const gmd::Box box = cubic_box(40.0);
+    const Vec3 centre{20.0, 20.0, 20.0};
+    const std::vector<gmd::BondConstraint> constraints{{0, 1, bond}};
+
+    const Vec3 direction = normalised({2.0, 3.0, 6.0});
+    const Vec3 axis = normalised(cross(direction, {0.0, 0.0, 1.0}));
+    const auto R = rotation_matrix(normalised({-1.0, 4.0, 2.0}), 1.1);
+
+    auto measure = [&](const Vec3& u, const Vec3& n) {
+        gmd::System system = make_oriented_rotating_dimer(
+            1.0, 3.0, bond, omega, u, n, box, centre);
+        auto solver = std::make_shared<gmd::ConstraintSolver>(constraints, tight_settings());
+        gmd::VelocityVerletIntegrator integrator(dt);
+        integrator.set_constraint_solver(solver);
+        NullForceProvider provider;
+        run_one_step(system, integrator, provider, dt);
+        return system.constraint_virial();
+    };
+
+    const auto original = measure(direction, axis);
+    // Rotating the fixture's direction and axis rotates the whole configuration
+    // and its velocities, because both are built from them.
+    const auto rotated = measure(apply_rotation(R, direction), apply_rotation(R, axis));
+    const auto expected = conjugate(R, original);
+
+    const double scale = std::abs(trace_of(original));
+    check(scale > 1.0e-6, "the covariance fixture must produce a non-trivial tensor");
+    double worst = 0.0;
+    for (std::size_t index = 0; index < 9; ++index) {
+        const double error = std::abs(rotated[index] - expected[index]) / scale;
+        worst = std::max(worst, error);
+        // The floor here is NOT floating-point arithmetic on the rotation, which
+        // would be ~1e-15. It is the constraint solver's own convergence
+        // tolerance. RATTLE stops once |r.v|/|r| falls below `tolerance` (1e-13
+        // here), and the multiplier is proportional to that dot product, whose
+        // converged size is about omega^2 d^2 dt / 2 ~ 6e-4 for this fixture. The
+        // last accepted iterate therefore carries a relative uncertainty of
+        // roughly 1e-13 / 6e-4 ~ 2e-10, and the two runs stop at different
+        // iterates. 1e-8 sits two orders above that floor and is still eight
+        // orders below the O(1) discrepancy a transposed or mis-indexed tensor
+        // would produce.
+        check(error < 1.0e-8,
+              std::string("rotating the system must take ") + component_name(index) +
+                  " to (R W R^T) exactly; relative error " + std::to_string(error));
+    }
+    std::cout << "[constraint virial] rotation covariance W -> R W R^T: max relative "
+                 "component error " << std::setprecision(3) << worst << '\n';
+    check(std::abs(trace_of(rotated) - trace_of(original)) < 1.0e-8 * scale,
+          "and the trace, being invariant under rotation, must be unchanged (same "
+          "convergence-tolerance floor as the components above)");
+}
+
+// ---------------------------------------------------------------------------
+// 10. The tilted rotor across every periodic boundary.
+// ---------------------------------------------------------------------------
+//
+// All nine components are built from minimum-image bond vectors, so no component
+// may depend on where the molecule sits or on which face it straddles.
+void test_tilted_rotor_across_every_boundary() {
+    constexpr double bond = 1.5;
+    constexpr double omega = 0.1;
+    constexpr double dt = 0.05;
+    const double length = 12.0;
+    const gmd::Box box = cubic_box(length);
+    const std::vector<gmd::BondConstraint> constraints{{0, 1, bond}};
+    const Vec3 direction = normalised({2.0, 3.0, 6.0});
+    const Vec3 axis = normalised(cross(direction, {0.0, 0.0, 1.0}));
+
+    auto measure = [&](const Vec3& centre) {
+        gmd::System system = make_oriented_rotating_dimer(
+            1.0, 3.0, bond, omega, direction, axis, box, centre);
+        auto coordinates = system.mutable_coordinates();
+        for (auto& coordinate : coordinates) {
+            for (std::size_t d = 0; d < 3; ++d) {
+                while (coordinate[d] < 0.0) coordinate[d] += length;
+                while (coordinate[d] >= length) coordinate[d] -= length;
+            }
+        }
+        auto solver = std::make_shared<gmd::ConstraintSolver>(constraints, tight_settings());
+        gmd::VelocityVerletIntegrator integrator(dt);
+        integrator.set_constraint_solver(solver);
+        NullForceProvider provider;
+        run_one_step(system, integrator, provider, dt);
+        return system.constraint_virial();
+    };
+
+    const auto interior = measure({6.0, 6.0, 6.0});
+    const double scale = std::abs(trace_of(interior));
+    check(scale > 1.0e-6, "the boundary fixture must produce a non-trivial tensor");
+
+    const std::vector<std::pair<std::string, Vec3>> placements{
+        {"across x", {0.0, 6.0, 6.0}},
+        {"across y", {6.0, 0.0, 6.0}},
+        {"across z", {6.0, 6.0, 0.0}},
+        {"at the corner", {0.0, 0.0, 0.0}},
+        {"translated by an arbitrary vector", {2.75, 9.25, 4.5}},
+    };
+    for (const auto& placement : placements) {
+        const auto measured = measure(placement.second);
+        for (std::size_t index = 0; index < 9; ++index) {
+            const double error = std::abs(measured[index] - interior[index]) / scale;
+            check(error < 1.0e-9,
+                  std::string(component_name(index)) + " must not depend on the molecule "
+                      "being " + placement.first + "; relative error " +
+                      std::to_string(error));
+        }
+    }
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -1182,6 +1665,10 @@ int main(int argc, char** argv) {
     test_barostat_rescale_invalidates_rather_than_combining_across_it();
     test_rattle_disabled_reports_unavailable();
     test_initial_state_has_no_constraint_virial();
+    test_tilted_rotor_every_component_against_analytical_reference();
+    test_tilted_triangle_against_rigid_body_reference();
+    test_virial_transforms_covariantly_under_rotation();
+    test_tilted_rotor_across_every_boundary();
     test_completed_step_pressure_survives_a_barostat_rescale();
     test_rigid_rotor_reports_no_pressure();
 
