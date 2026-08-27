@@ -74,16 +74,89 @@ void VelocityVerletIntegrator::initialize(System& system, RuntimeContext& runtim
     // installs the checkpointed one after initialize() (see gmd_main).
     system.clear_step_thermodynamics();
 
-    // Put the initial state ON the constraint manifold, in position and in
-    // velocity, before any dynamics run. Without this the first RATTLE of the
-    // first step has to absorb the whole initial violation, and the multiplier it
-    // converges to is a one-off correction of an invalid state rather than a
-    // constraint force -- which would show up as a spurious pressure spike on
-    // step one. dt is deliberately omitted: this projection closes no step and
-    // must not produce a virial. A restarted run is already on the manifold, so
-    // this is a no-op there and restart continuity is unaffected.
+    // Verify the constraint set removes as many degrees of freedom as it has
+    // constraints, and reject it otherwise.
+    //
+    // THE GEOMETRY THAT DECIDES IS THE PROJECTED ONE. The rank is a property of
+    // the configuration, and the configuration the dynamics start from is the
+    // one on the constraint manifold, not the one supplied. Those can differ by
+    // a lot: input coordinates may violate their targets substantially, and a
+    // set whose Jacobian is full rank as supplied can project onto a degenerate
+    // target -- three atoms whose target distances satisfy d02 = d01 + d12 are
+    // collinear once SHAKE is done with them, whatever triangle they started as.
+    // So the supplied geometry is analysed only for early diagnostics, and the
+    // authoritative check runs after the projection has converged.
+    constraint_rank_report_ = ConstraintRankReport{};
     if (has_constraints()) {
-        apply_position_constraints(system);
+        ConstraintRankReport supplied;
+        bool supplied_analysed = false;
+        try {
+            supplied = constraints_->analyze_independence(system);
+            supplied_analysed = true;
+        } catch (const std::exception&) {
+            // A geometry too broken to analyse (coincident atoms, say) is left
+            // for the projection below to report in its own terms.
+        }
+
+        try {
+            apply_position_constraints(system);
+        } catch (const std::exception& error) {
+            // A degenerate target makes the projection ill-posed, so it may run
+            // out of iterations before the rank check gets a chance to speak.
+            // Say which it was rather than blaming the solver.
+            std::string message = error.what();
+            ConstraintRankReport reached;
+            bool reached_analysed = false;
+            try {
+                reached = constraints_->analyze_independence(system);
+                reached_analysed = true;
+            } catch (const std::exception&) {
+            }
+            if (reached_analysed && !reached.independent) {
+                message += "\n  The constraint set is also not independent at the "
+                           "geometry the projection reached: rank " +
+                           std::to_string(reached.rank) + " against " +
+                           std::to_string(reached.constraint_count) +
+                           " constraint(s). That is the likely cause -- a dependent "
+                           "set has no unique projection to converge to.";
+                for (const auto& problem : reached.problems) {
+                    message += "\n  - " + problem;
+                }
+            } else if (reached_analysed && !reached.warnings.empty()) {
+                // The usual signature of a DEGENERATE TARGET. The supplied
+                // geometry can be perfectly well conditioned while the target
+                // distances describe a configuration where the constraints
+                // become dependent -- three atoms whose targets satisfy
+                // d02 = d01 + d12, say. The projection then converges towards
+                // that configuration and stalls, because the closer it gets the
+                // more singular the system it is solving becomes. The rank at the
+                // geometry actually reached is still full, so only the
+                // conditioning shows it.
+                message += "\n  The constraint set is ill-conditioned at the geometry "
+                           "the projection reached, which is what a DEGENERATE TARGET "
+                           "looks like: the target distances describe a configuration "
+                           "in which these constraints become dependent, so the "
+                           "projection is converging towards a system it cannot solve. "
+                           "Check the target distances rather than the solver settings.";
+                for (const auto& warning : reached.warnings) {
+                    message += "\n  - " + warning;
+                }
+            } else if (supplied_analysed && !supplied.independent) {
+                message += "\n  The constraint set was already not independent at the "
+                           "supplied geometry: rank " + std::to_string(supplied.rank) +
+                           " against " + std::to_string(supplied.constraint_count) +
+                           " constraint(s).";
+            }
+            throw std::runtime_error(message);
+        }
+
+        // Authoritative: the converged, on-manifold geometry.
+        constraint_rank_report_ =
+            constraints_->require_independent(system, "the projected initial geometry");
+
+        // Velocities are projected only once the positions have been accepted:
+        // RATTLE solves against the same Jacobian, so projecting them first
+        // would be solving a system that has just been declared unusable.
         apply_velocity_constraints(system);
     }
 
@@ -107,8 +180,9 @@ void VelocityVerletIntegrator::set_remove_center_of_mass_velocity(bool enabled) 
 std::size_t VelocityVerletIntegrator::constraint_count() const noexcept {
     // ConstraintSolver normalises its list to distinct pairs and replicates the
     // same tag-based list on every rank, so this is already a global count and
-    // must not be reduced again. It counts *distinct* constraints; independence
-    // is assumed rather than proven (see the ConstraintSolver class comment).
+    // must not be reduced again. initialize() has rejected the run unless this
+    // count equals the rank of the mass-weighted constraint Jacobian, so it is
+    // the number of degrees of freedom the constraints actually remove.
     return has_constraints() ? constraints_->active_constraint_count() : 0;
 }
 

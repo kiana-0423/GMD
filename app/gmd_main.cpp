@@ -571,7 +571,9 @@ int main(int argc, char** argv)
                     std::cout << log_prefix << "Constraints: collapsed "
                               << diagnostics.exact_duplicates << " exact duplicate(s) and "
                               << diagnostics.tolerance_equivalent_duplicates
-                              << " tolerance-equivalent duplicate(s)\n";
+                              << " tolerance-equivalent duplicate(s), of which "
+                              << diagnostics.reversed_duplicates
+                              << " were the same pair listed in reverse order\n";
                     for (const auto& entry : diagnostics.discarded_targets) {
                         std::cout << log_prefix << "  discarded constraint target: "
                                   << entry << "\n";
@@ -716,6 +718,15 @@ int main(int argc, char** argv)
         // from the integrator rather than recomputed here, so the trajectory
         // log and the thermostat are guaranteed to use the same count: 3N,
         // less 3 when the COM velocity is removed, less one per constraint.
+        // Independence warnings from the check initialize() performed. A set that
+        // is dependent has already thrown; these are the ones that are
+        // independent but close enough to degenerate to be worth saying so.
+        if (is_root_rank) {
+            for (const auto& warning : integrator->constraint_rank_report().warnings) {
+                std::cout << log_prefix << "Constraints: WARNING: " << warning << "\n";
+            }
+        }
+
         const std::size_t dof = integrator->degrees_of_freedom(system);
         if (is_root_rank) {
             std::cout << log_prefix << "Degrees of freedom: " << dof

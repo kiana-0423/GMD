@@ -198,6 +198,17 @@ private:
 struct ConstraintNormalizationDiagnostics {
     std::size_t exact_duplicates = 0;
     std::size_t tolerance_equivalent_duplicates = 0;
+    // Repeats supplied with the atoms the other way round FROM THE FIRST
+    // OCCURRENCE of that pair: a later (j, i) against an earlier (i, j). This is
+    // a property of the two entries relative to each other, not of either one on
+    // its own -- (1, 0) followed by (0, 1) is just as reversed as (0, 1)
+    // followed by (1, 0), while (1, 0) twice is not reversed at all. The
+    // orientation of each pair's first occurrence is therefore remembered and
+    // compared against. Counted separately because the pair normalisation makes
+    // the two indistinguishable afterwards, and a topology that lists a bond
+    // twice in opposite orders is usually a generation bug worth surfacing.
+    // Every reversed repeat is also counted in one of the two categories above.
+    std::size_t reversed_duplicates = 0;
 
     // One entry per tolerance-equivalent duplicate whose target differed from
     // the value that was kept. Human-readable; the application decides how to
@@ -208,6 +219,123 @@ struct ConstraintNormalizationDiagnostics {
         return exact_duplicates == 0 && tolerance_equivalent_duplicates == 0;
     }
 };
+
+// One connected component of the constraint graph, and the rank of its own
+// constraint rows.
+//
+// Independence is a per-component property. Two constraints that share no atom
+// have Jacobian rows with disjoint support, so they are trivially independent
+// and the total rank is the sum over components. Working component by component
+// keeps the linear algebra on matrices the size of a molecule rather than of the
+// whole system.
+struct ConstraintComponent {
+    std::vector<int> atom_tags;                   // sorted, globally tagged
+    std::vector<std::size_t> constraint_indices;  // into ConstraintSolver::constraints()
+
+    std::size_t rank = 0;              // numerical rank of this component's rows
+    double largest_singular_value = 0.0;
+    double smallest_singular_value = 0.0;
+    double rank_tolerance = 0.0;       // the threshold rank was decided against
+    // largest / smallest. Infinite when the component is rank deficient.
+    double condition_number = 0.0;
+
+    // Which of THIS component's constraints are redundant, as indices into
+    // ConstraintSolver::constraints().
+    //
+    // WHICH ones are redundant is not unique: within a dependent group any one
+    // member could be called the extra one. These are the columns left over by a
+    // rank-revealing factorisation with column pivoting -- at each step it takes
+    // the constraint whose gradient is most nearly orthogonal to those already
+    // chosen, with numerically tied candidates settled by the canonical atom pair
+    // (min tag, max tag) rather than by position in the input. The answer is
+    // therefore deterministic and independent of the order the constraints were
+    // supplied in.
+    //
+    // `redundant_constraints_identified` is false when the pivoted factorisation
+    // did not agree with the singular values about HOW MANY rows are redundant.
+    // In that case `redundant_constraint_indices` lists EVERY constraint in this
+    // component instead, since nothing better can be said about which.
+    bool redundant_constraints_identified = false;
+    std::vector<std::size_t> redundant_constraint_indices;
+
+    bool independent() const noexcept { return rank == constraint_indices.size(); }
+};
+
+// Result of testing a constraint set for independence at a given geometry.
+//
+// THE CRITERION. A holonomic constraint sigma_c(r) = |r_c|^2 - d_c^2 removes one
+// degree of freedom only if its gradient is linearly independent of the others.
+// The gradients must be compared in the metric the dynamics actually uses, which
+// is mass-weighted: the constrained equations of motion involve J M^-1 J^T, so
+// the relevant matrix is the mass-weighted Jacobian
+//
+//     J_M = J M^(-1/2),      J_M[c, 3i+a] = +2 r_c[a] / sqrt(m_i)
+//                            J_M[c, 3j+a] = -2 r_c[a] / sqrt(m_j)
+//
+// with i and j the two atoms of constraint c. The number of degrees of freedom
+// the set actually removes is rank(J_M), never the number of constraints
+// supplied. J M^-1 J^T is singular exactly when J_M is rank deficient, which is
+// also when the SHAKE/RATTLE iteration has no unique multiplier to converge to.
+//
+// The rank is CONFIGURATION DEPENDENT: a set can be independent at one geometry
+// and degenerate at another (three collinear atoms, a flattened ring). This
+// report describes the geometry it was computed at, which is the initial one.
+struct ConstraintRankReport {
+    bool independent = false;          // rank == constraint count everywhere
+    std::size_t constraint_count = 0;
+    std::size_t rank = 0;              // summed over components
+    std::vector<ConstraintComponent> components;
+
+    // Human-readable, each naming the atom tags and the component involved.
+    // `problems` are hard failures; `warnings` are sets that are independent but
+    // close enough to degenerate that the multipliers will be poorly determined.
+    std::vector<std::string> problems;
+    std::vector<std::string> warnings;
+
+    std::size_t redundant_count() const noexcept { return constraint_count - rank; }
+
+    // Whether EVERY rank-deficient component had its redundant rows identified.
+    //
+    // Derived from the components rather than stored, so a report describing a
+    // mixed result -- one component identified, another fallen back to naming
+    // its whole membership -- cannot claim to be fully identified. Vacuously
+    // true when the set is independent, where there is nothing to identify.
+    bool redundant_identified() const noexcept {
+        for (const auto& component : components) {
+            if (!component.independent() && !component.redundant_constraints_identified) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    // Every redundant constraint across all components, as indices into
+    // ConstraintSolver::constraints(). Empty when the set is independent. Also
+    // derived, so it cannot disagree with the per-component lists it summarises.
+    // Where a component fell back, its entire membership appears here.
+    std::vector<std::size_t> dependent_constraints() const {
+        std::vector<std::size_t> all;
+        for (const auto& component : components) {
+            all.insert(all.end(), component.redundant_constraint_indices.begin(),
+                       component.redundant_constraint_indices.end());
+        }
+        return all;
+    }
+};
+
+// Singular values, in descending order, of a small dense matrix given by its
+// COLUMNS, computed by one-sided Jacobi.
+//
+// This is the kernel the rank analysis is built on. It is exposed so that it can
+// be validated against matrices whose singular values are known independently --
+// a decomposition that is only ever compared against itself is not validated.
+//
+// Throws std::runtime_error if the sweeps do not reach mutual orthogonality; a
+// rank must never be decided from a silently unconverged decomposition. `label`
+// is folded into that message so the caller can say which constraints were
+// involved.
+std::vector<double> jacobi_singular_values(std::vector<std::vector<double>> columns,
+                                           const std::string& label = "matrix");
 
 // Holonomic bond-length constraints solved with SHAKE/RATTLE.
 //
@@ -229,15 +357,25 @@ struct ConstraintNormalizationDiagnostics {
 // first value is kept, and it is reported through
 // normalization_diagnostics().
 //
-// INDEPENDENCE IS ASSUMED, NOT VERIFIED. After normalisation the list contains
-// distinct constraints, but distinct is not the same as independent: a closed
-// topology such as an all-pairs cage over five or more atoms contains more
-// distance constraints than the rigid body has removable degrees of freedom.
-// Deciding that in general means computing the rank of the 3N x M constraint
-// Jacobian, which is configuration dependent (the rank can drop at particular
-// geometries) and is not attempted here. A redundant set is accepted and every
-// distinct constraint is counted, so degrees_of_freedom() over-subtracts and
-// the reported temperature comes out high. Configure independent constraints.
+// INDEPENDENCE IS VERIFIED, NOT ASSUMED, and a dependent set is REJECTED.
+// Distinct is not the same as independent: a closed topology such as every pair
+// among four or more atoms, or any three collinear atoms, contains more distance
+// constraints than the rigid body has removable degrees of freedom. Counting
+// those against the degrees of freedom would over-subtract and report a
+// temperature that is too high, and the redundant rows make J M^-1 J^T singular,
+// so the multipliers SHAKE and RATTLE converge to are not unique either.
+//
+// analyze_independence() computes the rank of the mass-weighted constraint
+// Jacobian at a given geometry, per connected component; require_independent()
+// throws unless the rank equals the constraint count. The integrator calls the
+// latter once, before any dynamics run. THE POLICY IS TO REJECT: after it
+// returns, active_constraint_count() IS the number of degrees of freedom the set
+// removes, so the DOF subtraction is exact rather than assumed.
+//
+// Rejecting rather than silently using the rank is the deliberate choice. A
+// dependent constraint set is nearly always a topology or input error, and
+// running it with a quietly corrected DOF count would hide that while leaving
+// the non-unique multipliers in place. See ConstraintRankReport.
 class ConstraintSolver {
 public:
     ConstraintSolver() = default;
@@ -268,6 +406,23 @@ public:
     const ConstraintNormalizationDiagnostics& normalization_diagnostics() const noexcept {
         return diagnostics_;
     }
+
+    // Rank of the mass-weighted constraint Jacobian at `system`'s geometry,
+    // component by component, with diagnostics naming the atoms involved. See
+    // ConstraintRankReport for the criterion. Collective under MPI: the atom
+    // gather happens inside, and every rank computes the identical report.
+    ConstraintRankReport analyze_independence(const System& system) const;
+
+    // analyze_independence(), throwing a diagnostic listing every problem unless
+    // the set is independent. Warnings (ill-conditioned but independent sets) are
+    // returned in the report rather than thrown, for the caller to surface.
+    //
+    // `context` names the geometry in the message. The rank is a property of the
+    // configuration, so saying which one was analysed matters: the integrator
+    // calls this on the PROJECTED geometry, not the supplied one.
+    ConstraintRankReport require_independent(
+        const System& system,
+        const std::string& context = "the analysed geometry") const;
 
     // The constraint bond vectors at the current geometry, to be handed to the
     // SHAKE projection that follows a position update. Call this BEFORE the

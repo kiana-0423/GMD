@@ -80,9 +80,18 @@ public:
         return remove_center_of_mass_velocity_;
     }
 
-    // Number of distinct active holonomic constraints (0 when disabled).
-    // Independence is assumed, not verified; see ConstraintSolver.
+    // Number of active holonomic constraints (0 when disabled). initialize()
+    // rejects a dependent set, so after it returns this IS the rank of the
+    // mass-weighted constraint Jacobian, i.e. the number of degrees of freedom
+    // the set actually removes. See ConstraintRankReport.
     std::size_t constraint_count() const noexcept;
+
+    // The independence analysis performed by initialize(), kept so the caller
+    // can surface its warnings. Empty before initialize() and when the run has
+    // no constraints.
+    const ConstraintRankReport& constraint_rank_report() const noexcept {
+        return constraint_rank_report_;
+    }
 
     // Authoritative DOF count for this run: 3N, less 3 for COM removal, less
     // one per distinct constraint. Every temperature consumer must use this.
@@ -121,6 +130,7 @@ private:
     std::shared_ptr<Thermostat> thermostat_;
     std::shared_ptr<Barostat>   barostat_;
     std::shared_ptr<ConstraintSolver> constraints_;
+    ConstraintRankReport constraint_rank_report_;
 };
 
 }  // namespace gmd
