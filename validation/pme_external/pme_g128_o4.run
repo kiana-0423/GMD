@@ -1,0 +1,16 @@
+# Single-point Coulomb-only PME evaluation of the pme_external fixture.
+# No LJ and no bonded terms: the run file deliberately omits force_field so
+# that gmd_validate reports the electrostatic energy alone, with nothing to
+# subtract and no shift or mixing convention to align with another engine.
+velocity 0.0
+time_step 1.0
+run 1
+output_interval 1
+velocity_init input
+remove_com_velocity false
+
+coulomb pme
+pme_alpha 0.35
+pme_cutoff 8.0
+pme_order 4
+pme_grid 128 128 128

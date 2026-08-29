@@ -1,0 +1,36 @@
+# LAMMPS exact Ewald evaluation of the pme_external fixture.
+#
+# This is the same splitting and the same real-space cutoff as in.pppm, but the
+# reciprocal sum is an explicit k-vector sum with no mesh at all. It therefore
+# has no interpolation order to match, and it is the term against which both
+# GMD's PME and LAMMPS' PPPM are measured. It is also the only one of the three
+# external results that reports a full virial computed the same way GMD
+# computes one, from an exact reciprocal sum rather than from a mesh.
+#
+# The accuracy argument does control the k-space cutoff here, since kmax is not
+# separately settable; 1e-12 with a pinned gewald drives the k sum well past
+# convergence for this box.
+
+units           metal
+atom_style      charge
+boundary        p p p
+atom_modify     map array sort 0 0.0
+
+read_data       ${datafile}
+
+pair_style      coul/long ${rcut}
+pair_coeff      * *
+
+kspace_style    ewald 1.0e-12
+kspace_modify   gewald ${alpha}
+kspace_modify   compute yes
+
+compute         virial all pressure NULL virial
+
+thermo_style    custom step pe ecoul elong c_virial[1] c_virial[2] c_virial[3] c_virial[4] c_virial[5] c_virial[6]
+thermo_modify   format float %.17g
+
+dump            f all custom 1 ${forcefile} id fx fy fz
+dump_modify     f sort id format float %.17g
+
+run             0
