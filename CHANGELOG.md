@@ -492,7 +492,7 @@ instead.
 - Constraint terminology no longer claims independence the implementation cannot
   prove: counts are of *distinct* constraints.
 
-### Known limitations (unchanged by this release)
+### Remaining limitations
 
 - **The constraint virial has no independent external reference.** It is
   validated against the analytical centripetal-force result for a rigid rotor,
@@ -507,13 +507,13 @@ instead.
 - **A bond may not turn through ~90 degrees in one step.** The SHAKE
   reference-gradient linearisation has no solution there; this is diagnosed as a
   hard error naming the pair and asking for a smaller time step.
-- **Only the diagonal virial components are validated.** `Box` stores three edge
-  lengths, so the engine is orthorhombic-only and no shear strain can be applied.
-  Off-diagonal components are checked for symmetry `W_ab == W_ba`, which is
-  necessary but not sufficient. They are **not** validated.
-- **Constraint independence is assumed, not verified.** A redundant closed
-  topology (for example all pairs among five or more atoms) is accepted and every
-  distinct constraint counted, which over-subtracts degrees of freedom.
+- `Box` stores three edge lengths, so the engine remains orthorhombic-only and
+  cannot itself apply shear strain. All nine virial components are nevertheless
+  validated against independent general-cell references, including shear
+  derivatives, as described under *Added* above.
+- Constraint independence is validated on the converged projected geometry.
+  The defensive rank-selection fallback remains API-tested because no physical
+  fixture has been found that makes the primary and fallback rank counts disagree.
 - The virial is not compared against LAMMPS; its per-term decomposition and
   GMD's do not have proven-equivalent semantics for the reference fixture.
 - TorchScript `edge_shift` is directly covered (see *Added*), but only in a build configured with `GMD_ENABLE_TORCH=ON`. A build without LibTorch does not register the test and reports that at configure time; in such a build the contract is unverified.
