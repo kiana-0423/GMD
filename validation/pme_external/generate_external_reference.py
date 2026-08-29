@@ -372,6 +372,14 @@ def main() -> int:
     # approximation. Note that for OpenMM the eV <-> kJ/mol convention cancels:
     # the factor is k_e^GMD / (10 * ONE_4PI_EPS0), which contains no energy-unit
     # constant at all.
+    #
+    # This rescaling used to be compensating GMD's own truncated constant, which
+    # was 3.16e-06 below CODATA and therefore the largest single discrepancy in
+    # the whole comparison. GMD now uses the CODATA 2022 value, so what remains
+    # is the engines' own rounding of the same physical constant -- LAMMPS to six
+    # decimals, OpenMM to whatever CODATA release it was built against -- which is
+    # genuinely engine-specific and has to stay. It is now a 3e-08 correction
+    # rather than a 3e-06 one.
     openmm_energy_to_ev = KE_GMD / (10.0 * ke_openmm_native)
     openmm_force_to_ev_per_angstrom = KE_GMD / (100.0 * ke_openmm_native)
     lammps_scale = KE_GMD / ke_lammps
@@ -634,10 +642,15 @@ def main() -> int:
                 "note":
                     "Each engine's result is rescaled by k_e^GMD / k_e^engine. "
                     "Coulomb energy is exactly proportional to k_e in every term, "
-                    "so this is exact. GMD's 14.3996 is low by "
-                    f"{abs(KE_GMD / ke_lammps - 1.0):.3e} relative against the "
-                    "CODATA value both engines use; left uncorrected that offset "
-                    "would exceed the grid-128 mesh error and be misread as a "
+                    "so this is exact. GMD uses the CODATA 2022 value "
+                    f"{KE_GMD}; the residual against LAMMPS is "
+                    f"{abs(KE_GMD / ke_lammps - 1.0):.3e} relative and against "
+                    f"OpenMM {abs(KE_GMD / (ke_openmm_native * 10.0 / (6.02214076e23 * 1.602176634e-19 / 1000.0)) - 1.0):.3e}, "
+                    "which is those engines' own rounding of the same physical "
+                    "constant rather than a disagreement about physics. Before "
+                    "GMD's constant was corrected this factor was 3.16e-06 and "
+                    "was compensating GMD's truncation, which would otherwise "
+                    "have exceeded the grid-128 mesh error and been misread as a "
                     "convergence floor.",
             },
             "fixture_sha256": {

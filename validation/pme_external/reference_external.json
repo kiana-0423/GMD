@@ -1410,11 +1410,11 @@
       "charges_wrapped.xyz": "66d73c1df9cf99429d3c98882136c3894e9dc08d6575a4cd9ce93ba9a100d94c"
     },
     "generated_file": "<work>/reference_external.json",
-    "generated_utc": "2026-08-29T17:50:08+00:00",
+    "generated_utc": "2026-08-29T17:53:01+00:00",
     "gmd_build": "Release (-DCMAKE_BUILD_TYPE=Release)",
     "input_sha256": {
       "ewald_converged.run": "5849bd250cb57d00631af8016eee67a66ea71d3e1d24bf6d21935808a5d9079c",
-      "generate_external_reference.py": "8a3db5b14f6d762a1343ab52649492e80beebaaa1c46b30a24321893cef617e7",
+      "generate_external_reference.py": "5de021e8e41f8cf101ef5c14e2a7fd45d20c027ba3f4e6b39c9e24d78b971bdf",
       "lammps/in.ewald": "e26b91a5a50001ab9088ceed0bbaa2c40d9af8e2f563c1eccb4054860c0dc76a",
       "lammps/in.pppm": "31a29b54c28263be2fca4d4a7889bf901f6d172334aff5c7d98dfad68b799a5c",
       "openmm/run_openmm.py": "8ea355c09702ab49bd80ba999db695cc121bfb8960284de315cebff74b42b734",
@@ -1429,11 +1429,11 @@
     },
     "not_gmd_generated": "The reference and cross_reference blocks come from OpenMM and LAMMPS. The gmd block is GMD's own output, recorded alongside so the comparison is auditable; it is never the reference.",
     "platform": "Darwin 25.6.0 arm64",
-    "source_commit": "7d144ee64445ef2aef2d6a1dca90c5b6f3a2fb49",
+    "source_commit": "d44c176fceebaeb60bcee3d6bf890f24694ffcc3",
     "unit_conversion": {
       "gmd_coulomb_constant_ev_angstrom": 14.3996454686836,
       "lammps_scale": 1.0000000325482747,
-      "note": "Each engine's result is rescaled by k_e^GMD / k_e^engine. Coulomb energy is exactly proportional to k_e in every term, so this is exact. GMD's 14.3996 is low by 3.255e-08 relative against the CODATA value both engines use; left uncorrected that offset would exceed the grid-128 mesh error and be misread as a convergence floor.",
+      "note": "Each engine's result is rescaled by k_e^GMD / k_e^engine. Coulomb energy is exactly proportional to k_e in every term, so this is exact. GMD uses the CODATA 2022 value 14.3996454686836; the residual against LAMMPS is 3.255e-08 relative and against OpenMM 6.765e-10, which is those engines' own rounding of the same physical constant rather than a disagreement about physics. Before GMD's constant was corrected this factor was 3.16e-06 and was compensating GMD's truncation, which would otherwise have exceeded the grid-128 mesh error and been misread as a convergence floor.",
       "openmm_energy_kj_per_mol_to_ev": 0.010364269649250234,
       "openmm_force_kj_per_mol_nm_to_ev_per_angstrom": 0.0010364269649250236
     },

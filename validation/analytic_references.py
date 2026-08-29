@@ -290,6 +290,27 @@ def with_metadata(payload: dict, source: str, description: str, formulas: list[s
         "description": description,
         "units": "GMD internal units: eV, Angstrom, elementary charge",
         "formulas": formulas,
+        # Emitted rather than hand-added, so it survives the next --write. Every
+        # Coulomb quantity in this file is exactly proportional to this constant;
+        # the Lennard-Jones ones do not depend on it at all, which is why the
+        # totals do not scale when it changes.
+        "coulomb_constant_ev_angstrom": COULOMB,
+        "coulomb_constant_source": (
+            "CODATA 2022 via E_h * a0 = 27.211386245981 eV * 0.529177210544 A, "
+            "matching gmd::kCoulombConstant in "
+            "include/gmd/core/physical_constants.hpp"
+        ),
+        "coulomb_constant_superseded": 14.3996,
+        "coulomb_constant_change": (
+            "Regenerated 2026-08-30. The constant was corrected from 14.3996, a "
+            "five-significant-figure truncation, to the CODATA 2022 value; every "
+            "Coulomb energy and force here changed by +3.157635e-06 relative and "
+            "every Lennard-Jones one is bit-identical."
+        ),
+        "regeneration_command": (
+            "python3 validation/analytic_references.py --root validation --write, "
+            "run from <repo>"
+        ),
     }
     return out
 

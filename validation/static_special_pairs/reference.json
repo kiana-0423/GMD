@@ -32,12 +32,17 @@
     ]
   },
   "reference_details": {
+    "coulomb_constant_change": "Regenerated 2026-08-30. The constant was corrected from 14.3996, a five-significant-figure truncation, to the CODATA 2022 value; every Coulomb energy and force here changed by +3.157635e-06 relative and every Lennard-Jones one is bit-identical.",
+    "coulomb_constant_ev_angstrom": 14.3996454686836,
+    "coulomb_constant_source": "CODATA 2022 via E_h * a0 = 27.211386245981 eV * 0.529177210544 A, matching gmd::kCoulombConstant in include/gmd/core/physical_constants.hpp",
+    "coulomb_constant_superseded": 14.3996,
     "description": "Four-atom 1-2-3-4 chain with 1-2/1-3 exclusions and scaled 1-4 direct corrections.",
     "formulas": [
       "shifted LJ: 4 epsilon [(sigma/r)^12 - (sigma/r)^6] - U(rc)",
       "periodic Ewald real + reciprocal + self/background corrections",
       "special Coulomb correction: (scale - 1) * k_e q_i q_j / r"
     ],
+    "regeneration_command": "python3 validation/analytic_references.py --root validation --write, run from <repo>",
     "units": "GMD internal units: eV, Angstrom, elementary charge"
   },
   "scale_variants": {
@@ -75,11 +80,16 @@
         ]
       },
       "reference_details": {
+        "coulomb_constant_change": "Regenerated 2026-08-30. The constant was corrected from 14.3996, a five-significant-figure truncation, to the CODATA 2022 value; every Coulomb energy and force here changed by +3.157635e-06 relative and every Lennard-Jones one is bit-identical.",
+        "coulomb_constant_ev_angstrom": 14.3996454686836,
+        "coulomb_constant_source": "CODATA 2022 via E_h * a0 = 27.211386245981 eV * 0.529177210544 A, matching gmd::kCoulombConstant in include/gmd/core/physical_constants.hpp",
+        "coulomb_constant_superseded": 14.3996,
         "description": "Same four-atom chain with modified 1-4 LJ/Coulomb scale factors.",
         "formulas": [
           "shifted LJ 1-4 contribution scales linearly with lj_scale_14",
           "direct special-pair Coulomb correction changes linearly with coul_scale_14"
         ],
+        "regeneration_command": "python3 validation/analytic_references.py --root validation --write, run from <repo>",
         "units": "GMD internal units: eV, Angstrom, elementary charge"
       },
       "source": "analytic_reference_python_ewald_shifted_lj_special_pairs"
