@@ -66,13 +66,18 @@ double precision.
   function chosen to minimise RMS force error; GMD and OpenMM both use the
   Essmann smooth-PME kernel. LAMMPS is a different mesh approximation of the same
   exact sum, not a different implementation of the same approximation.
-- **Coulomb constant.** GMD uses `14.3996` eV·Å/e²; both engines use the CODATA
-  value (LAMMPS `14.399645`, OpenMM `138.935457` kJ/mol·nm/e², measured). GMD is
-  low by **3.16e-06 relative**. Because every Ewald term carries exactly one
-  factor of `k_e`, each engine's result is rescaled by `k_e^GMD / k_e^engine`,
-  which is exact. Both constants are measured from the engines at generation
-  time rather than quoted. Uncorrected, this offset would exceed the grid-128
-  mesh error and look like a convergence floor.
+- **Coulomb constant.** All three codes round the same physical constant
+  differently: GMD `14.3996454686836` (CODATA 2022, `gmd::kCoulombConstant`),
+  LAMMPS `14.399645` (its own six decimals, 3.255e-08 low), OpenMM
+  `138.935457` kJ/mol·nm/e² → `14.399645478` (6.765e-10 high). Both engine
+  values are measured at generation time with a two-charge probe rather than
+  quoted. Because every Ewald term carries exactly one factor of `k_e`, each
+  engine's result is rescaled by `k_e^GMD / k_e^engine`, which is exact.
+
+  Until GMD's constant was corrected this factor was doing far more: the old
+  `14.3996` was 3.16e-06 low, which exceeded the grid-128 mesh error and would
+  have been read as a convergence floor. What remains is engine rounding, two
+  orders of magnitude smaller, and it stays.
 
 **Cannot be compared at all:** the decomposition into real / reciprocal / self /
 background. Neither engine exposes a split with a proven-equivalent definition,
@@ -154,7 +159,8 @@ in opposite directions.
 - **Coulomb-only, static, serial.** No LJ, no bonded terms, no exclusions or 1-4
   scaling, no dynamics, no MPI.
 - **Orthorhombic only**, because `gmd::Box` cannot represent anything else.
-- **GMD's `k_e` is 3.16e-06 low.** Corrected exactly in this comparison, but it
-  is a real systematic offset in every Coulomb energy and force GMD reports, and
-  it is *not* fixed here — changing it would move every checked-in baseline in
-  the repository.
+- **The engines' own `k_e` rounding remains.** GMD now uses the CODATA 2022
+  value, so the residual conversion is 3.255e-08 against LAMMPS and 6.765e-10
+  against OpenMM. It is exact and unavoidable, since the constant is exactly
+  linear, but it means this case can never test agreement below those levels
+  without the conversion.
