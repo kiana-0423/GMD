@@ -141,6 +141,10 @@ if(BUILD_TESTING)
     target_link_libraries(gmd_constraint_virial_tests PRIVATE gmd_core)
     add_executable(gmd_constraint_independence_tests tests/constraint_independence_tests.cpp)
     target_link_libraries(gmd_constraint_independence_tests PRIVATE gmd_core)
+    add_executable(gmd_pme_bspline_tests tests/pme_bspline_tests.cpp)
+    target_link_libraries(gmd_pme_bspline_tests PRIVATE gmd_core)
+    add_executable(gmd_pme_energy_force_tests tests/pme_energy_force_tests.cpp)
+    target_link_libraries(gmd_pme_energy_force_tests PRIVATE gmd_core)
 
     file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/tests)
     configure_file(tests/smoke_lj.xyz         ${CMAKE_CURRENT_BINARY_DIR}/tests/smoke_xyz.in       COPYONLY)
@@ -258,6 +262,19 @@ if(BUILD_TESTING)
     set_tests_properties(gmd_constraint_virial PROPERTIES LABELS "unit;integrator;force")
     add_test(NAME gmd_constraint_independence COMMAND gmd_constraint_independence_tests)
     set_tests_properties(gmd_constraint_independence PROPERTIES LABELS "unit;integrator")
+
+    # The production cardinal B-spline kernel, evaluated directly. Registered
+    # as an ordinary single-process unit test in both the serial and the
+    # MPI-enabled build: it exercises no MPI and its result must not depend on
+    # whether MPI support was compiled in.
+    add_test(NAME gmd_pme_bspline COMMAND gmd_pme_bspline_tests)
+    set_tests_properties(gmd_pme_bspline PROPERTIES LABELS "unit;force;pme")
+
+    # The production PME energy and force path: the transform normalisation
+    # against an explicit direct DFT, and F = -dU/dr by central differences.
+    add_test(NAME gmd_pme_energy_force COMMAND gmd_pme_energy_force_tests)
+    set_tests_properties(gmd_pme_energy_force
+        PROPERTIES LABELS "unit;force;pme;validation")
 
     # Constrained NVE energy conservation and constrained Berendsen NPT pressure
     # reporting, through the real CLI: many consecutive rescaling steps, and the

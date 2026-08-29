@@ -56,6 +56,27 @@ public:
                  RuntimeContext& runtime) override;
     void finalize(RuntimeContext& runtime) override;
 
+    // --- cardinal B-spline kernel -----------------------------------------
+    //
+    // Public because they are pure functions of (u, order) with no dependence
+    // on any member, and because they need to be testable directly. Leaving
+    // them private cost the project a silent, total loss of the PME reciprocal
+    // force: bspline_deriv() evaluates M_(p-1), bspline() implemented only
+    // orders 4 and 6, and every derivative weight came back zero. Nothing at
+    // the provider's public surface distinguished that from a correct run
+    // except the forces themselves, and no test looked. See
+    // tests/pme_bspline_tests.cpp.
+    //
+    // bspline(u, order) is the cardinal B-spline M_p(u), supported on [0, p]
+    // and zero outside it. Orders 2 through 6 are implemented. The lower orders
+    // are not spare capacity: M_(p-1) is what the derivative of order p is made
+    // of, so every supported order must have its predecessor, all the way down.
+    // Orders 4 and 6 are the ones the provider accepts; 3 and 5 carry their
+    // derivatives, and 2 carries the derivative of order 3.
+    static double bspline(double u, int order) noexcept;
+    // dM_p/du = M_(p-1)(u) - M_(p-1)(u-1).
+    static double bspline_deriv(double u, int order) noexcept;
+
 private:
     double alpha_;
     double alpha_sq_;
@@ -85,11 +106,6 @@ private:
 
     // Precompute influence function and b-moduli for the current box.
     void precompute_influence(const Box& box);
-
-    // B-spline evaluation: M_p(u) for u in [0, p].
-    static double bspline(double u, int order) noexcept;
-    // First derivative: dM_p/du.
-    static double bspline_deriv(double u, int order) noexcept;
 
     // Real-space part (identical to Ewald).
     void compute_real_space(const ForceRequest& req, ForceResult& res) const;
