@@ -6,6 +6,20 @@ All notable user-facing changes in GMD are documented here.
 
 ### ⚠️ Simulation-results-changing corrections
 
+- **`GMD_ENABLE_TORCH=ON` did not compile.** `include/gmd/force/torchscript_adapter.hpp`
+  carried `namespace torch::jit { struct script::Module; }`. That is ill-formed:
+  an elaborated-type-specifier cannot carry a nested-name-specifier, and
+  `torch::jit::script` is in any case a namespace *alias* for `torch::jit`, so
+  the name being declared did not exist to declare. Every Torch-enabled build
+  failed in the first translation unit that included the header, which is
+  `src/force/torchscript_adapter.cpp` itself -- so the entire TorchScript path
+  had never been compiled, let alone run.
+
+  The declaration was also unnecessary. The header names no Torch type: the
+  module handle lives behind an opaque `Impl`, which is what actually keeps
+  `torch/script.h` out of including translation units. It is removed rather
+  than corrected. No default build changes, since the option is off by default.
+
 - **PME reciprocal-space forces were absent, and are now correct.** Three
   independent defects, found while building component-wise virial validation
   for the reciprocal mesh. **Every run using `coulomb pme` changes.** Ewald runs
@@ -393,6 +407,52 @@ instead.
   no virial reported, a stale `ForceResult` cleared, no force moment
   synthesised, any composite containing it invalidated in either order, and a
   pressure-coupled barostat unable to consume the absent value.
+- **Direct coverage of the TorchScript `edge_shift` tensor.**
+  `tests/torchscript_edge_shift_tests.cpp` observes `edge_shift` from *inside* a
+  real scripted model, reached through the production
+  `MLForceProvider` -> `TorchScriptModelRuntimeAdapter` -> `torch::jit` path.
+  The existing `tests/box_image_flag_tests.cpp` covers
+  `NeighborList::image_flags`, which is the helper; it says nothing about the
+  half-to-full-graph expansion, the reverse edge, the multiplication by the box
+  lengths, the `src`/`dst` ordering inside `edge_index`, or whether the tensor
+  that was built is the one that reaches `forward()`.
+
+  Two observer models are built from C++ via `torch::jit::Module::define` at run
+  time, so the test needs no Python and no checked-in `.pt` file, and the
+  artifacts are written to the CTest working directory rather than the source
+  tree. Atoms carry unique `species` values, so every assertion is keyed to a
+  stable physical identity instead of a position in whatever order the
+  neighbour list produced. Expected shifts are written out from the fixture
+  geometry, never obtained from `image_flags` or `apply_minimum_image`.
+
+  Serial cases: no boundary crossing (all shifts exactly zero); each of the x,
+  y and z faces in both sign directions; a corner crossing with all three
+  components non-zero and of mixed sign; the reverse directed edge of every
+  fixture, required to be the exact negative and to correspond to the right
+  `edge_index` entry; wrapped versus unwrapped placement of the same physical
+  dimer, which must produce *different* shifts and the *same* displacement;
+  every axis confirmed periodic, since no per-axis periodicity flag exists to
+  disable one; and atom-order permutation, including swapping the two atoms of
+  every pair. Composite: an ML child inside `CompositeForceProvider`, alone and
+  between two other providers, evaluated repeatedly, with the ML contribution
+  recovered by subtraction and required to decode to the same shifts. Every
+  shift component is compared exactly; the box lengths and species are chosen
+  so no rounding occurs anywhere in the chain.
+
+  Negative controls run mutated observer models -- shifts zeroed, sign
+  reversed, x/y/z permuted -- and require every detectable edge to be rejected.
+  A zero shift is a fixed point of all three mutations, so the interior fixture
+  is excluded from the count rather than weakening the assertion.
+
+- **The ML/MPI limitation is proven rather than asserted.**
+  `tests/mpi_ml_edge_shift.cpp` runs at 1, 2 and 4 ranks on a dimer straddling a
+  periodic face. At one rank the provider must evaluate normally; at more, both
+  `initialize()` and `compute()` must throw on *every* rank with a message
+  naming MPI, a composite containing an ML child must propagate the refusal
+  rather than swallow it, and the model adapter must never be reached -- which
+  is what rules out a duplicated per-rank contribution for a cross-boundary
+  edge. It uses a stub adapter, so the proof holds in MPI builds without
+  LibTorch.
 - **Bonded force-gradient tests** verifying every bonded force against
   `-dU/dx`.
 - **End-to-end constrained Nosé-Hoover restart tests** driving the real CLI
@@ -432,7 +492,7 @@ instead.
 - Constraint terminology no longer claims independence the implementation cannot
   prove: counts are of *distinct* constraints.
 
-### Known limitations (unchanged by this release)
+### Remaining limitations
 
 - **The constraint virial has no independent external reference.** It is
   validated against the analytical centripetal-force result for a rigid rotor,
@@ -447,16 +507,16 @@ instead.
 - **A bond may not turn through ~90 degrees in one step.** The SHAKE
   reference-gradient linearisation has no solution there; this is diagnosed as a
   hard error naming the pair and asking for a smaller time step.
-- **Only the diagonal virial components are validated.** `Box` stores three edge
-  lengths, so the engine is orthorhombic-only and no shear strain can be applied.
-  Off-diagonal components are checked for symmetry `W_ab == W_ba`, which is
-  necessary but not sufficient. They are **not** validated.
-- **Constraint independence is assumed, not verified.** A redundant closed
-  topology (for example all pairs among five or more atoms) is accepted and every
-  distinct constraint counted, which over-subtracts degrees of freedom.
+- `Box` stores three edge lengths, so the engine remains orthorhombic-only and
+  cannot itself apply shear strain. All nine virial components are nevertheless
+  validated against independent general-cell references, including shear
+  derivatives, as described under *Added* above.
+- Constraint independence is validated on the converged projected geometry.
+  The defensive rank-selection fallback remains API-tested because no physical
+  fixture has been found that makes the primary and fallback rank counts disagree.
 - The virial is not compared against LAMMPS; its per-term decomposition and
   GMD's do not have proven-equivalent semantics for the reference fixture.
-- TorchScript `edge_shift` output remains untested (requires LibTorch).
+- TorchScript `edge_shift` is directly covered (see *Added*), but only in a build configured with `GMD_ENABLE_TORCH=ON`. A build without LibTorch does not register the test and reports that at configure time; in such a build the contract is unverified.
 
 ## [v2.4] - 2026-05-24
 

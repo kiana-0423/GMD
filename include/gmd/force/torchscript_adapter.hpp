@@ -8,9 +8,13 @@
 
 #include "gmd/force/model_runtime_adapter.hpp"
 
-// Forward-declare to avoid pulling all of torch/script.h into every TU
-// that includes this header.
-namespace torch::jit { struct script::Module; }
+// No forward declaration of the TorchScript module type is needed, and none is
+// possible: `torch::jit::script` is a namespace ALIAS for `torch::jit`, so
+// `struct script::Module;` is an elaborated-type-specifier carrying a
+// nested-name-specifier, which is ill-formed. It never compiled. The handle
+// lives behind the opaque `Impl` below, which is the mechanism that actually
+// keeps torch/script.h out of every translation unit including this header, so
+// the declaration was not doing the job its comment claimed either.
 
 namespace gmd {
 

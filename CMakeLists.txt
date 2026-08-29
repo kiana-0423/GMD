@@ -147,6 +147,16 @@ if(BUILD_TESTING)
     target_link_libraries(gmd_pme_energy_force_tests PRIVATE gmd_core)
     add_executable(gmd_ml_virial_contract_tests tests/ml_virial_contract_tests.cpp)
     target_link_libraries(gmd_ml_virial_contract_tests PRIVATE gmd_core)
+
+    # The TorchScript edge_shift test observes the tensor from inside a real
+    # scripted model, so it can only exist when LibTorch is available. It builds
+    # its own .pt fixtures at run time into the test working directory; nothing
+    # is checked in and no Python is required.
+    if(GMD_ENABLE_TORCH)
+        add_executable(gmd_torchscript_edge_shift_tests
+            tests/torchscript_edge_shift_tests.cpp)
+        target_link_libraries(gmd_torchscript_edge_shift_tests PRIVATE gmd_core)
+    endif()
     add_executable(gmd_virial_source_inventory_tests tests/virial_source_inventory_tests.cpp)
     target_link_libraries(gmd_virial_source_inventory_tests PRIVATE gmd_core)
     add_executable(gmd_pme_reciprocal_virial_tests tests/pme_reciprocal_virial_tests.cpp)
@@ -286,6 +296,19 @@ if(BUILD_TESTING)
     add_test(NAME gmd_ml_virial_contract COMMAND gmd_ml_virial_contract_tests)
     set_tests_properties(gmd_ml_virial_contract PROPERTIES LABELS "unit;force")
 
+    if(GMD_ENABLE_TORCH)
+        # WORKING_DIRECTORY keeps the generated .pt fixtures in the build tree.
+        add_test(NAME gmd_torchscript_edge_shift
+                 COMMAND gmd_torchscript_edge_shift_tests
+                 WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/tests)
+        set_tests_properties(gmd_torchscript_edge_shift
+            PROPERTIES LABELS "unit;force;ml;torch")
+    else()
+        message(STATUS
+            "GMD_ENABLE_TORCH is OFF: gmd_torchscript_edge_shift is NOT registered. "
+            "The TorchScript edge_shift contract is unverified in this build.")
+    endif()
+
     # Every virial source held against an independent reference, all nine
     # components. The orthorhombic `Box` cannot express a shear strain, so the
     # off-diagonal claims rest on analytical pair references, independent
@@ -395,6 +418,25 @@ if(BUILD_TESTING)
         target_link_libraries(gmd_mpi_constraint_independence_tests PRIVATE gmd_core)
         add_executable(gmd_mpi_virial_sources_tests tests/mpi_virial_sources.cpp)
         target_link_libraries(gmd_mpi_virial_sources_tests PRIVATE gmd_core)
+        add_executable(gmd_mpi_ml_edge_shift_tests tests/mpi_ml_edge_shift.cpp)
+        target_link_libraries(gmd_mpi_ml_edge_shift_tests PRIVATE gmd_core)
+
+        # The ML path refuses to run under MPI domain decomposition, so
+        # edge_shift never reaches a model there. These runs prove that refusal
+        # -- at np=1 the provider must work, at np=2 and np=4 both entry points
+        # must throw on every rank and the adapter must never be reached. They
+        # need no LibTorch: the refusal happens before any adapter is touched.
+        foreach(ml_edge_shift_np 1 2 4)
+            add_test(
+                NAME gmd_mpi_ml_edge_shift_${ml_edge_shift_np}proc
+                COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${ml_edge_shift_np}
+                        $<TARGET_FILE:gmd_mpi_ml_edge_shift_tests>
+            )
+            set_tests_properties(gmd_mpi_ml_edge_shift_${ml_edge_shift_np}proc
+                PROPERTIES
+                    LABELS "mpi;parallel;force;ml"
+                    PROCESSORS ${ml_edge_shift_np})
+        endforeach()
 
         # Every virial source, all nine components, at 1, 2 and 4 ranks, held
         # against the same rank-count-independent references the serial test

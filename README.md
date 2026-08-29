@@ -144,6 +144,62 @@ there is that the deviation shrinks with mesh refinement, which it does:
 `1.1e-2 → 2.2e-3 → 3.9e-4` at order 4 and `1.2e-3 → 2.9e-5 → 1.2e-6` at order 6
 over meshes 16, 32, 64.
 
+### TorchScript `edge_shift`
+
+The tensor an ML model receives for periodic edges. The contract, established by
+reading the production path and then confirmed from inside a scripted model:
+
+| | |
+|---|---|
+| `edge_index` | `int64 [2, 2E]`, row 0 = `src`, row 1 = `dst` |
+| `edge_shift` | `float32 [2E, 3]`, a **Cartesian translation in Å** — not an integer image offset |
+| device | whatever the loaded module is on |
+| displacement | `d(src → dst) = r_dst + edge_shift − r_src`, equal to the minimum-image separation |
+| reverse edge | every half-pair yields both directions; the two shifts are exact negatives |
+| sign | a negative x-shift on `i → j` means j's relevant image sits one box length in −x from where j is stored |
+| periodicity | all three axes, always; there is no per-axis flag to disable one |
+
+`VerletNeighborBuilder` stores `S = round((r_i − r_j)/L)` per half-pair and the
+adapter emits `S·L` for `i → j` and `−S·L` for `j → i`. The shift is a function
+of the **stored** coordinates, so the same physical dimer written wrapped and
+unwrapped produces different shifts and the same displacement — both halves are
+asserted.
+
+**What is covered, and where.** `tests/box_image_flag_tests.cpp` covers
+`image_flags`, the helper. `tests/torchscript_edge_shift_tests.cpp` covers what
+reaches `forward()`: the half-to-full-graph expansion, the reverse edge, the
+box-length multiplication, the `src`/`dst` ordering, and the float32 conversion.
+It builds its observer models from C++ at run time, so no Python and no
+checked-in `.pt` are needed and no artifact lands in the source tree.
+
+Serial fixtures: no crossing; each face in both sign directions; a corner with
+three non-zero mixed-sign components; the reverse edge of every fixture;
+wrapped versus unwrapped equivalence; every axis periodic; atom-order
+permutation including swapping each pair. Composite: an ML child alone and
+between two other providers, evaluated repeatedly, its contribution recovered by
+subtraction. Shift components are compared **exactly** — the box lengths and
+species are chosen so nothing in the chain rounds.
+
+Negative controls run mutated observer models (shifts zeroed, sign reversed,
+x/y/z permuted) and require every detectable edge to be rejected.
+
+**MPI.** `edge_shift` never reaches a model under MPI: `MLForceProvider` throws
+from both `initialize()` and `compute()` when the rank count exceeds one,
+because nothing in the adapter decides which rank owns a cross-boundary edge's
+energy or how deep the halo must be for a multi-layer model.
+`tests/mpi_ml_edge_shift.cpp` proves that at np=1/2/4 rather than adding a
+single-rank test dressed as parallel: at one rank the provider must work, at
+more it must refuse on every rank, a composite must propagate the refusal, and
+the adapter must never be reached.
+
+**This is an interface-contract test, not a scientific validation.** It shows
+the model receives the shifts the contract specifies. It says nothing about
+whether any particular model's energies or forces are correct.
+
+**Availability.** The test exists only when `GMD_ENABLE_TORCH=ON`. A build
+without LibTorch prints a configure-time `STATUS` line saying the test is not
+registered and the contract is unverified in that build.
+
 ### Constraint (SHAKE/RATTLE) virial
 
 **The splitting.** Constrained dynamics uses the standard velocity-Verlet
@@ -1047,6 +1103,10 @@ the full logged trajectory row-by-row as well as the final energy drift.
 | `gmd_smoke_mpi_lj_consistency` | serial vs 2-process MPI energy consistency check (verifies numerical equivalence) |
 | `gmd_smoke_mpi_ewald_consistency_8proc` | serial vs 8-process Ewald consistency on a 3D process grid |
 | `gmd_smoke_mpi_pme_consistency_8proc` | serial vs 8-process replicated-PME consistency on a 3D process grid, including empty local domains |
+| `gmd_mpi_ml_edge_shift_1proc` | ML provider runs normally at one rank (proves the MPI refusal below is about rank count) |
+| `gmd_mpi_ml_edge_shift_2proc` | ML provider refuses MPI on every rank; adapter never reached |
+| `gmd_mpi_ml_edge_shift_4proc` | same at 4 ranks, on a dimer straddling a periodic face |
+| `gmd_torchscript_edge_shift` | **`GMD_ENABLE_TORCH=ON` only** — `edge_shift` observed inside a real scripted model |
 
 ---
 
@@ -1230,7 +1290,7 @@ ForceProvider (interface)                                      │  MpiCommunica
 - Berendsen barostat requires virial from every active force term; barostat pressure is computed with MPI-allreduced kinetic energy and virial. Every provider now reports a physically derived virial rather than a coordinate approximation (see *Virial and pressure* below), and each contribution is reduced exactly once across the communicator
 - `pme_mode distributed` currently uses the replicated PME numerical backend. It is an interface/prototype for workflow compatibility, dependency checks, and timing hooks; it does not reduce PME grid memory per rank, does not perform distributed FFT communication, and should not be used as evidence of scalable distributed-PME performance
 - Ewald/PME special-pair Coulomb scaling is applied with analytical `(scale - 1) q_i q_j/r` corrections; PME retains its normal mesh discretization error and still needs broader accuracy regression coverage
-- ML force provider requires `GMD_ENABLE_TORCH=ON` and a compatible TorchScript model; MPI domain decomposition is rejected because local-plus-ghost model energy ownership and message-passing halo depth are not defined
+- ML force provider requires `GMD_ENABLE_TORCH=ON` and a compatible TorchScript model; MPI domain decomposition is rejected because local-plus-ghost model energy ownership and message-passing halo depth are not defined. The rejection is proven at np=1/2/4 by `tests/mpi_ml_edge_shift.cpp`, and the periodic `edge_shift` tensor the model receives is directly covered by `tests/torchscript_edge_shift_tests.cpp` (see *TorchScript `edge_shift`*) — but only in a build configured with LibTorch; without it neither the adapter nor its contract is exercised at all
 - MPI NVE/NVT is supported for implemented classical short-range, Ewald, replicated-PME, and current bonded paths; Berendsen NPT is also supported, but the Monte Carlo barostat is serial-only because MPI trial-volume coordination is not implemented
 - The MPI LJ NVE regression tracks serial logged energies and drift within test tolerances (`gmd_smoke_mpi_lj_consistency`)
 - Limited automated test coverage

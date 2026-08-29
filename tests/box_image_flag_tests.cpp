@@ -106,6 +106,44 @@ void test_box_validation() {
           "System::set_box must reject a degenerate default-constructed box");
 }
 
+// --- Minimum image --------------------------------------------------------
+
+void test_multi_box_minimum_image() {
+    constexpr double length = 10.0;
+    constexpr double half = 5.0;
+
+    // The old single-shot correction handled only the first two rows. These
+    // cases exercise several positive and negative images while preserving the
+    // established sign at the exactly-half-box tie.
+    const std::array<std::array<double, 2>, 12> cases = {{
+        {{4.0, 4.0}},
+        {{6.0, -4.0}},
+        {{16.0, -4.0}},
+        {{26.0, -4.0}},
+        {{-6.0, 4.0}},
+        {{-16.0, 4.0}},
+        {{-26.0, 4.0}},
+        {{5.0, 5.0}},
+        {{15.0, 5.0}},
+        {{-5.0, -5.0}},
+        {{-15.0, -5.0}},
+        {{0.0, 0.0}},
+    }};
+
+    for (const auto& test_case : cases) {
+        const double actual = gmd::apply_minimum_image_component(
+            test_case[0], length, half);
+        check(actual == test_case[1],
+              "multi-box minimum image for " + std::to_string(test_case[0]) +
+                  " expected " + std::to_string(test_case[1]) +
+                  ", got " + std::to_string(actual));
+    }
+
+    check(std::isinf(gmd::apply_minimum_image_component(
+              std::numeric_limits<double>::infinity(), length, half)),
+          "non-finite displacement must retain the historical pass-through behaviour");
+}
+
 // --- Image flags ----------------------------------------------------------
 
 constexpr double kBoxLength = 12.0;
@@ -187,6 +225,12 @@ void test_image_flags() {
 
     // A corner pair crossing all three boundaries at once.
     check_pair_image_flag({0.5, 0.5, 0.5}, {11.5, 11.5, 11.5}, "pair crossing xyz corner");
+
+    // Equivalent to the x-face fixture, but atom j is written two additional
+    // boxes away. Cell assignment already wraps it into the correct cell; the
+    // distance calculation must do the same or the physical neighbour is lost.
+    check_pair_image_flag({0.5, 6.0, 6.0}, {35.5, 6.0, 6.0},
+                          "pair separated by multiple x images");
 }
 
 }  // namespace
@@ -201,6 +245,7 @@ int main(int argc, char** argv) {
     (void)argv;
 #endif
     test_box_validation();
+    test_multi_box_minimum_image();
     test_image_flags();
 
     if (failures != 0) {
