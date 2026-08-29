@@ -1,0 +1,72 @@
+{
+  "_derivation": [
+    "Every tolerance here comes from measured convergence, not from an observed",
+    "error rounded up. The reference settings are grid 64^3, alpha 0.35 1/A,",
+    "real-space cutoff 8.0 A, GMD B-spline order 6 against OpenMM's fixed order 5.",
+    "",
+    "At those settings each code's own mesh error was measured against the exact",
+    "Ewald sum (same alpha, same cutoff, kmax 24):",
+    "  GMD order 6    energy 1.974e-07 eV   max force 2.692e-07 eV/A",
+    "  OpenMM order 5 energy 9.339e-07 eV   max force 1.263e-06 eV/A",
+    "Two implementations of a mesh method can differ by at most the sum of their",
+    "distances from the exact answer, so the triangle-inequality bound is",
+    "  energy 1.131e-06 eV   max force 1.532e-06 eV/A.",
+    "The observed differences are 1.1313e-06 and 1.5318e-06: the bound is tight,",
+    "not loose, because the two codes deviate from exact Ewald in opposite",
+    "directions. The tolerances below are that bound doubled, which leaves room",
+    "for round-off differences between platforms while staying orders of",
+    "magnitude below any real regression -- for scale, the reciprocal-force bug",
+    "fixed in commit b9b7493 produced a force error of 8.9e-02 eV/A.",
+    "",
+    "Convergence tolerances are the mesh error at grid 64 doubled. Wrapped",
+    "equivalence is exact up to floating-point representation of x +/- L, so its",
+    "tolerance is set near double-precision round-off rather than by measurement.",
+    "Translation by a non-lattice vector is NOT exact for a mesh method; its",
+    "tolerance is the grid-64 mesh error doubled."
+  ],
+
+  "energy_abs_vs_external": 2.3e-6,
+  "energy_rel_vs_external": 5.5e-7,
+  "force_max_abs_vs_external": 3.1e-6,
+  "force_rms_abs_vs_external": 1.0e-6,
+
+  "energy_abs_vs_lammps_pppm": 2.3e-6,
+  "force_max_abs_vs_lammps_pppm": 3.1e-6,
+
+  "energy_abs_vs_analytic_ewald": 4.0e-7,
+  "force_max_abs_vs_analytic_ewald": 5.4e-7,
+  "gmd_ewald_energy_abs_vs_analytic_ewald": 1.0e-12,
+  "gmd_ewald_force_max_abs_vs_analytic_ewald": 1.0e-12,
+
+  "virial_max_abs_ewald_vs_lammps": 4.0e-7,
+  "virial_max_abs_pme_vs_lammps": 2.0e-6,
+  "virial_max_asymmetry": 1.0e-12,
+
+  "wrapped_energy_abs": 1.0e-10,
+  "wrapped_force_max_abs": 1.0e-10,
+  "translated_energy_abs": 2.0e-6,
+  "translated_force_max_abs": 2.0e-6,
+
+  "_net_force": [
+    "A mesh method does not conserve momentum exactly: the grid is fixed to the",
+    "box, so translational invariance is broken at the mesh-error level and the",
+    "net force is nonzero by construction. Measured at grid 64: GMD 1.616e-07,",
+    "OpenMM 7.550e-07 eV/A. It shrinks with refinement exactly as the mesh error",
+    "does (GMD order 6: 1.60e-03, 4.21e-06, 1.62e-07, 1.34e-08 at grids 16, 32,",
+    "64, 128), so the tolerance is set from that measurement, not from zero.",
+    "Exact Ewald has no mesh and so does conserve momentum to round-off, which",
+    "is why it gets a tolerance five orders tighter."
+  ],
+  "pme_net_force_max_abs": 2.0e-6,
+  "ewald_net_force_max_abs": 1.0e-13,
+
+  "_independence_floor": [
+    "The reference must NOT be GMD's own output. Two different PME",
+    "implementations at different interpolation orders cannot agree bitwise, so",
+    "a difference at or below this floor means the checked-in reference was",
+    "replaced with something GMD generated. The observed difference is 1.13e-06",
+    "in energy and 1.53e-06 in force, both a hundred times this floor."
+  ],
+  "independence_floor_energy": 1.0e-8,
+  "independence_floor_force": 1.0e-8
+}

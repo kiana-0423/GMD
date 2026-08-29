@@ -371,6 +371,21 @@ if(BUILD_TESTING)
     set_tests_properties(gmd_validation_static_coulomb
         PROPERTIES LABELS "validation;unit")
 
+    # Compares GMD PME against a checked-in OpenMM PME result, cross-checked
+    # against LAMMPS PPPM and LAMMPS Ewald. Regenerating the reference needs
+    # OpenMM and LAMMPS; this comparison needs neither, so it runs in normal CI.
+    add_test(
+        NAME gmd_validation_pme_external
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/validation/run_validation.py
+                --case pme_external
+                --gmd $<TARGET_FILE:gmd>
+                --gmd-validate $<TARGET_FILE:gmd_validate>
+                --work-root ${CMAKE_CURRENT_BINARY_DIR}/validation
+    )
+    set_tests_properties(gmd_validation_pme_external
+        PROPERTIES LABELS "validation;unit;pme;external")
+
     add_custom_target(gmd_validation_short
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_CURRENT_SOURCE_DIR}/validation/run_validation.py

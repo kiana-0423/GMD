@@ -11,6 +11,7 @@ SHORT_CASES = [
     "static_special_pairs",
     "static_coulomb",
     "static_bonded_reference",
+    "pme_external",
 ]
 
 LONG_CASES = [
