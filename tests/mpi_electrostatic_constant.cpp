@@ -64,16 +64,24 @@ constexpr int kKmax = 10;
 // Eight charges, exactly neutral, irregular positions in a non-cubic box, so
 // that a decomposition splitting them differently at 2 and 4 ranks still has
 // pairs straddling every boundary.
+//
+// Twenty of the twenty-eight pairs are inside the 8 A cutoff, minimum
+// separation 2.94 A, so the real-space erfc term carries real weight. The
+// first version of this fixture was spread across the whole box with EVERY
+// pair outside the cutoff, which meant the real-space sum contributed nothing
+// and a defect confined to it could not be seen here at all. That is asserted
+// rather than assumed, in test_real_space_actually_contributes().
 const std::array<std::array<double, 3>, 8> kPositions = {{
-    {2.13, 3.41, 4.77},   {8.62, 1.94, 11.35},  {13.08, 9.27, 6.51},
-    {5.46, 15.83, 19.24}, {15.71, 6.08, 16.92}, {3.29, 11.66, 9.38},
-    {10.85, 18.42, 2.71}, {7.04, 8.15, 22.06}}};
-const std::array<double, 8> kCharges = {0.75, -0.5, 0.625, -0.875,
-                                        0.5, -0.375, 0.25, -0.375};
+    {2.13, 3.41, 4.77},  {4.67, 4.20, 6.02},  {7.31, 2.86, 3.95},
+    {3.95, 8.12, 7.44},  {9.84, 6.53, 9.17},  {6.28, 10.35, 4.61},
+    {11.42, 9.78, 6.30}, {8.06, 5.17, 11.83}}};
+// Multiples of 1/8, so the sum is exactly zero in binary floating point.
+const std::array<double, 8> kCharges = {0.75, -0.5, 0.625, -0.5,
+                                        -0.375, 0.25, -0.625, 0.375};
 const std::array<double, 3> kLengths = {17.0, 21.0, 25.0};
 
 // The same k_e = 1 Ewald sum as the serial audit, over the whole global system.
-double reference_energy_unit_constant(int kmax) {
+double reference_energy_unit_constant(int kmax, bool include_real_space = true) {
     const std::size_t n = kCharges.size();
     long double energy = 0.0L;
     const long double alpha = kAlpha;
@@ -89,6 +97,7 @@ double reference_energy_unit_constant(int kmax) {
                 dr[d] -= kLengths[d] * std::round(dr[d] / kLengths[d]);
             }
             const long double r2 = dr[0]*dr[0] + dr[1]*dr[1] + dr[2]*dr[2];
+            if (!include_real_space) continue;
             if (r2 >= static_cast<long double>(kCutoff) * kCutoff) continue;
             const long double r = std::sqrt(r2);
             energy += kCharges[i] * kCharges[j] * std::erfc(alpha * r) / r;
@@ -125,6 +134,10 @@ double reference_energy_unit_constant(int kmax) {
     energy -= alpha / std::sqrt(std::numbers::pi_v<long double>) * q2;
     // The fixture is exactly neutral, so there is no background term.
     return static_cast<double>(energy);
+}
+
+double reference_energy_unit_constant_no_real_space(int kmax) {
+    return reference_energy_unit_constant(kmax, /*include_real_space=*/false);
 }
 
 // Contiguous blocks of tags per rank: at 2 ranks the split falls between tags
@@ -193,6 +206,24 @@ double measure(gmd::ForceProvider& provider, const gmd::System& system) {
     return global_energy;
 }
 
+// A term that contributes nothing cannot be checked by dividing it out, so
+// the fixture has to actually exercise the real-space sum.
+void test_real_space_actually_contributes() {
+    const double full = reference_energy_unit_constant(kKmax);
+    // The reciprocal, self and background terms alone: same call with every
+    // pair pushed outside the cutoff.
+    const double reciprocal_only = reference_energy_unit_constant_no_real_space(kKmax);
+    const double share = std::fabs((full - reciprocal_only) / full);
+    if (global_rank == 0) {
+        std::cout << "  real-space share of the fixture's energy: "
+                  << (100.0 * share) << " %\n";
+    }
+    check(share > 0.01,
+          "the real-space term is only " + number(100.0 * share) +
+              "% of this fixture's energy, so a defect confined to it would not "
+              "be measurable here");
+}
+
 void test_constant_is_independent_of_rank_count() {
     const gmd::System system = replicated_system_with_local_ownership();
     const double reference = reference_energy_unit_constant(kKmax);
@@ -253,6 +284,7 @@ int main(int argc, char** argv) {
     MPI_Comm_rank(MPI_COMM_WORLD, &global_rank);
     MPI_Comm_size(MPI_COMM_WORLD, &global_size);
 
+    test_real_space_actually_contributes();
     test_constant_is_independent_of_rank_count();
     test_pme_matches_ewald_constant();
 

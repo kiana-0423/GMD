@@ -240,15 +240,29 @@ struct Fixture {
 Fixture asymmetric_fixture(bool neutral) {
     Fixture f;
     f.lengths = {17.0L, 21.0L, 25.0L};
+    // Nine of the ten pairs are inside the 8 A cutoff, at separations from
+    // 2.94 to 7.15 A, so the real-space erfc term carries real weight --
+    // erfc(alpha r) runs from 1.8e-01 down to 1.2e-03 across them.
+    //
+    // This matters more than it looks. An earlier version of this fixture put
+    // the four atoms 8.6 to 15.9 A apart, which is entirely OUTSIDE the cutoff,
+    // so the real-space term contributed nothing whatsoever and a defect
+    // confined to it was invisible here. A negative control -- deleting the
+    // constant from the Ewald real-space force -- passed this file. Hence
+    // test_real_space_actually_contributes() below, which fails if the fixture
+    // ever drifts back into that state.
     f.positions = {{2.13L, 3.41L, 4.77L},
-                   {8.62L, 1.94L, 11.35L},
-                   {13.08L, 9.27L, 6.51L},
-                   {5.46L, 15.83L, 19.24L}};
-    // Neutral variant sums to exactly zero in binary floating point; the
-    // charged variant does not, which is what makes the neutralising-background
-    // term fire and lets this file check that term too.
-    f.charges = neutral ? std::vector<long double>{0.75L, -0.5L, 0.625L, -0.875L}
-                        : std::vector<long double>{0.75L, -0.5L, 0.625L, 0.375L};
+                   {4.67L, 4.20L, 6.02L},
+                   {7.31L, 2.86L, 3.95L},
+                   {3.95L, 8.12L, 7.44L},
+                   {9.84L, 6.53L, 9.17L}};
+    // Every charge is a multiple of 1/8 and so exactly representable. The
+    // neutral variant sums to exactly zero; the charged one does not, which is
+    // what makes the neutralising-background term fire and lets this file check
+    // that term too.
+    f.charges = neutral
+        ? std::vector<long double>{0.75L, -0.5L, 0.625L, -0.5L, -0.375L}
+        : std::vector<long double>{0.75L, -0.5L, 0.625L, -0.5L, 0.375L};
     return f;
 }
 
@@ -467,6 +481,43 @@ Measured measure_special_pair() {
 
 std::vector<std::pair<std::string, Measured>> all_paths;
 
+// The measurements above are only as good as the fixture: a term that
+// contributes nothing cannot be checked by dividing it out. This asserts that
+// the real-space sum is a substantial part of the energy, so a defect confined
+// to it cannot hide behind a correct reciprocal sum.
+void test_real_space_actually_contributes() {
+    const Fixture f = asymmetric_fixture(true);
+    const Ewald1 full = ewald_reference_unit_constant(f.positions, f.charges,
+                                                      f.lengths, kAlpha, kKmax, kCutoff);
+    // Same sum with the real-space cutoff set to zero: reciprocal, self and
+    // background only.
+    const Ewald1 without = ewald_reference_unit_constant(f.positions, f.charges,
+                                                         f.lengths, kAlpha, kKmax, 0.0L);
+    const long double real_space = full.energy - without.energy;
+    const long double share = std::fabs(real_space / full.energy);
+    std::cout << "\n  Real-space share of the fixture's energy: "
+              << number(share * 100.0L, 4) << " %\n";
+    check(share > 0.01L,
+          "the real-space term is only " + number(share * 100.0L, 4) +
+              "% of this fixture's energy, so a defect confined to it would not "
+              "be measurable here. Move the atoms closer than the " +
+              number(kCutoff, 3) + " A cutoff.");
+
+    long double worst_force = 0.0L;
+    for (std::size_t i = 0; i < full.forces.size(); ++i)
+        for (std::size_t d = 0; d < 3; ++d)
+            worst_force = std::max(worst_force,
+                                   std::fabs(full.forces[i][d] - without.forces[i][d]));
+    long double scale = 0.0L;
+    for (std::size_t i = 0; i < full.forces.size(); ++i)
+        for (std::size_t d = 0; d < 3; ++d)
+            scale = std::max(scale, std::fabs(full.forces[i][d]));
+    check(worst_force / scale > 0.01L,
+          "the real-space force is only " + number(100.0L * worst_force / scale, 4) +
+              "% of the total force scale; a real-space force defect would not "
+              "be measurable here");
+}
+
 void test_every_path_measures_the_same_constant() {
     std::cout << "\n  Constant recovered from each electrostatic path\n";
     all_paths = {
@@ -652,6 +703,7 @@ int main() {
     std::cout << "Electrostatic unit-conversion constant audit\n";
     test_agrees_with_codata();
     test_two_charge_energy_at_known_separation();
+    test_real_space_actually_contributes();
     test_every_path_measures_the_same_constant();
     test_no_squared_or_missing_factor();
     test_paths_agree_with_each_other();
