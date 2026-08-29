@@ -145,6 +145,8 @@ if(BUILD_TESTING)
     target_link_libraries(gmd_pme_bspline_tests PRIVATE gmd_core)
     add_executable(gmd_pme_energy_force_tests tests/pme_energy_force_tests.cpp)
     target_link_libraries(gmd_pme_energy_force_tests PRIVATE gmd_core)
+    add_executable(gmd_ml_virial_contract_tests tests/ml_virial_contract_tests.cpp)
+    target_link_libraries(gmd_ml_virial_contract_tests PRIVATE gmd_core)
 
     file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/tests)
     configure_file(tests/smoke_lj.xyz         ${CMAKE_CURRENT_BINARY_DIR}/tests/smoke_xyz.in       COPYONLY)
@@ -275,6 +277,10 @@ if(BUILD_TESTING)
     add_test(NAME gmd_pme_energy_force COMMAND gmd_pme_energy_force_tests)
     set_tests_properties(gmd_pme_energy_force
         PROPERTIES LABELS "unit;force;pme;validation")
+
+    # MLForceProvider reports no virial, and nothing downstream may consume one.
+    add_test(NAME gmd_ml_virial_contract COMMAND gmd_ml_virial_contract_tests)
+    set_tests_properties(gmd_ml_virial_contract PROPERTIES LABELS "unit;force")
 
     # Constrained NVE energy conservation and constrained Berendsen NPT pressure
     # reporting, through the real CLI: many consecutive rescaling steps, and the

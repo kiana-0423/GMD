@@ -53,6 +53,21 @@ void MLForceProvider::compute(const ForceRequest& request,
     result.potential_energy = 0.0;
     result.forces.clear();
 
+    // No ML backend in this engine reports a stress tensor, so this provider
+    // has no virial to offer. Say so explicitly rather than leaving the caller's
+    // fields untouched: a reused ForceResult would otherwise carry a previous
+    // provider's tensor and have it attributed to the model.
+    //
+    // sum_i r_i (x) F_i is deliberately NOT synthesised here. For a periodic,
+    // cell-dependent model that expression is not the virial -- the same reason
+    // it is wrong for the Ewald reciprocal term -- and manufacturing one would
+    // let a pressure-coupled barostat consume a number that does not mean what
+    // it claims. CompositeForceProvider propagates virial_valid == false, and
+    // VelocityVerletIntegrator refuses to run a barostat whose
+    // requires_virial() is true while none is available.
+    result.virial = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+    result.virial_valid = false;
+
     if (!adapter_ || model_path_.empty()) {
         return;
     }
