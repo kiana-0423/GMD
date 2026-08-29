@@ -94,23 +94,24 @@ constexpr long double kHartreeEnergyEv    = 27.211386245981L;
 constexpr long double kBohrRadiusAngstrom = 0.529177210544L;
 constexpr long double kCodata2022 = kHartreeEnergyEv * kBohrRadiusAngstrom;
 
-// What production currently uses. This is a pin measured out of the engine
-// below, not a derivation.
-constexpr long double kExpectedProduction = 14.3996L;
+// What production is expected to use: gmd::kCoulombConstant. This is a pin
+// measured out of the engine below, and it is tied to the derivation above
+// rather than left free.
+constexpr long double kExpectedProduction = 14.3996454686836L;
 
-// CHARACTERIZATION, NOT ENDORSEMENT.
-//
-// The production constant is a five-significant-figure truncation of the
-// CODATA derivation. This file records the exact size of that deviation so it
-// is a tested fact rather than an assertion in a document, and so that any
-// commit correcting the constant is forced to come through here.
-//
-// It is a real systematic error, not a rounding nicety: 3.16e-06 relative is
-// larger than the tightest PME convergence point this repository measures
-// (6.3e-10 relative, order 6 at grid 128), so it sets a floor on how well GMD
-// can ever agree with an external engine no matter how fine the mesh.
-constexpr long double kKnownDeviationFromCodata = -3.157635e-06L;
-constexpr long double kDeviationTolerance = 1.0e-4L;   // relative, on the deviation
+// The rounding policy: the production literal must reproduce the CODATA
+// derivation to double-precision representation. Anything looser is a
+// deliberate truncation and needs justifying, not absorbing into a tolerance.
+// For scale, rounding to LAMMPS' six decimals would be 3.3e-08 relative --
+// coarser than the tightest PME convergence point this repository measures
+// (6.3e-10, order 6 at grid 128) -- and would show up as a spurious
+// convergence floor.
+constexpr long double kRoundingPolicyRelative = 1.0e-12L;
+
+static_assert(kExpectedProduction / kCodata2022 - 1.0L < kRoundingPolicyRelative &&
+              1.0L - kExpectedProduction / kCodata2022 < kRoundingPolicyRelative,
+              "the pinned production constant no longer matches the CODATA 2022 "
+              "derivation E_h * a0 to the documented rounding policy");
 
 // --- a complete Ewald reference with k_e factored out ----------------------
 //
@@ -634,24 +635,22 @@ void test_two_charge_energy_at_known_separation() {
     }
 }
 
-void test_deviation_from_codata_is_as_documented() {
+void test_agrees_with_codata() {
     const long double relative = kExpectedProduction / kCodata2022 - 1.0L;
     std::cout << "\n  CODATA 2022  E_h * a0 = " << number(kCodata2022, 17) << '\n';
     std::cout << "  production            = " << number(kExpectedProduction, 17)
               << "   relative deviation " << number(relative, 4) << '\n';
-    check(std::fabs(relative / kKnownDeviationFromCodata - 1.0L) <= kDeviationTolerance,
-          "the production constant's deviation from the CODATA 2022 derivation is " +
-              number(relative, 6) + ", not the documented " +
-              number(kKnownDeviationFromCodata, 6) +
-              ". If the constant was corrected, update kExpectedProduction and "
-              "replace this characterization with a rounding-policy assertion.");
+    check(std::fabs(relative) <= kRoundingPolicyRelative,
+          "the production constant deviates from the CODATA 2022 derivation "
+          "E_h * a0 by " + number(relative, 4) + ", outside the documented "
+          "rounding policy of " + number(kRoundingPolicyRelative, 3));
 }
 
 }  // namespace
 
 int main() {
     std::cout << "Electrostatic unit-conversion constant audit\n";
-    test_deviation_from_codata_is_as_documented();
+    test_agrees_with_codata();
     test_two_charge_energy_at_known_separation();
     test_every_path_measures_the_same_constant();
     test_no_squared_or_missing_factor();

@@ -62,10 +62,11 @@ REFERENCE_GRID = 64   # the grid the checked-in CI reference is taken at
 REFERENCE_GMD_ORDER = 6
 ANALYTIC_KMAX = 24    # exp(-k^2/4 alpha^2) < 1e-20 on every axis of this box
 
-# GMD's Coulomb constant, from kPMECoulomb / kEwaldCoulomb in the sources.
-# Every engine's constant is MEASURED below rather than taken from its
-# documentation, because the whole comparison is scaled by it.
-KE_GMD = 14.3996
+# GMD's Coulomb constant, from gmd::kCoulombConstant in
+# include/gmd/core/physical_constants.hpp. Every engine's constant is MEASURED
+# below rather than taken from its documentation, because the whole comparison
+# is scaled by it.
+KE_GMD = 14.3996454686836
 
 
 def sha256(path: pathlib.Path) -> str:

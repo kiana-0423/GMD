@@ -6,7 +6,13 @@ import math
 from pathlib import Path
 
 
-COULOMB = 14.3996
+# CODATA 2022 k_e = E_h * a0 = 27.211386245981 * 0.529177210544, matching
+# gmd::kCoulombConstant in include/gmd/core/physical_constants.hpp. Declared
+# here rather than read from the C++ source on purpose: this module is an
+# independent analytic reference, and importing the production value would
+# make the comparisons it feeds self-confirming. It must track production,
+# and tests/electrostatic_constant_tests.cpp is what fails if it stops.
+COULOMB = 14.3996454686836
 KCAL_PER_MOL_TO_EV = 4.336410e-2
 
 

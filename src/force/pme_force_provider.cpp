@@ -7,6 +7,7 @@
 #include <numbers>
 #include <stdexcept>
 
+#include "gmd/core/physical_constants.hpp"
 #include "gmd/system/minimum_image.hpp"
 #include "gmd/force/special_pair_coulomb.hpp"
 #include "gmd/core/runtime_context.hpp"
@@ -19,8 +20,12 @@
 
 namespace gmd {
 
-// Coulomb constant k_e = e² / (4π ε₀) [eV · Å / e²].
-static constexpr double kPMECoulomb = 14.3996;
+// Coulomb constant k_e = e² / (4π ε₀) in units of [eV · Å / e²].
+// One authoritative definition, with its CODATA derivation and rounding
+// policy, lives in gmd/core/physical_constants.hpp. This file keeps a
+// local name for readability at the call sites; it must never be a
+// second literal.
+static constexpr double kPMECoulomb = kCoulombConstant;
 
 // ---------------------------------------------------------------------------
 // Helpers

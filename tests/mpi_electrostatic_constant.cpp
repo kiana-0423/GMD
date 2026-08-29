@@ -56,7 +56,7 @@ std::string number(double value) {
 
 // Must track tests/electrostatic_constant_tests.cpp; both are updated by any
 // commit that changes the production constant.
-constexpr double kExpectedProduction = 14.3996;
+constexpr double kExpectedProduction = 14.3996454686836;
 constexpr double kAlpha = 0.32;
 constexpr double kCutoff = 8.0;
 constexpr int kKmax = 10;

@@ -36,7 +36,8 @@ enum class PmeExecutionMode {
 // current domain decomposition but is not a distributed PME FFT.
 //
 // Physical units: Distances [Å], Energies [eV], Charges [e],
-//   k_e = 14.3996 eV·Å/e².
+//   k_e = gmd::kCoulombConstant (14.3996454686836 eV·Å/e², CODATA 2022;
+//   see gmd/core/physical_constants.hpp).
 //
 // Supported B-spline orders: 4 (default, cubic) or 6 (quintic).
 class PMEForceProvider final : public ForceProvider {

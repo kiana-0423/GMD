@@ -22,7 +22,8 @@ namespace gmd {
 //
 // Physical units:
 //   Distances [Å],  Energies [eV],  Charges [e],
-//   Coulomb constant k_e = 14.3996 eV·Å/e².
+//   Coulomb constant k_e = gmd::kCoulombConstant (14.3996454686836 eV·Å/e²,
+//   CODATA 2022; see gmd/core/physical_constants.hpp).
 //
 // Parameter selection:
 //   alpha        Controls the real/reciprocal split.  Larger alpha puts more
