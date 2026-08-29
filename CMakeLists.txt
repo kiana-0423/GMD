@@ -143,6 +143,8 @@ if(BUILD_TESTING)
     target_link_libraries(gmd_constraint_independence_tests PRIVATE gmd_core)
     add_executable(gmd_pme_bspline_tests tests/pme_bspline_tests.cpp)
     target_link_libraries(gmd_pme_bspline_tests PRIVATE gmd_core)
+    add_executable(gmd_electrostatic_constant_tests tests/electrostatic_constant_tests.cpp)
+    target_link_libraries(gmd_electrostatic_constant_tests PRIVATE gmd_core)
     add_executable(gmd_pme_energy_force_tests tests/pme_energy_force_tests.cpp)
     target_link_libraries(gmd_pme_energy_force_tests PRIVATE gmd_core)
     add_executable(gmd_ml_virial_contract_tests tests/ml_virial_contract_tests.cpp)
@@ -283,6 +285,9 @@ if(BUILD_TESTING)
     # as an ordinary single-process unit test in both the serial and the
     # MPI-enabled build: it exercises no MPI and its result must not depend on
     # whether MPI support was compiled in.
+    add_test(NAME gmd_electrostatic_constant COMMAND gmd_electrostatic_constant_tests)
+    set_tests_properties(gmd_electrostatic_constant
+        PROPERTIES LABELS "unit;force;validation")
     add_test(NAME gmd_pme_bspline COMMAND gmd_pme_bspline_tests)
     set_tests_properties(gmd_pme_bspline PROPERTIES LABELS "unit;force;pme")
 
@@ -433,6 +438,28 @@ if(BUILD_TESTING)
         target_link_libraries(gmd_mpi_constraint_independence_tests PRIVATE gmd_core)
         add_executable(gmd_mpi_virial_sources_tests tests/mpi_virial_sources.cpp)
         target_link_libraries(gmd_mpi_virial_sources_tests PRIVATE gmd_core)
+        add_executable(gmd_mpi_electrostatic_constant_tests
+            tests/mpi_electrostatic_constant.cpp)
+        target_link_libraries(gmd_mpi_electrostatic_constant_tests PRIVATE gmd_core)
+
+        # The serial audit proves each electrostatic path carries exactly one
+        # factor of k_e. Under MPI the providers allreduce their own energies,
+        # so a term applied once per rank instead of once per pair would stay
+        # self-consistent within a rank while scaling with the rank count.
+        # These runs measure the constant at 1, 2 and 4 ranks and require the
+        # same number every time and on every rank.
+        foreach(ke_np 1 2 4)
+            add_test(
+                NAME gmd_mpi_electrostatic_constant_${ke_np}proc
+                COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${ke_np}
+                        $<TARGET_FILE:gmd_mpi_electrostatic_constant_tests>
+            )
+            set_tests_properties(gmd_mpi_electrostatic_constant_${ke_np}proc
+                PROPERTIES
+                    LABELS "mpi;parallel;force;validation"
+                    PROCESSORS ${ke_np})
+        endforeach()
+
         add_executable(gmd_mpi_ml_edge_shift_tests tests/mpi_ml_edge_shift.cpp)
         target_link_libraries(gmd_mpi_ml_edge_shift_tests PRIVATE gmd_core)
 
