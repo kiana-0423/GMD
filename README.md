@@ -19,7 +19,7 @@ GMD is a C++20 molecular dynamics engine built around a small set of composable 
 | **Validation-progress release status** — README and validation docs now distinguish analytic validation, regression baselines, tested workflows, and prototype interfaces | `README.md` `validation/README.md` |
 | **Special-pair / 1-4 scaling validation** — topology-derived 1-2/1-3 exclusions and 1-4 LJ/Coulomb scaling are documented as analytic-validation covered | `include/gmd/system/special_pair_map.hpp` `validation/static_special_pairs/` |
 | **SHAKE/RATTLE and checkpoint/restart status corrected** — both are documented as tested features, with MPI constraint and checkpoint scalability limits called out | `README.md` `tests/restart_continuity.py` `tests/constraint_solver_tests.cpp` |
-| **PME external validation plan** — replicated PME remains tested but external-validation pending; LAMMPS PPPM/OpenMM PME reference work is planned separately | `validation/pme_external/README.md` |
+| **Independent external PME validation** — replicated PME is now compared against OpenMM PME and LAMMPS PPPM on a Coulomb-only fixture, with a convergence study showing all three codes approaching the same exact Ewald limit | `validation/pme_external/` |
 | **Release evidence tooling** — collect serial/MPI configure, build, CTest, validation summaries, and environment info without touching existing build dirs | `scripts/collect_release_logs.sh` `docs/release_logs/README.md` |
 | **Manual/nightly full MPI CI** — full MPI CTest workflow separate from ordinary PR CI | `.github/workflows/full-mpi.yml` |
 
@@ -71,22 +71,31 @@ sources, so it is spelled out rather than summarised as "validated":
 | LJ mixed types, explicit pair override | yes | — | yes | — | — | **no** |
 | 1-4 LJ scaling (0, partial, 1) | yes, plus exact linearity in the scale | — | yes | — | — | **no** |
 | Bond, angle, proper dihedral, improper | force moment `Σ_a (r_a - r_ref) ⊗ F_a`, built without `accum_interaction_virial()` | forces first verified against a central difference of an independently written energy; rotation covariance | yes | intact vs wrapped molecule | yes, chain spanning rank boundaries | **no** (LAMMPS covers the *forces*, not the tensor) |
-| Ewald real space | pair identity, independent regrouping of `-dV/dr` | — | yes | minimum image | yes | **no** |
-| Ewald reciprocal | independent re-derivation of the cell derivative | **shear strain derivative** of a test-only triclinic reciprocal energy | yes | k-space, not applicable | yes | **no** |
+| Ewald real space | pair identity, independent regrouping of `-dV/dr` | — | yes | minimum image | yes | **yes** — LAMMPS `kspace_style ewald`, all six independent components to 1.6e-7 eV |
+| Ewald reciprocal | independent re-derivation of the cell derivative | **shear strain derivative** of a test-only triclinic reciprocal energy | yes | k-space, not applicable | yes | **yes** — same LAMMPS comparison; the reported tensor is the sum of all Ewald terms |
 | Ewald net-charge correction | isotropic `U_net·δ_ab`, incl. off-diagonals required to vanish | — | yes | not applicable | yes | **no** |
 | Ewald self term | required to be identically zero | — | yes | not applicable | yes | **no** |
 | Special-pair Coulomb correction | `(scale-1)` times the bare pair tensor | — | yes | minimum image | yes, corrections spanning ranks counted once | **no** |
-| PME real space | compared directly against the Ewald pair sum | — | yes | minimum image | yes | **no** |
-| PME reciprocal mesh | — | PME → Ewald convergence under mesh refinement, **and** the reciprocal metric derivative of an independently written PME energy | yes | not applicable | yes | **no** — `validation/static_coulomb/reference_pme.json` is a GMD self-baseline |
+| PME real space | compared directly against the Ewald pair sum | — | yes | minimum image | yes | **yes** — included in the LAMMPS PPPM tensor comparison |
+| PME reciprocal mesh | — | PME → Ewald convergence under mesh refinement, **and** the reciprocal metric derivative of an independently written PME energy | yes | not applicable | yes | **yes** — LAMMPS PPPM, all six independent components to 8.6e-7 eV; energy and forces additionally against OpenMM PME |
 | SHAKE/RATTLE constraints | endpoint force from the RATTLE multipliers; rigid-rotor closed form | rigid-body second moment `-ω² Σ m a ⊗ a` | yes | yes | yes | **no** |
 | CompositeForceProvider | exact component-wise addition | — | yes | not applicable | yes | not applicable |
 | MLForceProvider | reports no virial; `virial_valid == false` asserted | — | not applicable | not applicable | rejects MPI outright | not applicable |
 
-**No virial tensor in GMD has external-engine validation.** LAMMPS appears in
-`validation/static_bonded_reference` and OpenMM nowhere; both cover energies and
-forces, never a virial tensor, and neither has been run with a
-proven-equivalent virial definition. Nothing above should be read as
-cross-code validated.
+**External-engine coverage of the virial is real but partial.** The
+electrostatic virial — every Ewald and PME term, summed — is compared against
+LAMMPS in `validation/pme_external`: all six independent components (and so, via
+an asserted symmetry, all nine) agree to 1.6e-7 eV against `kspace_style ewald`
+and 8.6e-7 eV against PPPM, on a fixture whose off-diagonals are all
+substantially nonzero. That is a genuine cross-code check of a tensor.
+
+Every other row is still marked **no**, and means it. LJ, bonded, special-pair
+and constraint virials have no external reference: LAMMPS reports one combined
+pressure tensor, so isolating a single contribution would require reconstructing
+it by subtraction under an assumption of equivalence that has not been proven
+here. OpenMM exposes no virial at all, in any decomposition. The constraint
+virial is additionally a dynamical quantity that cannot be compared from a
+static configuration.
 
 **Why the off-diagonal claim is not a finite-difference claim.** `Box` stores
 three edge lengths, so the engine represents orthorhombic cells only and no
@@ -112,6 +121,105 @@ strain-derivative reference, and not a general rotation.
 Tests: `tests/virial_source_inventory_tests.cpp`,
 `tests/pme_reciprocal_virial_tests.cpp`, `tests/mpi_virial_sources.cpp`, with
 the shared references in `tests/virial_reference.hpp`.
+
+### Independent external PME validation
+
+Everything above compares GMD against references written for GMD. That is
+sufficient to catch an implementation mistake and insufficient to catch a shared
+misunderstanding. `validation/pme_external` closes that gap by running two
+unrelated engines on the same configuration.
+
+| | |
+|---|---|
+| Primary reference | **OpenMM 8.6.0**, `NonbondedForce` with `PME`, Reference platform (double precision), installed from the PyPI wheel |
+| Second reference | **LAMMPS 22 Jul 2025 – Update 5**, `kspace_style pppm` and `kspace_style ewald`, `units metal`, Homebrew build |
+| Fixture | `validation/pme_external/charges.xyz` — 12 atoms, exactly charge neutral, irregular positions, **non-cubic** 18 × 22 × 26 Å box, no symmetry that makes any force component vanish |
+| Coupling | Coulomb only. No Lennard-Jones, no bonded terms, no exclusions, no 1-4 scaling — so there is no shift, switch, mixing rule or dispersion-correction convention to reconcile |
+| Settings | α = 0.35 Å⁻¹, real-space cutoff 8.0 Å (< L_min/2), grids 16³ … 128³ |
+
+**What is exactly aligned, and what is not.** This distinction is the whole
+substance of a cross-code comparison, so it is stated per parameter rather than
+asserted in aggregate:
+
+| Parameter | GMD | OpenMM | LAMMPS | Aligned? |
+|---|---|---|---|---|
+| Splitting α | set directly | `setPMEParameters`, read back from the context as 3.5 nm⁻¹ | `kspace_modify gewald` | **exactly** |
+| Reciprocal grid | set directly | `setPMEParameters`, read back | `kspace_modify mesh` | **exactly** |
+| Real-space cutoff | 8.0 Å | 0.8 nm | 8.0 Å | **exactly** |
+| Periodicity, box | orthorhombic, all three axes | same, off-diagonals exactly zero | same | **exactly** |
+| Exclusions, net charge | none; system neutral | none; system neutral | none; system neutral | **exactly** |
+| B-spline order | 4 or 6 | **fixed at 5**, not exposed by any API | `kspace_modify order`, 4 and 6 both run | **impossible with OpenMM** |
+| Reciprocal influence function | Essmann smooth PME | Essmann smooth PME | PPPM *optimised* Green's function — a different mesh approximation by construction | **not aligned with LAMMPS** |
+| Coulomb constant `k_e` | `14.3996` eV·Å/e² | 138.935457 kJ/mol·nm/e² | 14.399645 eV·Å/e² | **not aligned** — see below |
+
+**The Coulomb constant is corrected exactly, not tolerated.** GMD's `14.3996`
+is low by **3.16e-6 relative** against the CODATA value both external engines
+use. Every Ewald term carries exactly one factor of `k_e`, so each engine's
+result is rescaled by `k_e^GMD / k_e^engine`, which is an exact correction
+rather than an approximation. Both constants are *measured* from the engines at
+generation time — a two-charge probe — rather than quoted from documentation.
+Left uncorrected this 3.16e-6 offset would exceed the grid-128 mesh error and be
+misread as a convergence floor. Note that for OpenMM the eV ↔ kJ/mol convention
+cancels out of the combined factor entirely, so no energy-unit constant enters
+the comparison.
+
+**Convergence, not a single tolerance.** All three codes are swept over the same
+grids and measured against the exact Ewald sum at the same α and the same
+cutoff. Absolute energy error in eV:
+
+| Grid | GMD order 4 | GMD order 6 | LAMMPS PPPM order 4 | LAMMPS PPPM order 6 | OpenMM order 5 |
+|---|---|---|---|---|---|
+| 16³ | 1.54e-02 | 1.87e-03 | 4.51e-03 | 4.22e-04 | 4.68e-03 |
+| 32³ | 8.04e-04 | 1.19e-05 | 1.17e-04 | 2.18e-06 | 4.76e-05 |
+| 64³ | 5.96e-05 | 1.97e-07 | 6.92e-06 | 1.25e-07 | 9.34e-07 |
+| 128³ | 3.54e-06 | 2.65e-09 | — | — | 1.17e-08 |
+
+Every column falls monotonically, at the rate its interpolation order predicts
+(GMD order 4 ≈ h⁴, order 6 ≈ h⁶). The three codes converge toward the *same*
+limit from different mesh approximations, which is the actual claim being made.
+LAMMPS PPPM stops at 64³ because `kspace_modify mesh N N N` aborts that build
+with SIGSEGV for every N > 64 on this fixture, with pinned or auto-selected
+parameters alike — an external-engine limit, recorded in the reference file.
+
+**Result at the reference settings** (grid 64³, GMD order 6 vs OpenMM order 5):
+
+| Quantity | Error | Where |
+|---|---|---|
+| Energy | 1.13e-06 eV absolute, 2.70e-07 relative | — |
+| Force, worst component | 1.53e-06 eV/Å | atom 0, z |
+| Force RMS | 4.46e-07 eV/Å | — |
+| Against LAMMPS PPPM | 7.21e-08 eV, 2.69e-07 eV/Å | — |
+| Virial, all six independent components vs LAMMPS PPPM | ≤ 8.58e-07 eV | `W_zz` |
+| Virial vs LAMMPS exact Ewald | ≤ 1.65e-07 eV | `W_zz` |
+
+The tolerances are derived, not observed-and-rounded: at these settings GMD's
+own mesh error is 1.97e-07 eV and OpenMM's is 9.34e-07 eV, so two mesh methods
+can differ by at most their sum, 1.13e-06 eV. The observed difference *is*
+1.1313e-06 — the triangle-inequality bound is tight, because the two codes
+deviate from exact Ewald in opposite directions. The committed tolerance is that
+bound doubled.
+
+**Also checked, at test time:** that the reference is not GMD's own output (two
+different PME implementations at different interpolation orders cannot agree
+below 1e-8, so a smaller gap is a replaced file, not a passing test); that the
+fixture and run-file hashes match the ones the reference was generated for; that
+the run file's α, cutoff and grid still match the reference block; that the same
+configuration written in different periodic images gives identical energy
+(1.7e-13 eV) and forces (1.9e-14 eV/Å); and that a rigid translation by a
+non-lattice vector changes the answer only at the mesh-error level, since a mesh
+fixed to the box makes exact translation invariance false by construction.
+
+**What this does *not* establish.** OpenMM exposes no virial in any form, so the
+tensor comparison rests on LAMMPS alone. Neither engine exposes a proven
+equivalent of GMD's *decomposition* into real, reciprocal, self and background
+parts, so only the total electrostatic energy, the forces and the total
+electrostatic virial are cross-validated — not the internal split. Nothing here
+covers LJ, bonded, special-pair or constraint contributions, and nothing here
+runs under MPI.
+
+Regenerating the reference requires both engines and is a deliberate manual
+step; the CI comparison reads the checked-in JSON and needs neither. See
+`validation/pme_external/README.md`.
 
 ### PME: the production kernel, tested directly
 
@@ -549,7 +657,7 @@ Implemented:
 - Nosé-Hoover thermostat (VVNH splitting)
 - Berendsen barostat (weak-coupling, requires virial)
 - **Monte Carlo barostat** (isotropic NPT, Metropolis criterion, no virial required, adaptive step-size)
-- long-range Coulomb via Ewald and replicated PME (self-contained 3D FFT, B-spline orders 4/6); Ewald has an analytic static validation reference, while replicated PME is tested against a provisional regression baseline and still needs external validation
+- long-range Coulomb via Ewald and replicated PME (self-contained 3D FFT, B-spline orders 4/6); Ewald has an analytic static validation reference, and replicated PME has an **independent external reference** — OpenMM PME with LAMMPS PPPM as a second engine, see *Independent external PME validation* above
 - **ML force provider** — TorchScript backend (`GMD_ENABLE_TORCH=ON`), SE3-GNN compatible, reads `local_cutoff` from model
 - **MPI spatial domain decomposition** — balanced or user-selected 3D process grids, face/edge/corner ghost-atom exchange, reverse force accumulation via `MPI_Alltoallv`, atom redistribution via `MPI_Allgatherv`, and allreduce collectives (`GMD_ENABLE_MPI=ON`); covered by 2/4/8-rank tests
 - replicated-mesh PME under MPI; the `pme_mode distributed` path currently exercises an interface/prototype while still using the replicated numerical backend
@@ -566,7 +674,6 @@ Not yet implemented:
 - CUDA compute backend (CMake option present but CPU-only)
 - Python bindings
 - full unit / regression test coverage
-- independent external validation for replicated PME (LAMMPS PPPM or OpenMM PME reference pending)
 - true distributed PME/FFT: distributed charge assignment, grid decomposition, MPI FFT communication, and force interpolation from a distributed reciprocal grid
 
 ---
@@ -1152,7 +1259,7 @@ Current validation status:
 - **LJ static cluster**: analytic reference, suitable for short CI.
 - **Special-pair / 1-4 scaling static chain**: analytic shifted-LJ + Ewald special-pair reference, including a modified-scale variant.
 - **Ewald static Coulomb**: analytic periodic Ewald reference.
-- **Replicated PME static Coulomb**: tested as a regression baseline only; external LAMMPS PPPM or OpenMM PME validation is pending.
+- **Replicated PME static Coulomb**: `validation/static_coulomb` remains a GMD regression baseline. The independent external validation is `validation/pme_external` — OpenMM 8.6.0 PME as the primary reference and LAMMPS 22 Jul 2025 PPPM plus exact Ewald as a second engine, covering total energy, every per-atom force component and all nine virial components, with a four-grid convergence study toward the exact Ewald limit.
 - **Distributed PME mode**: interface/prototype selection path only; it uses replicated PME numerics and is not evidence of scalable distributed FFT performance.
 - **SHAKE/RATTLE**: tested for serial projection, water geometry, constrained NVE stability, and a cross-rank MPI projection; the MPI algorithm is correctness-first global gather.
 - **Checkpoint/restart**: tested through the real `gmd` CLI restart-continuity workflow in serial and MPI.

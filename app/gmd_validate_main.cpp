@@ -1,3 +1,4 @@
+#include <array>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
@@ -200,6 +201,11 @@ int main(int argc, char** argv) {
         double bonded_energy = 0.0;
         double coulomb_energy = 0.0;
         std::string coulomb_method = "none";
+        // Row-major W_ab = virial[a * 3 + b], summed over every component that
+        // reports one. A component that cannot produce a virial clears the flag
+        // for the whole run rather than silently contributing zeros.
+        std::array<double, 9> total_virial{};
+        bool virial_valid = true;
         std::vector<gmd::Force3D> total_forces(system.atom_count(), gmd::Force3D{0.0, 0.0, 0.0});
 
         auto accumulate_component = [&](const gmd::ForceResult& result) {
@@ -210,6 +216,13 @@ int main(int argc, char** argv) {
                 total_forces[atom_index][0] += result.forces[atom_index][0];
                 total_forces[atom_index][1] += result.forces[atom_index][1];
                 total_forces[atom_index][2] += result.forces[atom_index][2];
+            }
+            if (result.virial_valid) {
+                for (std::size_t index = 0; index < total_virial.size(); ++index) {
+                    total_virial[index] += result.virial[index];
+                }
+            } else {
+                virial_valid = false;
             }
         };
 
@@ -287,6 +300,14 @@ int main(int argc, char** argv) {
                << "      \"bonded\": " << bonded_energy << ",\n"
                << "      \"coulomb\": " << coulomb_energy << "\n"
                << "    }\n"
+               << "  },\n"
+               << "  \"virial\": {\n"
+               << "    \"valid\": " << (virial_valid ? "true" : "false") << ",\n"
+               << "    \"convention\": \"W_ab = sum_i r_ia F_ib, row major, eV\",\n"
+               << "    \"tensor\": [" << total_virial[0] << ", " << total_virial[1]
+               << ", " << total_virial[2] << ", " << total_virial[3] << ", "
+               << total_virial[4] << ", " << total_virial[5] << ", " << total_virial[6]
+               << ", " << total_virial[7] << ", " << total_virial[8] << "]\n"
                << "  },\n"
                << "  \"force\": {\n"
                << "    \"rms_norm\": " << force_rms(total_forces) << ",\n"

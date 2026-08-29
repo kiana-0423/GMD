@@ -9,8 +9,11 @@
 
 - `reference_ewald.json` 由 `validation/analytic_references.py` 生成，
   是独立 Python 周期 Ewald 解析参考，不使用 GMD 输出。
-- `reference_pme.json` 仍是 `provisional_gmd_baseline`。PME mesh 结果需要
-  LAMMPS PPPM 或 OpenMM PME 外部参考后才能升级为 independent validation。
+- `reference_pme.json` 是 `provisional_gmd_baseline`，作为本 case 的 regression
+  保留。PME 的 independent validation 现在由 `validation/pme_external/` 提供：
+  OpenMM 8.6.0 PME 为主参考，LAMMPS PPPM 与 exact Ewald 为第二引擎，另含全部
+  九个 virial 分量的比较。本 case 的 PME 行仍是 GMD 自身输出，不要单独引用为
+  cross-code validation。
 - 目录内提供了匹配参数的 `lammps_ewald.in` 和 `lammps_pme.in`，便于后续替换为外部参考软件结果。
 
 固定参数：

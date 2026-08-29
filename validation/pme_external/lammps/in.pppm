@@ -1,0 +1,50 @@
+# LAMMPS PPPM evaluation of the pme_external fixture.
+#
+# Every parameter that GMD exposes is pinned here rather than left to LAMMPS'
+# accuracy-driven auto-selection, so that a difference in the result is a
+# difference in the mesh algorithm and not a difference in the settings:
+#
+#   kspace_modify gewald  -> the Ewald splitting alpha, in 1/Angstrom (metal
+#                            units), overriding the value LAMMPS would derive
+#                            from the requested accuracy;
+#   kspace_modify mesh    -> the exact reciprocal grid, overriding LAMMPS'
+#                            own grid search;
+#   kspace_modify order   -> the interpolation stencil order, which LAMMPS
+#                            calls the PPPM order and which corresponds to
+#                            GMD's B-spline order.
+#
+# The `accuracy` argument to kspace_style still has to be given, but with
+# gewald, mesh and order all pinned it no longer selects anything. It is set
+# far tighter than the mesh can deliver so it cannot silently coarsen a
+# setting; LAMMPS then only reports the estimate.
+#
+# There is no Lennard-Jones term: pair_style is coul/long alone, so there is
+# no shift, switch or mixing convention to reconcile with GMD.
+
+units           metal
+atom_style      charge
+boundary        p p p
+atom_modify     map array sort 0 0.0
+
+read_data       ${datafile}
+
+pair_style      coul/long ${rcut}
+pair_coeff      * *
+
+kspace_style    pppm 1.0e-10
+kspace_modify   gewald ${alpha}
+kspace_modify   mesh ${nx} ${ny} ${nz}
+kspace_modify   order ${order}
+kspace_modify   compute yes
+
+# Virial without any kinetic contribution: NULL suppresses the temperature
+# term, so c_virial is the configurational pressure alone.
+compute         virial all pressure NULL virial
+
+thermo_style    custom step pe ecoul elong c_virial[1] c_virial[2] c_virial[3] c_virial[4] c_virial[5] c_virial[6]
+thermo_modify   format float %.17g
+
+dump            f all custom 1 ${forcefile} id fx fy fz
+dump_modify     f sort id format float %.17g
+
+run             0

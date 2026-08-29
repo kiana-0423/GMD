@@ -329,6 +329,63 @@ instead.
 
 ### Added
 
+- **Independent external PME validation** `validation/pme_external`. Replicated
+  PME is compared against **OpenMM 8.6.0** (`NonbondedForce` with `PME`,
+  Reference platform, double precision) as the primary reference, and against
+  **LAMMPS 22 Jul 2025 - Update 5** (`kspace_style pppm` and `kspace_style
+  ewald`, `units metal`) as a second engine. This replaces the standing
+  "external validation pending" status for PME.
+
+  The fixture is Coulomb-only by construction: 12 atoms, exactly charge neutral
+  (charges are multiples of 1/16, so the sum is exactly zero in binary floating
+  point and no neutralising-background term fires anywhere), irregular positions
+  with no symmetry, in a non-cubic 18 x 22 x 26 A box. There is no
+  Lennard-Jones term, no bonded term, no exclusion and no 1-4 scaling, so no
+  shift, switch, mixing-rule or dispersion-correction convention has to be
+  reconciled between three codes.
+
+  **Exactly aligned:** splitting alpha, reciprocal grid, real-space cutoff, box
+  vectors, periodicity on all three axes, absence of exclusions, charge
+  neutrality, double precision. **Not alignable:** OpenMM's B-spline
+  interpolation order is fixed at 5 in its sources and exposed by no API, while
+  GMD supports 4 and 6; and LAMMPS PPPM uses an optimised Green's function
+  rather than the Essmann smooth-PME kernel GMD and OpenMM share, so it is a
+  different mesh approximation by construction. LAMMPS' `kspace_modify order`
+  does match, and both 4 and 6 are run there. **Not comparable at all:** the
+  decomposition into real / reciprocal / self / background, which neither engine
+  exposes with a proven-equivalent definition.
+
+  Rather than one arbitrary tolerance, all three codes are swept over grids
+  16^3 to 128^3 and measured against the exact Ewald sum at the same alpha and
+  the same cutoff. Every column falls monotonically at the rate its
+  interpolation order predicts, and the three converge to the same limit from
+  different mesh approximations. At the reference settings (grid 64^3, GMD order
+  6 against OpenMM order 5) the energy differs by 1.13e-06 eV (2.70e-07
+  relative) and the worst force component by 1.53e-06 eV/A, at atom 0 in z. The
+  committed tolerance is the triangle-inequality bound |GMD - exact| + |OpenMM -
+  exact| doubled; that bound is tight rather than loose here, because the two
+  codes deviate from exact Ewald in opposite directions.
+
+  **The full virial tensor now has an external reference.** All six independent
+  components agree with LAMMPS to 1.65e-07 eV for exact Ewald and 8.58e-07 eV
+  for PPPM, on a fixture whose off-diagonals are all substantially nonzero.
+  GMD's tensor symmetry is measured rather than assumed, which is what makes
+  LAMMPS' six components cover all nine of GMD's. OpenMM exposes no virial in
+  any form, so this rests on LAMMPS alone. Every other virial source -- LJ,
+  bonded, special-pair, constraint -- still has **no** external reference.
+
+  The CI comparison reads the checked-in JSON and requires neither engine;
+  regenerating it requires both and is a deliberate manual step. The comparison
+  also verifies that the reference has not been replaced by GMD's own output:
+  two PME implementations at different interpolation orders cannot agree below
+  1e-08, so a smaller gap fails the run rather than passing it silently.
+
+- **`gmd_validate` reports the virial tensor.** The JSON gains a `virial` block
+  with the full row-major 3x3 and an explicit `valid` flag, summed over every
+  component that reports one. Without it there was no way to compare a virial
+  against an external engine at all. A component that cannot produce a virial
+  clears the flag for the whole run rather than contributing silent zeros.
+
 - **External bonded reference case** `validation/static_bonded_reference`,
   independently validating, for bond, angle, proper dihedral and improper terms:
   the **functional forms**, the **angle and sign conventions** (including the
@@ -514,8 +571,23 @@ instead.
 - Constraint independence is validated on the converged projected geometry.
   The defensive rank-selection fallback remains API-tested because no physical
   fixture has been found that makes the primary and fallback rank counts disagree.
-- The virial is not compared against LAMMPS; its per-term decomposition and
-  GMD's do not have proven-equivalent semantics for the reference fixture.
+- **Only the electrostatic virial is compared against LAMMPS.** The Ewald and
+  PME tensors are (see *Added*), because the *total* electrostatic virial has
+  the same definition in both codes. The LJ, bonded, special-pair and constraint
+  virials are not: LAMMPS reports one combined pressure tensor, and isolating a
+  single contribution from it would require reconstructing it by subtraction
+  under an equivalence assumption that has not been proven here. The per-term
+  decomposition inside the electrostatic sum -- real, reciprocal, self,
+  background -- is likewise not compared, for the same reason. OpenMM exposes no
+  virial in any decomposition.
+- **GMD's Coulomb constant is 3.16e-06 low.** `kEwaldCoulomb` and `kPMECoulomb`
+  are `14.3996` eV·A/e²; the CODATA value, measured from both external engines
+  during the PME comparison, is `14.399645`. Every Coulomb energy and force GMD
+  reports is scaled by `1 - 3.16e-06`, which is larger than the PME mesh error at
+  grid 128. `validation/pme_external` corrects for it exactly -- the dependence
+  is exactly linear -- so the comparison is unaffected, but the offset itself is
+  **not fixed**: changing the constant would move every checked-in baseline in
+  the repository and is deliberately left as a separate decision.
 - TorchScript `edge_shift` is directly covered (see *Added*), but only in a build configured with `GMD_ENABLE_TORCH=ON`. A build without LibTorch does not register the test and reports that at configure time; in such a build the contract is unverified.
 
 ## [v2.4] - 2026-05-24

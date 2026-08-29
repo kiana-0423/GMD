@@ -20,19 +20,19 @@
 - `static_coulomb/reference_ewald.json`：解析周期 Ewald reference。
 - `static_bonded_reference`：bond / angle / proper dihedral / improper 的 LAMMPS 外部 reference（LAMMPS 22 Jul 2025 - Update 5）。单位、functional form、improper 的 sign convention mapping 与 atom ordering 全部记录在该 case 的 `README.md`；`generate_reference.py` 只在 reference 需要重新生成时手动运行，validation 本身不依赖 LAMMPS。
 - `static_coulomb/reference_pme.json`：仍为 provisional GMD PME regression baseline，等待 LAMMPS PPPM 或 OpenMM PME 外部参考。**该 baseline 已于 2026-08-27 重新生成**：修复三处 PME reciprocal force 缺陷后，旧 baseline 记录的 force 缺失约 94%（reciprocal force 恒为零）。重新生成后的 force 与同 case 的解析 Ewald reference 一致到 8.2e-4，即 grid 16^3 / order 4 / alpha 0.3 下应有的 mesh error；旧值与之相差 8.9e-2。energy 未变。
-- `pme_external/`：PME 外部验证设计与待办事项；当前不包含已完成 reference。
+- `pme_external/`：**已完成的 PME 外部参考**。OpenMM 8.6.0 PME 为主参考，LAMMPS 22 Jul 2025 - Update 5 的 PPPM 与 exact Ewald 为第二引擎。Coulomb-only、非立方 18x22x26 A、12 原子、精确电中性、无对称性的 fixture。alpha / grid / cutoff / 边界条件 / 无 exclusion 全部精确对齐；B-spline order 无法与 OpenMM 对齐（其固定为 5，无 API 暴露）；LAMMPS PPPM 用的是 optimised Green's function，本身就是另一种 mesh 近似。GMD 的 k_e = 14.3996 比两个引擎使用的 CODATA 值低 3.16e-06（相对），按 k_e 精确线性缩放修正——不修正的话该偏差会超过 grid 128 的 mesh error 并被误读为收敛下限。三个引擎在 16/32/64/128 网格上单调收敛到同一个 exact Ewald 极限。reference settings（grid 64^3，GMD order 6 vs OpenMM order 5）下 energy 差 1.13e-06 eV、force 最大分量差 1.53e-06 eV/A；容差取 |GMD-exact| + |OpenMM-exact| 三角不等式界的两倍，而非把观测值向上取整。**virial 张量全部九个分量对 LAMMPS 验证**（exact Ewald 1.6e-07 eV，PPPM 8.6e-07 eV）；OpenMM 完全不暴露 virial。重新生成 reference 需要两个外部引擎，CI 比较不需要。
 - 长时间 NVE/NVT/NPT/diffusion cases：仍为 provisional workflow/regression baselines。
 
 当前 release-facing 状态：
 
 - LJ：已通过解析 reference 验证。
 - Ewald：已通过解析 periodic Ewald reference 验证。
-- replicated PME：可运行并进入测试，但仍只有 provisional regression baseline。
+- replicated PME：**已有独立外部参考**（OpenMM PME + LAMMPS PPPM，见 `pme_external/`）。`static_coulomb/reference_pme.json` 仍是 GMD self-baseline，作为 regression 保留，不再是 PME 的唯一证据。
 - `pme_mode distributed`：仅为 interface/prototype，数值 backend 仍是 replicated PME。
 - SHAKE/RATTLE：串行与一个 cross-rank MPI correctness-first global-gather 路径已有测试；不是 scalable distributed constraint solver。
 - 约束动力学：已改为标准 SHAKE/RATTLE splitting（修正了投影方向与缺失的半步速度冲量），含约束轨迹改变；约束 virial 作为 `t+dt` 端点量进入 reported pressure，验证参考为刚性转子的向心力解析解，不依赖实现公式；详见下节。**没有外部引擎参考。**
 - checkpoint/restart：真实 `gmd` CLI restart-continuity 测试覆盖 serial、MPI np=2、MPI np=4。
-- virial：**每一个 virial source 都已逐分量（全部九个分量）对独立 reference 验证**，见 README.md 的 *Virial validation coverage* 表。`Box` 只能表示 orthorhombic cell、无法施加 shear strain，因此 `tests/virial_finite_difference_tests.cpp` 只验证 trace 与三个对角分量；off-diagonal 由三类不需要引擎 shear 的 reference 覆盖：解析 pair identity、独立 bonded force moment，以及一个 test-only、写在一般 3x3 cell 上的 reciprocal energy（**可以** shear），对其做 general strain 数值微分即得全部九个分量。rotation covariance 是必要条件而非 shear derivative 的替代品。**没有任何 virial tensor 有外部引擎参考**：LAMMPS 只用于 `static_bonded_reference` 的 energy/force，OpenMM 未使用。
+- virial：**每一个 virial source 都已逐分量（全部九个分量）对独立 reference 验证**，见 README.md 的 *Virial validation coverage* 表。`Box` 只能表示 orthorhombic cell、无法施加 shear strain，因此 `tests/virial_finite_difference_tests.cpp` 只验证 trace 与三个对角分量；off-diagonal 由三类不需要引擎 shear 的 reference 覆盖：解析 pair identity、独立 bonded force moment，以及一个 test-only、写在一般 3x3 cell 上的 reciprocal energy（**可以** shear），对其做 general strain 数值微分即得全部九个分量。rotation covariance 是必要条件而非 shear derivative 的替代品。**静电 virial 现已有外部引擎参考**：`pme_external` 把 Ewald 与 PME 的全部六个独立分量（张量对称性被显式测量而非假定，故覆盖全部九个）对 LAMMPS 比较，分别到 1.6e-07 eV 与 8.6e-07 eV。**其余 virial source 仍无外部参考**：LJ、bonded、special-pair、constraint 都只有解析/数值独立参考——LAMMPS 只导出合并后的压强张量，单独拆出某一项需要未经证明的等价假设；OpenMM 根本不暴露 virial。
 
 ## 约束动力学与约束 virial 的验证范围
 
@@ -154,4 +154,4 @@ python3 validation/run_validation.py \
   --work-root build/validation
 ```
 
-PME 外部参考验证的准备工作记录在 `validation/pme_external/README.md`。
+PME 外部参考的 fixture、对齐范围、收敛表、容差推导与遗留限制记录在 `validation/pme_external/README.md`。
