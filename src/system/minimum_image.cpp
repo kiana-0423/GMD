@@ -1,5 +1,7 @@
 #include "gmd/system/minimum_image.hpp"
 
+#include <cmath>
+
 namespace gmd {
 
 double apply_minimum_image_component(double displacement,
@@ -8,6 +10,16 @@ double apply_minimum_image_component(double displacement,
     if (length <= 0.0) {
         return displacement;
     }
+
+    // Coordinates normally remain in the primary cell because the integrator
+    // wraps them after every drift. Initial configurations and direct API users
+    // are not required to satisfy that precondition, however, so a displacement
+    // can span more than one box. Reduce it first, then retain the historical
+    // tie convention at exactly +/- half a box.
+    if (!std::isfinite(displacement)) {
+        return displacement;
+    }
+    displacement = std::fmod(displacement, length);
     if (displacement < -half_length) {
         displacement += length;
     } else if (displacement > half_length) {
