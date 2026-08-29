@@ -18,7 +18,9 @@
 
 namespace {
 
-constexpr double kCoulomb = 14.3996;
+// CODATA 2022 k_e = E_h * a0, matching gmd::kCoulombConstant. Declared
+// independently so this reference is not a restatement of production.
+constexpr double kCoulomb = 14.3996454686836;
 constexpr double tolerance = 1.0e-10;
 
 void check(bool value, const std::string& message, int& failures) {

@@ -6,6 +6,59 @@ All notable user-facing changes in GMD are documented here.
 
 ### ⚠️ Simulation-results-changing corrections
 
+- **The electrostatic conversion constant was wrong in its sixth significant
+  figure, and is corrected.** `k_e` was `14.3996` eV·Å/e²; it is now
+  `14.3996454686836`. **Every Coulomb, Ewald and PME energy, force and virial
+  GMD produces changes by +3.157635e-06 relative. Nothing is bitwise compatible
+  with a previous release.**
+
+  The old value was a five-significant-figure truncation. The new one is derived
+  from the 2022 CODATA adjustment: in atomic units the Coulomb energy of two
+  unit charges one Bohr radius apart is exactly one Hartree, so
+  `e²/(4πε₀) = E_h·a₀` and, in GMD's units, `k_e = E_h[eV]·a₀[Å] =
+  27.211386245981 × 0.529177210544 = 14.399645468683593…`. Both factors are
+  NIST's tabulated CODATA 2022 values, cited in
+  `include/gmd/core/physical_constants.hpp`. Deriving the same number straight
+  from `e` and `ε₀` agrees to 1.1e-12 relative, which is the uncertainty in `ε₀`
+  rather than an error in either route.
+
+  **Why this is worth changing.** 3.16e-06 is not a cosmetic digit here. It is
+  larger than the tightest PME convergence point this repository measures —
+  6.3e-10 relative, order 6 at grid 128 — so it was a floor on agreement with
+  any external engine no matter how fine the mesh, and
+  `validation/pme_external` had to correct for it explicitly to keep its
+  convergence study meaningful.
+
+  **Rounding policy:** enough digits to reproduce the derivation to
+  double-precision representation (4.6e-16 relative). Rounding to LAMMPS' six
+  decimals would be 3.3e-08 — still coarser than that convergence point, and it
+  would reintroduce a smaller version of the same floor.
+
+  **Compatibility policy: CODATA, not an engine.** Nothing in this repository
+  documents a requirement to reproduce another code's constant, and the engines
+  do not agree with each other anyway: LAMMPS `units metal` uses `14.399645`
+  (3.3e-08 low, measured here) and OpenMM's `ONE_4PI_EPS0` works out to
+  `14.399645478` (6.8e-10 high, measured here). `validation/pme_external` keeps
+  converting each engine's result by the exactly linear ratio
+  `k_e^GMD / k_e^engine`, which now corrects the engines' own rounding rather
+  than GMD's error.
+
+  **One definition.** The constant existed as two independent literals, in
+  `ewald_force_provider.cpp` and `pme_force_provider.cpp`, with nothing keeping
+  them equal. Both now derive from `gmd::kCoulombConstant` in the new
+  `include/gmd/core/physical_constants.hpp`. The test-side and validation-side
+  references keep their own declarations on purpose — importing the production
+  symbol would make every comparison built on them self-confirming.
+
+  **Restart implication:** checkpoints do not store the constant, so a
+  checkpoint written before this change and resumed after it continues with the
+  corrected value and diverges from the original trajectory at the 3.16e-06
+  level. **Baseline implication:** every stored Coulomb baseline was
+  regenerated, with the Coulomb components verified to scale by exactly the
+  constant ratio and the Lennard-Jones components verified bit-identical.
+  Totals and stored per-atom forces do *not* scale exactly, because they sum a
+  quantity that depends on `k_e` with one that does not.
+
 - **`GMD_ENABLE_TORCH=ON` did not compile.** `include/gmd/force/torchscript_adapter.hpp`
   carried `namespace torch::jit { struct script::Module; }`. That is ill-formed:
   an elaborated-type-specifier cannot carry a nested-name-specifier, and
@@ -329,6 +382,23 @@ instead.
 
 ### Added
 
+- **Electrostatic constant audit** `tests/electrostatic_constant_tests.cpp` and
+  `tests/mpi_electrostatic_constant.cpp`. Neither reads the production constant,
+  which has internal linkage: each electrostatic sum is recomputed with `k_e = 1`
+  and the constant recovered as `E_provider / Φ_reference`, exact because the
+  dependence is exactly linear. This is what established that every path — Ewald
+  real, reciprocal, self and background, the same four for PME at orders 4 and 6,
+  and the bare special-pair correction — carries exactly one factor of the same
+  constant, and it is what pins the value against the CODATA derivation.
+
+  Energy, force and virial are recovered separately, so a missing factor in the
+  force path cannot hide behind a correct energy. A path that dropped the
+  constant would measure 1 and one that applied it twice would measure `k_e²`;
+  both are named failures rather than a generic tolerance. The MPI half repeats
+  the measurement at 1, 2 and 4 ranks, because the providers return rank-local
+  partial energies and a term applied once per rank instead of once per pair
+  would stay self-consistent within any single rank.
+
 - **Independent external PME validation** `validation/pme_external`. Replicated
   PME is compared against **OpenMM 8.6.0** (`NonbondedForce` with `PME`,
   Reference platform, double precision) as the primary reference, and against
@@ -580,14 +650,18 @@ instead.
   decomposition inside the electrostatic sum -- real, reciprocal, self,
   background -- is likewise not compared, for the same reason. OpenMM exposes no
   virial in any decomposition.
-- **GMD's Coulomb constant is 3.16e-06 low.** `kEwaldCoulomb` and `kPMECoulomb`
-  are `14.3996` eV·A/e²; the CODATA value, measured from both external engines
-  during the PME comparison, is `14.399645`. Every Coulomb energy and force GMD
-  reports is scaled by `1 - 3.16e-06`, which is larger than the PME mesh error at
-  grid 128. `validation/pme_external` corrects for it exactly -- the dependence
-  is exactly linear -- so the comparison is unaffected, but the offset itself is
-  **not fixed**: changing the constant would move every checked-in baseline in
-  the repository and is deliberately left as a separate decision.
+- **The external engines' own `k_e` rounding remains.** GMD now uses the CODATA
+  2022 value (see *Simulation-results-changing corrections*), so the residual
+  conversion in `validation/pme_external` is 3.3e-08 against LAMMPS and 6.8e-10
+  against OpenMM. It is exact, since the dependence is exactly linear, but that
+  case cannot test cross-code agreement below those levels without applying it.
+- **Other unit constants in the tree were not audited.** This work covered the
+  electrostatic constant only. `kBoltzmannConstant` in `src/system/initializer.cpp`
+  is `8.617343e-5` while `kBoltzmann` in `include/gmd/integrator/thermostat.hpp`
+  and `kB_eV` in `include/gmd/integrator/mc_barostat.hpp` are both
+  `8.617333262e-5` — a 1.1e-06 relative disagreement between two live
+  definitions of the same constant. It is noted here rather than fixed, because
+  it changes velocity initialisation and is outside this correction's scope.
 - TorchScript `edge_shift` is directly covered (see *Added*), but only in a build configured with `GMD_ENABLE_TORCH=ON`. A build without LibTorch does not register the test and reports that at configure time; in such a build the contract is unverified.
 
 ## [v2.4] - 2026-05-24

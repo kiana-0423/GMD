@@ -48,7 +48,14 @@ using Vec3 = std::array<Real, 3>;
 // Row-major 3x3: M[a * 3 + b] is M_ab.
 using Mat3 = std::array<Real, 9>;
 
-inline constexpr Real kCoulomb = 14.3996L;  // matches kEwaldCoulomb / kPMECoulomb
+// CODATA 2022 k_e = E_h * a0, matching gmd::kCoulombConstant.
+inline constexpr Real kCoulomb = 14.3996454686836L;
+// Declared here rather than imported from
+// gmd/core/physical_constants.hpp on purpose: this header is an
+// independent reference, and sharing the production symbol would make
+// every comparison built on it self-confirming. It must track the
+// production value, and tests/electrostatic_constant_tests.cpp is what
+// fails if it stops doing so.
 
 // --- small linear algebra -------------------------------------------------
 

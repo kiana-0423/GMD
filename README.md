@@ -122,6 +122,91 @@ Tests: `tests/virial_source_inventory_tests.cpp`,
 `tests/pme_reciprocal_virial_tests.cpp`, `tests/mpi_virial_sources.cpp`, with
 the shared references in `tests/virial_reference.hpp`.
 
+### The electrostatic constant
+
+GMD's Coulomb constant was `14.3996` eV·Å/e² through v2.4. It is now
+
+```
+gmd::kCoulombConstant = 14.3996454686836   // include/gmd/core/physical_constants.hpp
+```
+
+a **results-changing correction of +3.157635e-06 relative**. Every Coulomb,
+Ewald and PME energy, force and virial the engine produces changes by that
+factor. Nothing is bitwise compatible with a previous release.
+
+**Derivation.** In atomic units the Coulomb energy of two unit charges one Bohr
+radius apart is exactly one Hartree, so `e²/(4πε₀) = E_h·a₀` and, in GMD's
+units, `k_e[eV·Å/e²] = E_h[eV]·a₀[Å]`. Both factors are 2022 CODATA
+recommended values from NIST:
+
+| | | |
+|---|---|---|
+| `E_h` | 27.211386245981(30) eV | [physics.nist.gov/cgi-bin/cuu/Value?hrev](https://physics.nist.gov/cgi-bin/cuu/Value?hrev) |
+| `a₀` | 5.29177210544(82) × 10⁻¹¹ m | [physics.nist.gov/cgi-bin/cuu/Value?bohrrada0](https://physics.nist.gov/cgi-bin/cuu/Value?bohrrada0) |
+| product | **14.399645468683593…** eV·Å/e² | |
+
+Deriving the same number straight from the elementary charge and the vacuum
+permittivity — `k_e = e / (4πε₀ × 10⁻¹⁰)`, with `e = 1.602176634e-19` C exact
+by the SI definition and `ε₀ = 8.8541878188(14)e-12` F/m — agrees to 1.1e-12
+relative, which is the uncertainty in `ε₀` rather than an error in either route.
+
+**Why it was worth changing.** 3.16e-06 is not a cosmetic digit here. It is
+larger than the tightest PME convergence point this repository measures —
+6.3e-10 relative, order 6 at grid 128 — so it was a floor on agreement with any
+external code no matter how fine the mesh, and `validation/pme_external` had to
+correct for it explicitly to keep its convergence study meaningful.
+
+**Rounding policy.** Enough digits to reproduce the derivation to
+double-precision representation (4.6e-16 relative). Not excess precision:
+rounding to LAMMPS' six decimals would be 3.3e-08, still coarser than that
+6.3e-10 convergence point, and would reintroduce a smaller version of the same
+floor. Digits past the tenth decimal are below CODATA's own 1.5e-10
+uncertainty and are carried only so the literal is exact as a `double`.
+
+**Compatibility policy: CODATA, not an engine.** Nothing in this repository
+documents a requirement to reproduce another code's constant, and the engines
+do not agree with each other in any case — LAMMPS `units metal` uses
+`14.399645`, OpenMM's `ONE_4PI_EPS0` works out to `14.399645478`, both
+*measured* rather than quoted. `validation/pme_external` converts each engine's
+result by the exactly linear ratio `k_e^GMD / k_e^engine` instead of adopting
+either.
+
+**One definition.** The constant previously existed as two independent literals,
+in `ewald_force_provider.cpp` and `pme_force_provider.cpp`, with nothing keeping
+them equal. Both now derive from `gmd::kCoulombConstant`. The test-side
+references (`tests/virial_reference.hpp`, `tests/pme_reference.hpp`,
+`tests/special_pair_tests.cpp`, `tests/mpi_special_pair.cpp`,
+`validation/analytic_references.py`) each keep their **own** declaration on
+purpose: importing the production symbol would turn every comparison built on
+them into a restatement of production rather than a second opinion.
+
+**What is asserted.** `tests/electrostatic_constant_tests.cpp` and
+`tests/mpi_electrostatic_constant.cpp` do not read the production constant —
+it has internal linkage. They recompute each electrostatic sum with `k_e = 1`
+and recover `k_e_measured = E_provider / Φ_reference`, which is exact because
+the dependence is exactly linear. Covered: Ewald real, reciprocal, self and
+background; the same four for PME at orders 4 and 6; and the bare special-pair
+correction. Energy, force and virial are recovered *separately*, so a missing
+factor in the force path cannot hide behind a correct energy. A path that
+dropped the constant would measure 1, one that applied it twice would measure
+`k_e²`, and two paths with differently rounded copies would disagree — each is
+a named failure. Plus two unit charges exactly 1 Å apart, where the energy, the
+force magnitude and `W_xx` must each equal `k_e` outright; exact quadratic
+scaling under a charge rescale; repulsion and attraction signs; and the same
+measurement at 1, 2 and 4 MPI ranks, where the providers return rank-local
+partials and a term applied once per rank instead of once per pair would stay
+self-consistent within any single rank.
+
+**Restart and baseline implications.** Checkpoints do not store the constant, so
+a checkpoint written before this change and resumed after it will continue with
+the corrected value; the trajectory diverges from the original run at the
+3.16e-06 level. Every stored Coulomb baseline was regenerated — see
+`validation/static_coulomb`, `validation/static_special_pairs` and
+`validation/pme_external` — with the Coulomb components verified to scale by
+exactly the constant ratio and the Lennard-Jones components verified
+bit-identical. Totals and stored per-atom forces do **not** scale exactly,
+because they are sums of a quantity that depends on `k_e` and one that does not.
+
 ### Independent external PME validation
 
 Everything above compares GMD against references written for GMD. That is
@@ -150,18 +235,24 @@ asserted in aggregate:
 | Exclusions, net charge | none; system neutral | none; system neutral | none; system neutral | **exactly** |
 | B-spline order | 4 or 6 | **fixed at 5**, not exposed by any API | `kspace_modify order`, 4 and 6 both run | **impossible with OpenMM** |
 | Reciprocal influence function | Essmann smooth PME | Essmann smooth PME | PPPM *optimised* Green's function — a different mesh approximation by construction | **not aligned with LAMMPS** |
-| Coulomb constant `k_e` | `14.3996` eV·Å/e² | 138.935457 kJ/mol·nm/e² | 14.399645 eV·Å/e² | **not aligned** — see below |
+| Coulomb constant `k_e` | `14.3996454686836` eV·Å/e² (CODATA 2022) | 138.935457 kJ/mol·nm/e² → 14.399645478 | 14.399645 eV·Å/e² | **not aligned** — each engine rounds it differently; see below |
 
-**The Coulomb constant is corrected exactly, not tolerated.** GMD's `14.3996`
-is low by **3.16e-6 relative** against the CODATA value both external engines
-use. Every Ewald term carries exactly one factor of `k_e`, so each engine's
-result is rescaled by `k_e^GMD / k_e^engine`, which is an exact correction
-rather than an approximation. Both constants are *measured* from the engines at
-generation time — a two-charge probe — rather than quoted from documentation.
-Left uncorrected this 3.16e-6 offset would exceed the grid-128 mesh error and be
-misread as a convergence floor. Note that for OpenMM the eV ↔ kJ/mol convention
-cancels out of the combined factor entirely, so no energy-unit constant enters
-the comparison.
+**The Coulomb constant is corrected exactly, not tolerated.** All three codes
+use a *different* number for the same physical constant, because each rounds it
+somewhere different: GMD `14.3996454686836` (CODATA 2022, see *The
+electrostatic constant* below), LAMMPS `14.399645` (its own six decimals,
+3.3e-08 low) and OpenMM `14.399645478` (6.8e-10 high). Every Ewald term carries
+exactly one factor of `k_e`, so each engine's result is rescaled by
+`k_e^GMD / k_e^engine`, which is an exact correction rather than an
+approximation. Both engine constants are *measured* at generation time with a
+two-charge probe rather than quoted from documentation. For OpenMM the eV ↔
+kJ/mol convention cancels out of the combined factor entirely, so no
+energy-unit constant enters the comparison.
+
+Until GMD's constant was corrected this rescaling was doing much more work: the
+old `14.3996` was 3.16e-06 low, which exceeded the grid-128 mesh error and
+would have been misread as a convergence floor. What it compensates now is only
+the engines' own rounding, two orders of magnitude smaller.
 
 **Convergence, not a single tolerance.** All three codes are swept over the same
 grids and measured against the exact Ewald sum at the same α and the same
@@ -233,6 +324,7 @@ further test files cover the production path itself:
 | `tests/pme_bspline_tests.cpp` | `PMEForceProvider::bspline()` and `bspline_deriv()` **directly** (they are public static members for this reason), at orders 2–6: every polynomial interval against the order recursion, exact knots and both sides of them, zero outside `[0,p]`, non-negativity, `M_p(u) = M_p(p-u)`, partition of unity over 1997 offsets, continuity through derivative `p-2`, the identity `M'_p = M_(p-1)(u) - M_(p-1)(u-1)`, a coordinate finite difference, and explicit regression values on `[2,3)`, `[3,4)`, `[4,5)` |
 | `tests/pme_energy_force_tests.cpp` | the transform convention, against an **explicit direct DFT** with both directions unnormalised, on an 8³ mesh — which pins the `K1·K2·K3` factor absolutely rather than through convergence; and `F = -dU/dr` by central differences over orders 4/6, meshes 16/32, three alphas, neutral and net-charged, an asymmetric configuration, atoms on and across the faces, and lattice-translation invariance |
 | `tests/ml_virial_contract_tests.cpp` | `MLForceProvider` reports no virial, clears a stale `ForceResult`, does not synthesise a force moment, invalidates any composite it sits in, and cannot feed a pressure-coupled barostat |
+| `tests/electrostatic_constant_tests.cpp`, `tests/mpi_electrostatic_constant.cpp` | the Coulomb constant itself, measured out of the engine rather than read: each electrostatic sum is recomputed with `k_e = 1` and the constant recovered as `E_provider / Φ_reference`. Ewald real/reciprocal/self/background, the same four for PME at orders 4 and 6, and the bare special-pair correction; energy, force and virial recovered separately; two unit charges 1 Å apart; quadratic charge scaling; repulsion and attraction signs; and the same measurement at 1, 2 and 4 MPI ranks |
 
 **Why convergence was not enough.** `tests/pme_reciprocal_virial_tests.cpp`
 shows PME converging to Ewald as the mesh is refined, and that test passed
