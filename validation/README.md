@@ -19,7 +19,7 @@
 - `static_special_pairs`：解析 shifted-LJ + Ewald + special-pair scaling reference，并覆盖修改 1-4 scale 的变体。
 - `static_coulomb/reference_ewald.json`：解析周期 Ewald reference。
 - `static_bonded_reference`：bond / angle / proper dihedral / improper 的 LAMMPS 外部 reference（LAMMPS 22 Jul 2025 - Update 5）。单位、functional form、improper 的 sign convention mapping 与 atom ordering 全部记录在该 case 的 `README.md`；`generate_reference.py` 只在 reference 需要重新生成时手动运行，validation 本身不依赖 LAMMPS。
-- `static_coulomb/reference_pme.json`：仍为 provisional GMD PME regression baseline，等待 LAMMPS PPPM 或 OpenMM PME 外部参考。
+- `static_coulomb/reference_pme.json`：仍为 provisional GMD PME regression baseline，等待 LAMMPS PPPM 或 OpenMM PME 外部参考。**该 baseline 已于 2026-08-27 重新生成**：修复三处 PME reciprocal force 缺陷后，旧 baseline 记录的 force 缺失约 94%（reciprocal force 恒为零）。重新生成后的 force 与同 case 的解析 Ewald reference 一致到 8.2e-4，即 grid 16^3 / order 4 / alpha 0.3 下应有的 mesh error；旧值与之相差 8.9e-2。energy 未变。
 - `pme_external/`：PME 外部验证设计与待办事项；当前不包含已完成 reference。
 - 长时间 NVE/NVT/NPT/diffusion cases：仍为 provisional workflow/regression baselines。
 
@@ -32,6 +32,7 @@
 - SHAKE/RATTLE：串行与一个 cross-rank MPI correctness-first global-gather 路径已有测试；不是 scalable distributed constraint solver。
 - 约束动力学：已改为标准 SHAKE/RATTLE splitting（修正了投影方向与缺失的半步速度冲量），含约束轨迹改变；约束 virial 作为 `t+dt` 端点量进入 reported pressure，验证参考为刚性转子的向心力解析解，不依赖实现公式；详见下节。**没有外部引擎参考。**
 - checkpoint/restart：真实 `gmd` CLI restart-continuity 测试覆盖 serial、MPI np=2、MPI np=4。
+- virial：**每一个 virial source 都已逐分量（全部九个分量）对独立 reference 验证**，见 README.md 的 *Virial validation coverage* 表。`Box` 只能表示 orthorhombic cell、无法施加 shear strain，因此 `tests/virial_finite_difference_tests.cpp` 只验证 trace 与三个对角分量；off-diagonal 由三类不需要引擎 shear 的 reference 覆盖：解析 pair identity、独立 bonded force moment，以及一个 test-only、写在一般 3x3 cell 上的 reciprocal energy（**可以** shear），对其做 general strain 数值微分即得全部九个分量。rotation covariance 是必要条件而非 shear derivative 的替代品。**没有任何 virial tensor 有外部引擎参考**：LAMMPS 只用于 `static_bonded_reference` 的 energy/force，OpenMM 未使用。
 
 ## 约束动力学与约束 virial 的验证范围
 

@@ -141,6 +141,16 @@ if(BUILD_TESTING)
     target_link_libraries(gmd_constraint_virial_tests PRIVATE gmd_core)
     add_executable(gmd_constraint_independence_tests tests/constraint_independence_tests.cpp)
     target_link_libraries(gmd_constraint_independence_tests PRIVATE gmd_core)
+    add_executable(gmd_pme_bspline_tests tests/pme_bspline_tests.cpp)
+    target_link_libraries(gmd_pme_bspline_tests PRIVATE gmd_core)
+    add_executable(gmd_pme_energy_force_tests tests/pme_energy_force_tests.cpp)
+    target_link_libraries(gmd_pme_energy_force_tests PRIVATE gmd_core)
+    add_executable(gmd_ml_virial_contract_tests tests/ml_virial_contract_tests.cpp)
+    target_link_libraries(gmd_ml_virial_contract_tests PRIVATE gmd_core)
+    add_executable(gmd_virial_source_inventory_tests tests/virial_source_inventory_tests.cpp)
+    target_link_libraries(gmd_virial_source_inventory_tests PRIVATE gmd_core)
+    add_executable(gmd_pme_reciprocal_virial_tests tests/pme_reciprocal_virial_tests.cpp)
+    target_link_libraries(gmd_pme_reciprocal_virial_tests PRIVATE gmd_core)
 
     file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/tests)
     configure_file(tests/smoke_lj.xyz         ${CMAKE_CURRENT_BINARY_DIR}/tests/smoke_xyz.in       COPYONLY)
@@ -259,6 +269,35 @@ if(BUILD_TESTING)
     add_test(NAME gmd_constraint_independence COMMAND gmd_constraint_independence_tests)
     set_tests_properties(gmd_constraint_independence PROPERTIES LABELS "unit;integrator")
 
+    # The production cardinal B-spline kernel, evaluated directly. Registered
+    # as an ordinary single-process unit test in both the serial and the
+    # MPI-enabled build: it exercises no MPI and its result must not depend on
+    # whether MPI support was compiled in.
+    add_test(NAME gmd_pme_bspline COMMAND gmd_pme_bspline_tests)
+    set_tests_properties(gmd_pme_bspline PROPERTIES LABELS "unit;force;pme")
+
+    # The production PME energy and force path: the transform normalisation
+    # against an explicit direct DFT, and F = -dU/dr by central differences.
+    add_test(NAME gmd_pme_energy_force COMMAND gmd_pme_energy_force_tests)
+    set_tests_properties(gmd_pme_energy_force
+        PROPERTIES LABELS "unit;force;pme;validation")
+
+    # MLForceProvider reports no virial, and nothing downstream may consume one.
+    add_test(NAME gmd_ml_virial_contract COMMAND gmd_ml_virial_contract_tests)
+    set_tests_properties(gmd_ml_virial_contract PROPERTIES LABELS "unit;force")
+
+    # Every virial source held against an independent reference, all nine
+    # components. The orthorhombic `Box` cannot express a shear strain, so the
+    # off-diagonal claims rest on analytical pair references, independent
+    # bonded force moments, and a test-only triclinic reciprocal-space
+    # reference that CAN be sheared -- see tests/virial_reference.hpp.
+    add_test(NAME gmd_virial_source_inventory COMMAND gmd_virial_source_inventory_tests)
+    set_tests_properties(gmd_virial_source_inventory
+        PROPERTIES LABELS "unit;force;validation")
+    add_test(NAME gmd_pme_reciprocal_virial COMMAND gmd_pme_reciprocal_virial_tests)
+    set_tests_properties(gmd_pme_reciprocal_virial
+        PROPERTIES LABELS "unit;force;validation;pme")
+
     # Constrained NVE energy conservation and constrained Berendsen NPT pressure
     # reporting, through the real CLI: many consecutive rescaling steps, and the
     # reported pressure column must never silently become zeros.
@@ -354,6 +393,24 @@ if(BUILD_TESTING)
         target_link_libraries(gmd_mpi_constraint_virial_tests PRIVATE gmd_core)
         add_executable(gmd_mpi_constraint_independence_tests tests/mpi_constraint_independence.cpp)
         target_link_libraries(gmd_mpi_constraint_independence_tests PRIVATE gmd_core)
+        add_executable(gmd_mpi_virial_sources_tests tests/mpi_virial_sources.cpp)
+        target_link_libraries(gmd_mpi_virial_sources_tests PRIVATE gmd_core)
+
+        # Every virial source, all nine components, at 1, 2 and 4 ranks, held
+        # against the same rank-count-independent references the serial test
+        # uses. Catches a tensor reduced twice, never reduced, or a pair /
+        # bonded term / special-pair correction counted on more than one rank.
+        foreach(virial_sources_np 1 2 4)
+            add_test(
+                NAME gmd_mpi_virial_sources_${virial_sources_np}proc
+                COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${virial_sources_np}
+                        $<TARGET_FILE:gmd_mpi_virial_sources_tests>
+            )
+            set_tests_properties(gmd_mpi_virial_sources_${virial_sources_np}proc
+                PROPERTIES
+                    LABELS "mpi;parallel;force;validation"
+                    PROCESSORS ${virial_sources_np})
+        endforeach()
 
         # The independence verdict must not depend on how atoms are distributed.
         foreach(independence_np 1 2 4)

@@ -213,23 +213,53 @@ void PMEForceProvider::resolve_params(const Box& box) noexcept {
 // Cardinal B-spline M_p(u) for u in [0, p], recursively defined.
 // Hardcoded analytical forms for order 4 and 6 for performance.
 
+// Every branch below is the piecewise expansion of
+//
+//     M_p(u) = 1/(p-1)! * sum_j (-1)^j C(p,j) (u - j)_+^(p-1)
+//
+// on [lo, lo+1). Orders 3 and 5 are NOT optional conveniences: bspline_deriv()
+// evaluates M_(p-1), so supporting order p requires order p-1 as well. Falling
+// through to `return 0.0` for those made every derivative weight zero, which
+// zeroed the whole PME reciprocal force. Any order added here must therefore
+// come with its predecessor.
+//
+// The invariants that pin these polynomials down, all asserted in
+// tests/pme_bspline_tests.cpp: M_p >= 0 on (0, p), sum_k M_p(t + k) == 1 for
+// every t, M_p(u) == M_p(p - u), and agreement with the order recursion
+// M_p(u) = [u M_(p-1)(u) + (p - u) M_(p-1)(u - 1)] / (p - 1).
 double PMEForceProvider::bspline(double u, int order) noexcept {
     if (u < 0.0 || u > static_cast<double>(order)) return 0.0;
 
+    if (order == 2) {
+        return u < 1.0 ? u : 2.0 - u;
+    }
+    if (order == 3) {
+        if      (u < 1.0) return u * u / 2.0;
+        else if (u < 2.0) return (-2.0*u*u + 6.0*u - 3.0) / 2.0;
+        else               return (3.0 - u) * (3.0 - u) / 2.0;
+    }
     if (order == 4) {
         if      (u < 1.0) return u * u * u / 6.0;
         else if (u < 2.0) return (-3.0*u*u*u + 12.0*u*u - 12.0*u + 4.0) / 6.0;
         else if (u < 3.0) return ( 3.0*u*u*u - 24.0*u*u + 60.0*u - 44.0) / 6.0;
         else               return (4.0 - u) * (4.0 - u) * (4.0 - u) / 6.0;
     }
+    if (order == 5) {
+        const double u2 = u * u, u3 = u2 * u, u4 = u3 * u;
+        if      (u < 1.0) return u4 / 24.0;
+        else if (u < 2.0) return (-4.0*u4 + 20.0*u3 - 30.0*u2 + 20.0*u - 5.0) / 24.0;
+        else if (u < 3.0) return ( 6.0*u4 - 60.0*u3 + 210.0*u2 - 300.0*u + 155.0) / 24.0;
+        else if (u < 4.0) return (-4.0*u4 + 60.0*u3 - 330.0*u2 + 780.0*u - 655.0) / 24.0;
+        else               return (5.0 - u) * (5.0 - u) * (5.0 - u) * (5.0 - u) / 24.0;
+    }
     // order == 6 (quintic B-spline)
     if (order == 6) {
         const double u2 = u * u, u3 = u2 * u, u4 = u3 * u, u5 = u4 * u;
         if      (u < 1.0) return u5 / 120.0;
         else if (u < 2.0) return (-5.0*u5 + 30.0*u4 - 60.0*u3 + 60.0*u2 - 30.0*u + 6.0) / 120.0;
-        else if (u < 3.0) return (10.0*u5 - 90.0*u4 + 300.0*u3 - 480.0*u2 + 360.0*u - 102.0) / 120.0;
-        else if (u < 4.0) return (-10.0*u5 + 120.0*u4 - 540.0*u3 + 1140.0*u2 - 1110.0*u + 402.0) / 120.0;
-        else if (u < 5.0) return (5.0*u5 - 90.0*u4 + 600.0*u3 - 1860.0*u2 + 2670.0*u - 1434.0) / 120.0;
+        else if (u < 3.0) return (10.0*u5 - 120.0*u4 + 540.0*u3 - 1140.0*u2 + 1170.0*u - 474.0) / 120.0;
+        else if (u < 4.0) return (-10.0*u5 + 180.0*u4 - 1260.0*u3 + 4260.0*u2 - 6930.0*u + 4386.0) / 120.0;
+        else if (u < 5.0) return (5.0*u5 - 120.0*u4 + 1140.0*u3 - 5340.0*u2 + 12270.0*u - 10974.0) / 120.0;
         else               return (6.0 - u) * (6.0-u) * (6.0-u) * (6.0-u) * (6.0-u) / 120.0;
     }
     return 0.0;
@@ -626,6 +656,8 @@ void PMEForceProvider::compute_reciprocal_pme(const ForceRequest& req,
     // ---- Step 6: Force interpolation ----
     // F_i,α = -q_i · K_α/L_α · Σ_{m} V(m) · (∂w_α/∂u_α)(m_α)
     //                                         · Π_{β≠α} w_β(m_β)
+    const double mesh_point_count =
+        static_cast<double>(K1) * static_cast<double>(K2) * static_cast<double>(K3);
     for (std::size_t i = 0; i < local_atom_count; ++i) {
         if (charges[i] == 0.0) continue;
 
@@ -669,9 +701,23 @@ void PMEForceProvider::compute_reciprocal_pme(const ForceRequest& req,
 
         // The derivative w.r.t. r_i,α = (dw/du_α) * (K_α / L_α).
         // Force = -q_i * gradient of potential.
-        res.forces[i][0] -= charges[i] * fx * (K1 / Lx);
-        res.forces[i][1] -= charges[i] * fy * (K2 / Ly);
-        res.forces[i][2] -= charges[i] * fz * (K3 / Lz);
+        //
+        // `mesh_point_count` is not a fudge factor. The energy actually
+        // evaluated above is E = 1/2 sum_m G(m) |Qhat(m)|^2 with an
+        // UNNORMALISED forward transform, while fft3d(..., true) divides by
+        // the mesh point count. Differentiating E with respect to a mesh
+        // charge gives
+        //
+        //   dE/dQ(j) = sum_m G(m) Qhat*(m) exp(-2 pi i j.m / N)
+        //            = N * IFFT[G Qhat](j)
+        //
+        // so the array left in mesh_ is 1/N of the potential this gradient
+        // needs. Without the factor every PME reciprocal force came out N
+        // times too small -- invisible while bspline_deriv() was returning
+        // zero for every weight, which made the whole term vanish anyway.
+        res.forces[i][0] -= charges[i] * fx * (K1 / Lx) * mesh_point_count;
+        res.forces[i][1] -= charges[i] * fy * (K2 / Ly) * mesh_point_count;
+        res.forces[i][2] -= charges[i] * fz * (K3 / Lz) * mesh_point_count;
     }
 
     stage_end = Clock::now();

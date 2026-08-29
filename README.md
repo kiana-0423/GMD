@@ -37,6 +37,10 @@ These change simulation results for the configurations they affect.
 | **Proper dihedral and improper forces corrected** — the terminal-atom force had a flipped sign and the middle-atom projection used the coefficients for the opposite `b1` convention. Any run with proper dihedrals or impropers was integrating incorrect torsional forces. Found by component-wise virial validation: a torsion angle is invariant under isotropic scaling, so the error is invisible in `tr(W)` | `src/force/bonded_force_provider.cpp` |
 | **Nose-Hoover restart validates, never overwrites, the DOF** — a checkpoint's `dof` is checked against the run's authoritative count and an incompatible restart is rejected rather than silently continued with a mismatched thermostat mass | `src/integrator/nose_hoover_thermostat.cpp` `include/gmd/integrator/thermostat.hpp` |
 | **Constraint lists normalised** — `(i,j)` and `(j,i)` collapse to one constraint, exact duplicates are dropped, conflicting target distances and self-constraints are rejected, so the DOF subtraction counts distinct constraints | `src/integrator/constraint_solver.cpp` `include/gmd/integrator/constraint_solver.hpp` |
+| **PME reciprocal forces were identically zero** — `bspline_deriv(u, p)` evaluates `M_(p-1)`, but `bspline()` implemented only orders 4 and 6 and returned `0.0` for anything else. Every derivative weight was therefore zero and **`coulomb pme` applied no reciprocal electrostatic force at all**, at any order. Orders 2, 3 and 5 are now implemented — every supported order needs its predecessor, all the way down. Energies were unaffected, which is why the existing PME regression baseline never noticed | `src/force/pme_force_provider.cpp` |
+| **PME force interpolation was missing the mesh-point-count factor** — the energy uses an unnormalised forward transform while `fft3d(..., true)` divides by `K1·K2·K3`, so `dE/dQ(j) = N·IFFT[G·Q̂](j)`. The factor `N` was absent, leaving every PME reciprocal force `N` times too small. Masked by the defect above, which zeroed the term outright | `src/force/pme_force_provider.cpp` |
+| **PME B-spline order 6 was wrong on three of its six intervals** — the hard-coded quintic polynomials on `[2,3)`, `[3,4)` and `[4,5)` did not match `M_6`; the spline went negative, summed to 0.9 instead of 1 under partition of unity, and broke the symmetry `M(u) = M(6-u)`. `pme_order 6` produced nonsense energies (13401 eV where the correct value is -3.05 eV) | `src/force/pme_force_provider.cpp` |
+| **`MLForceProvider` states its virial contract** — it left `virial`/`virial_valid` untouched, so a reused `ForceResult` would carry a previous provider's tensor and have it attributed to the model. It now clears both explicitly. `Σ r ⊗ F` is deliberately *not* synthesised: for a periodic, cell-dependent model that expression is not the virial | `src/force/ml_force_provider.cpp` |
 
 ---
 
@@ -53,6 +57,92 @@ each force term now contributes it in the form that term actually requires:
 | Ewald/PME net-charge correction | isotropic `U_net · δ_ab` (the term scales as `1/V`) |
 | Ewald/PME self-energy | none — it does not depend on the cell |
 | SHAKE/RATTLE constraints | `Σ_c (2Λ_c/dt)·(r_c ⊗ r_c)`, the endpoint force recovered from the converged RATTLE multipliers |
+| MLForceProvider | none — the provider reports `virial_valid == false` |
+
+### Virial validation coverage
+
+Every source above is validated component by component against a reference that
+does not share the engine's arithmetic. The evidence is not uniform across
+sources, so it is spelled out rather than summarised as "validated":
+
+| Source | Analytical reference | Independent numerical reference | Nine components | PBC | MPI np=1/2/4 | External engine |
+|---|---|---|---|---|---|---|
+| LJ pair | `W_ab = r_a F_b`, force cross-checked against `-dV/dr` | rotation covariance `R W Rᵀ` | yes | x/y/z faces, corner, translate-and-wrap | yes | **no** |
+| LJ mixed types, explicit pair override | yes | — | yes | — | — | **no** |
+| 1-4 LJ scaling (0, partial, 1) | yes, plus exact linearity in the scale | — | yes | — | — | **no** |
+| Bond, angle, proper dihedral, improper | force moment `Σ_a (r_a - r_ref) ⊗ F_a`, built without `accum_interaction_virial()` | forces first verified against a central difference of an independently written energy; rotation covariance | yes | intact vs wrapped molecule | yes, chain spanning rank boundaries | **no** (LAMMPS covers the *forces*, not the tensor) |
+| Ewald real space | pair identity, independent regrouping of `-dV/dr` | — | yes | minimum image | yes | **no** |
+| Ewald reciprocal | independent re-derivation of the cell derivative | **shear strain derivative** of a test-only triclinic reciprocal energy | yes | k-space, not applicable | yes | **no** |
+| Ewald net-charge correction | isotropic `U_net·δ_ab`, incl. off-diagonals required to vanish | — | yes | not applicable | yes | **no** |
+| Ewald self term | required to be identically zero | — | yes | not applicable | yes | **no** |
+| Special-pair Coulomb correction | `(scale-1)` times the bare pair tensor | — | yes | minimum image | yes, corrections spanning ranks counted once | **no** |
+| PME real space | compared directly against the Ewald pair sum | — | yes | minimum image | yes | **no** |
+| PME reciprocal mesh | — | PME → Ewald convergence under mesh refinement, **and** the reciprocal metric derivative of an independently written PME energy | yes | not applicable | yes | **no** — `validation/static_coulomb/reference_pme.json` is a GMD self-baseline |
+| SHAKE/RATTLE constraints | endpoint force from the RATTLE multipliers; rigid-rotor closed form | rigid-body second moment `-ω² Σ m a ⊗ a` | yes | yes | yes | **no** |
+| CompositeForceProvider | exact component-wise addition | — | yes | not applicable | yes | not applicable |
+| MLForceProvider | reports no virial; `virial_valid == false` asserted | — | not applicable | not applicable | rejects MPI outright | not applicable |
+
+**No virial tensor in GMD has external-engine validation.** LAMMPS appears in
+`validation/static_bonded_reference` and OpenMM nowhere; both cover energies and
+forces, never a virial tensor, and neither has been run with a
+proven-equivalent virial definition. Nothing above should be read as
+cross-code validated.
+
+**Why the off-diagonal claim is not a finite-difference claim.** `Box` stores
+three edge lengths, so the engine represents orthorhombic cells only and no
+shear strain is expressible. `tests/virial_finite_difference_tests.cpp`
+therefore validates the trace and the three diagonal components and explicitly
+does not validate the rest. The off-diagonal components are covered here
+instead by references that do not need the engine to shear: exact pair
+identities, bonded force moments, and — for the reciprocal-space terms, where
+no pair identity exists — a test-only reciprocal energy written against a
+general 3×3 cell matrix, which *can* be sheared. Differentiating that reference
+under a general strain yields all nine components, and the engine's analytic
+tensor is compared against it at the orthorhombic configuration both agree on.
+
+**Rotation covariance is not a substitute for a shear derivative.**
+`W → R W Rᵀ` is a necessary condition on any Cartesian rank-2 tensor and it does
+constrain the off-diagonal components, but it tests how the tensor *transforms*,
+not that it is the derivative of anything. It also only applies where the
+periodic lattice is irrelevant, since rotating a configuration inside a fixed
+orthorhombic box does not rotate the lattice — which is why the reciprocal-space
+terms use a 90° axis permutation (exact for an orthorhombic cell) plus the
+strain-derivative reference, and not a general rotation.
+
+Tests: `tests/virial_source_inventory_tests.cpp`,
+`tests/pme_reciprocal_virial_tests.cpp`, `tests/mpi_virial_sources.cpp`, with
+the shared references in `tests/virial_reference.hpp`.
+
+### PME: the production kernel, tested directly
+
+The virial coverage above validates a tensor. It does not, on its own, say
+anything about whether the force the integrator receives is the gradient of the
+energy the engine reports — and that is precisely where PME was broken. Three
+further test files cover the production path itself:
+
+| File | What it holds against what |
+|---|---|
+| `tests/pme_bspline_tests.cpp` | `PMEForceProvider::bspline()` and `bspline_deriv()` **directly** (they are public static members for this reason), at orders 2–6: every polynomial interval against the order recursion, exact knots and both sides of them, zero outside `[0,p]`, non-negativity, `M_p(u) = M_p(p-u)`, partition of unity over 1997 offsets, continuity through derivative `p-2`, the identity `M'_p = M_(p-1)(u) - M_(p-1)(u-1)`, a coordinate finite difference, and explicit regression values on `[2,3)`, `[3,4)`, `[4,5)` |
+| `tests/pme_energy_force_tests.cpp` | the transform convention, against an **explicit direct DFT** with both directions unnormalised, on an 8³ mesh — which pins the `K1·K2·K3` factor absolutely rather than through convergence; and `F = -dU/dr` by central differences over orders 4/6, meshes 16/32, three alphas, neutral and net-charged, an asymmetric configuration, atoms on and across the faces, and lattice-translation invariance |
+| `tests/ml_virial_contract_tests.cpp` | `MLForceProvider` reports no virial, clears a stale `ForceResult`, does not synthesise a force moment, invalidates any composite it sits in, and cannot feed a pressure-coupled barostat |
+
+**Why convergence was not enough.** `tests/pme_reciprocal_virial_tests.cpp`
+shows PME converging to Ewald as the mesh is refined, and that test passed
+throughout the period when the reciprocal force was zero — because it compared
+tensors and energies, and the tensor is computed before the inverse transform.
+Convergence to another method also cannot detect an internally inconsistent
+energy and force: both defects in the force path left the energy exactly right.
+The direct tests above are absolute comparisons at a fixed mesh, so they fail
+immediately rather than in the limit.
+
+**Lattice translation is exact; arbitrary translation is not.** Moving every
+atom by a whole number of box vectors describes the identical periodic system,
+and the energy and forces come back unchanged to `1e-11`. An arbitrary
+translation is *not* an exact symmetry of PME — it moves the charges relative
+to the mesh and changes the B-spline aliasing error — so what the tests require
+there is that the deviation shrinks with mesh refinement, which it does:
+`1.1e-2 → 2.2e-3 → 3.9e-4` at order 4 and `1.2e-3 → 2.9e-5 → 1.2e-6` at order 6
+over meshes 16, 32, 64.
 
 ### Constraint (SHAKE/RATTLE) virial
 

@@ -6,6 +6,49 @@ All notable user-facing changes in GMD are documented here.
 
 ### ⚠️ Simulation-results-changing corrections
 
+- **PME reciprocal-space forces were absent, and are now correct.** Three
+  independent defects, found while building component-wise virial validation
+  for the reciprocal mesh. **Every run using `coulomb pme` changes.** Ewald runs
+  are unaffected.
+
+  *No reciprocal force at all, at any B-spline order.* `bspline_deriv(u, p)`
+  evaluates `M_(p-1)(u) - M_(p-1)(u-1)`, but `bspline()` implemented only orders
+  4 and 6 and fell through to `return 0.0` for every other order. Order 4 asked
+  for order 3 and order 6 asked for order 5; both got zero. Every derivative
+  weight in the force interpolation was therefore zero, so PME contributed the
+  real-space erfc force and nothing else. Orders 2, 3 and 5 are now implemented:
+  every supported order needs its predecessor, and order 3 needs order 2, so the
+  chain is closed rather than extended by one link.
+
+  *A missing factor of the mesh point count.* The reciprocal energy is
+  `E = ½ Σ_m G(m)|Q̂(m)|²` with an unnormalised forward transform, while
+  `fft3d(..., true)` divides by `K1·K2·K3`. Differentiating gives
+  `dE/dQ(j) = N·IFFT[G·Q̂](j)`, so the array left in the mesh is `1/N` of the
+  potential the gradient needs. Without the factor every PME reciprocal force
+  was `N` times too small — invisible while the weights above were zero.
+
+  *The order-6 B-spline was wrong.* The hard-coded quintic polynomials on
+  `[2,3)`, `[3,4)` and `[4,5)` were not `M_6`: the spline took negative values,
+  `Σ_k M_6(t+k)` came to 0.9 instead of 1, and `M_6(u) = M_6(6-u)` failed.
+  `pme_order 6` returned 13401 eV where the correct energy is -3.05 eV. The
+  order-4 polynomials were correct and are unchanged.
+
+  `PMEForceProvider::bspline()` and `bspline_deriv()` are now public static
+  members so they can be tested directly rather than through the provider's
+  behaviour. They are pure functions of `(u, order)`; leaving them private is
+  what let a total loss of the reciprocal force sit behind a public surface that
+  looked healthy.
+
+  The corrected PME now converges to a high-accuracy Ewald reference in energy,
+  force and all nine virial components as the mesh is refined, with order 6
+  converging faster than order 4. `validation/static_coulomb/reference_pme.json`
+  has been regenerated: the superseded baseline had recorded a reciprocal force
+  of zero, so its stored forces were ~94% too small. The regenerated forces
+  agree with that case's analytic Ewald reference to 8.2e-4 — the expected mesh
+  error at grid 16³, order 4, alpha 0.3 — where the old ones disagreed by
+  8.9e-2. The stored energies are unchanged, which is why an energy-only
+  regression never caught any of this.
+
 - **Constrained dynamics now uses the standard velocity-Verlet SHAKE/RATTLE
   splitting.** Two defects are corrected, and **every constrained trajectory
   changes** as a result.
@@ -292,6 +335,64 @@ instead.
 - **Component-wise virial validation.** Each diagonal component is checked
   independently against a per-axis finite difference on non-cubic cells, serial
   and under 4-rank decomposition.
+- **Full nine-component validation of every virial source.** `tests/virial_reference.hpp`
+  holds test-only references written from each term's own definition:
+  analytical pair identities with the force cross-checked against `-dV/dr`;
+  bonded force moments built without `accum_interaction_virial()`, from forces
+  first verified against a central difference of an independently written
+  energy; and — for the reciprocal-space terms, where no pair identity exists —
+  an Ewald and a PME reciprocal energy written against a **general 3×3 cell
+  matrix**, complete with its own B-spline recursion and direct DFT.
+
+  That last piece is what makes the off-diagonal components reachable. `Box`
+  stores three edge lengths, so the engine cannot apply a shear strain and the
+  existing finite-difference test validates only the trace and the diagonal. A
+  *reference* implementation is under no such restriction: differentiating it
+  under a general strain, shear included, yields all nine components, and the
+  engine's analytic tensor is compared against that derivative at the
+  orthorhombic configuration both agree on.
+
+  Covered: LJ (attractive and repulsive branches, mixed types, explicit pair
+  overrides, 1-4 scaling at 0 / partial / 1 with exact linearity); bond, angle,
+  sign-sensitive proper dihedral with non-zero phase, and harmonic improper,
+  each intact and wrapped; Ewald real space, reciprocal space, self term
+  (required to contribute exactly zero) and net-charge correction (required to
+  be exactly isotropic); the special-pair Coulomb correction; PME real space
+  and reciprocal mesh at B-spline orders 4 and 6 over several meshes, alphas and
+  a non-cubic mesh, reported as component-wise convergence tables rather than a
+  tolerance copied from one run; `CompositeForceProvider` addition and validity
+  propagation; and `MLForceProvider`'s absent-virial contract. Every check
+  carries a non-zero guard so a blank tensor cannot pass, and periodic coverage
+  includes each face, the box corner, and translate-and-wrap invariance.
+
+  `tests/mpi_virial_sources.cpp` runs the same fixtures at 1, 2 and 4 ranks
+  against the same rank-count-independent references, with explicit guards
+  against a tensor multiplied by the rank count and against special-pair or
+  bonded terms spanning a rank boundary being counted more than once.
+- **Direct regression tests for the production PME kernel.**
+  `tests/pme_bspline_tests.cpp` evaluates `PMEForceProvider::bspline()` and
+  `bspline_deriv()` themselves at orders 2 through 6 — every polynomial
+  interval against the order recursion, the exact knots and both sides of them,
+  zero outside the support, non-negativity, `M_p(u) = M_p(p-u)`, partition of
+  unity, continuity through derivative `p-2`, the derivative identity, a
+  coordinate finite difference, and explicit regression values on the three
+  intervals that were wrong.
+
+  `tests/pme_energy_force_tests.cpp` pins the transform convention against an
+  explicit direct DFT with both directions unnormalised, on a small mesh, which
+  makes a missing or doubled `K1·K2·K3` an immediate absolute failure rather
+  than a convergence one; and checks `F = -dU/dr` by central differences of the
+  provider's own energy across orders 4 and 6, two mesh sizes, three alphas,
+  neutral and net-charged systems, an asymmetric configuration, and atoms on
+  and across the periodic faces. Alpha and the cutoff are always passed
+  strictly positive so `resolve_params()` cannot change anything between the
+  two sides of a difference, and repeated evaluation is asserted to be bitwise
+  reproducible.
+
+  `tests/ml_virial_contract_tests.cpp` covers the `MLForceProvider` contract:
+  no virial reported, a stale `ForceResult` cleared, no force moment
+  synthesised, any composite containing it invalidated in either order, and a
+  pressure-coupled barostat unable to consume the absent value.
 - **Bonded force-gradient tests** verifying every bonded force against
   `-dU/dx`.
 - **End-to-end constrained Nosé-Hoover restart tests** driving the real CLI
