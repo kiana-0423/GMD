@@ -149,6 +149,8 @@ if(BUILD_TESTING)
     target_link_libraries(gmd_boltzmann_constant_tests PRIVATE gmd_core)
     add_executable(gmd_pressure_unit_tests tests/pressure_unit_tests.cpp)
     target_link_libraries(gmd_pressure_unit_tests PRIVATE gmd_core)
+    add_executable(gmd_time_unit_tests tests/time_unit_tests.cpp)
+    target_link_libraries(gmd_time_unit_tests PRIVATE gmd_core)
     add_executable(gmd_pme_energy_force_tests tests/pme_energy_force_tests.cpp)
     target_link_libraries(gmd_pme_energy_force_tests PRIVATE gmd_core)
     add_executable(gmd_ml_virial_contract_tests tests/ml_virial_contract_tests.cpp)
@@ -300,6 +302,23 @@ if(BUILD_TESTING)
     add_test(NAME gmd_pressure_units COMMAND gmd_pressure_unit_tests)
     set_tests_properties(gmd_pressure_units
         PROPERTIES LABELS "unit;integrator;io;validation")
+    # The internal time unit T = A*sqrt(amu/eV), measured back out of the
+    # integrator from free flight and from a harmonic oscillator's period.
+    add_test(NAME gmd_time_units COMMAND gmd_time_unit_tests)
+    set_tests_properties(gmd_time_units
+        PROPERTIES LABELS "unit;integrator;io;validation")
+    # The femtosecond-to-picosecond conversion inside the validation analyzers.
+    # The diffusion case compares one fitted number against a stored one, so a
+    # conversion wrong by 1000 in both would agree with itself forever; this
+    # drives it with a synthetic series of analytically known slope instead.
+    add_test(
+        NAME gmd_validation_unit_conversions
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/validation_unit_conversions.py
+                --validation-dir ${CMAKE_CURRENT_SOURCE_DIR}/validation
+    )
+    set_tests_properties(gmd_validation_unit_conversions
+        PROPERTIES LABELS "unit;validation")
     add_test(NAME gmd_pme_bspline COMMAND gmd_pme_bspline_tests)
     set_tests_properties(gmd_pme_bspline PROPERTIES LABELS "unit;force;pme")
 
