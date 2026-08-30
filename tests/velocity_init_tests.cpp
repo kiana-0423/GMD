@@ -39,8 +39,10 @@
 #include <numeric>
 #include <sstream>
 #include <string>
+#include <stdexcept>
 #include <vector>
 
+#include "gmd/core/keyed_random.hpp"
 #include "gmd/core/physical_constants.hpp"
 #include "gmd/system/box.hpp"
 #include "gmd/system/initializer.hpp"
@@ -333,28 +335,23 @@ void test_gaussian_width_scales_with_inverse_root_mass() {
               number(measured) + " against " + number(expected));
 }
 
-// --- characterization of the defect ---------------------------------------
+// --- the draw belongs to the atom, not to its slot -------------------------
+//
+// The bound below is not a physics tolerance and not slack for the random
+// draws, which are bitwise identical. The centre-of-mass sum and the kinetic
+// energy sum are accumulated in storage order, so permuting storage changes
+// their last bits; that difference then reaches every atom through the one
+// shared scale factor and the one shared centre-of-mass shift. Measured worst
+// case for this fixture is 6.9e-18 on velocities averaging 5.1e-02, which is
+// under an ulp of a typical component. 1e-15 is ~144x that, and fourteen
+// orders below the 3.66e-01 the storage-ordered generator produced.
 
-void report_storage_order_dependence() {
+constexpr double kReductionRoundOff = 1.0e-15;
+
+void test_storage_order_independence() {
     const auto ordered = initialize(identity_order(kAtomCount), kSeed, kTargetTemperature);
     const auto permuted = initialize(permuted_order(kAtomCount), kSeed, kTargetTemperature);
 
-    std::size_t differing = 0;
-    for (const auto& [tag, v] : ordered) {
-        const auto& w = permuted.at(tag);
-        if (v[0] != w[0] || v[1] != w[1] || v[2] != w[2]) ++differing;
-    }
-    const double worst = worst_difference(ordered, permuted);
-
-    std::cout << "  storage-order dependence  " << differing << " of "
-              << kAtomCount << " atoms differ, worst component "
-              << std::scientific << std::setprecision(3) << worst
-              << std::defaultfloat << '\n';
-
-    // Reported, not asserted. Every atom is present under both arrangements and
-    // both fields are physically valid; what differs is which draw each atom
-    // received. The commit that keys the draw on the tag turns this into an
-    // equality assertion.
     check(ordered.size() == permuted.size(),
           "permuting storage changed how many atoms were initialized");
     for (const auto& [tag, v] : ordered) {
@@ -362,6 +359,215 @@ void report_storage_order_dependence() {
               "atom tag " + std::to_string(tag) +
                   " disappeared when storage was permuted");
     }
+
+    const double worst = worst_difference(ordered, permuted);
+    std::cout << "  storage-order difference  " << std::scientific
+              << std::setprecision(3) << worst << std::defaultfloat << '\n';
+    check(worst < kReductionRoundOff,
+          "permuting the storage order changed the velocity field by " +
+              number(worst) + ", which is far more than the reduction round-off "
+              "the shared scale factor can account for. The draw a physical atom "
+              "receives must depend on its tag, not on where it happens to sit");
+}
+
+// --- the draws themselves, predicted rather than observed ------------------
+//
+// This file reimplements the documented keyed mapping instead of calling the
+// production one, for the same reason the constant audits derive their own
+// references: a test that imported the production generator would agree with a
+// wrong production generator. tests/keyed_random_reference.py is the third,
+// independent implementation the reference vectors came from.
+
+std::uint64_t reference_mix(std::uint64_t z) {
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
+    z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
+    return z ^ (z >> 31);
+}
+
+std::uint64_t reference_key(std::uint64_t seed, std::uint64_t stream,
+                            std::uint64_t identity, std::uint64_t component) {
+    constexpr std::uint64_t gamma = 0x9E3779B97F4A7C15ULL;
+    std::uint64_t key = 0x243F6A8885A308D3ULL;
+    for (std::uint64_t value : {seed, stream, identity, component}) {
+        key = reference_mix(key + gamma + value);
+    }
+    return key;
+}
+
+double reference_normal(std::uint64_t seed, std::uint64_t identity,
+                        std::uint64_t component) {
+    constexpr std::uint64_t gamma = 0x9E3779B97F4A7C15ULL;
+    const std::uint64_t key = reference_key(seed, 1u, identity, component);
+    auto uniform = [](std::uint64_t bits) {
+        return (static_cast<double>(bits >> 12) + 0.5) * (1.0 / 4503599627370496.0);
+    };
+    const double u1 = uniform(reference_mix(key + gamma));
+    const double u2 = uniform(reference_mix(key + 2ULL * gamma));
+    return std::sqrt(-2.0 * std::log(u1)) *
+           std::cos(6.283185307179586476925286766559 * u2);
+}
+
+// The whole initialization, predicted from the specification: keyed Gaussian
+// scaled by sqrt(k_B T / m), then the mass-weighted mean removed, then one
+// global factor that puts 2K on dof * k_B * T.
+VelocityByTag predicted_field(std::uint32_t seed, double temperature) {
+    VelocityByTag field;
+    double total_mass = 0.0;
+    std::array<double, 3> momentum = {0.0, 0.0, 0.0};
+    for (std::size_t tag = 0; tag < kAtomCount; ++tag) {
+        const double mass = mass_for(tag);
+        const double sigma =
+            std::sqrt(kReferenceBoltzmannEVPerKelvin * temperature / mass);
+        std::array<double, 3> v{};
+        for (std::size_t d = 0; d < 3; ++d) {
+            v[d] = sigma * reference_normal(seed, tag, d);
+            momentum[d] += mass * v[d];
+        }
+        total_mass += mass;
+        field[static_cast<int>(tag)] = v;
+    }
+    for (auto& [tag, v] : field) {
+        for (std::size_t d = 0; d < 3; ++d) v[d] -= momentum[d] / total_mass;
+    }
+    double twice_ke = 0.0;
+    for (const auto& [tag, v] : field) {
+        twice_ke += mass_for(static_cast<std::size_t>(tag)) *
+                    (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+    }
+    const double dof = 3.0 * static_cast<double>(kAtomCount) - 3.0;
+    const double current = twice_ke / (dof * kReferenceBoltzmannEVPerKelvin);
+    const double scale = std::sqrt(temperature / current);
+    for (auto& [tag, v] : field) {
+        for (std::size_t d = 0; d < 3; ++d) v[d] *= scale;
+    }
+    return field;
+}
+
+void test_field_matches_the_specification() {
+    const auto produced = initialize(identity_order(kAtomCount), kSeed, kTargetTemperature);
+    const auto expected = predicted_field(kSeed, kTargetTemperature);
+    const double worst = worst_difference(produced, expected);
+    std::cout << "  vs independent prediction " << std::scientific
+              << std::setprecision(3) << worst << std::defaultfloat << '\n';
+    check(worst < kReductionRoundOff,
+          "the initialized field differs from an independent reimplementation of "
+          "the documented mapping by " + number(worst) +
+              ". This pins the keyed draw, the sqrt(k_B T/m) scaling, the "
+              "centre-of-mass removal and the 3N-3 rescale together");
+}
+
+void test_gaussian_width_is_exact_per_atom() {
+    // Before the global rescale, sigma is exactly sqrt(k_B T / m). The rescale
+    // is one scalar and the centre-of-mass shift one vector, so dividing the
+    // predicted pre-rescale value out of the produced one must leave the SAME
+    // affine relation for every atom -- which is a per-atom statement about the
+    // mass scaling, not a statistical one.
+    const auto produced = initialize(identity_order(kAtomCount), kSeed, kTargetTemperature);
+
+    // Recover the scale from one atom, then require it of all of them.
+    double reference_scale = 0.0;
+    const auto predicted = predicted_field(kSeed, kTargetTemperature);
+    for (const auto& [tag, v] : produced) {
+        const auto& p = predicted.at(tag);
+        for (std::size_t d = 0; d < 3; ++d) {
+            if (std::abs(p[d]) > 1.0e-3) {
+                reference_scale = v[d] / p[d];
+                break;
+            }
+        }
+        if (reference_scale != 0.0) break;
+    }
+    check(std::abs(reference_scale - 1.0) < 1.0e-12,
+          "the produced field is a rescaled version of the prediction by " +
+              number(reference_scale) + ", not the prediction itself");
+
+    // And the mass dependence, stated directly: an atom of mass m and one of
+    // mass 4m drawing the same standardised variate must differ by a factor
+    // of two before any global step.
+    const double light = mass_for(0);
+    const double heavy = mass_for(7);
+    const double sigma_light =
+        std::sqrt(kReferenceBoltzmannEVPerKelvin * kTargetTemperature / light);
+    const double sigma_heavy =
+        std::sqrt(kReferenceBoltzmannEVPerKelvin * kTargetTemperature / heavy);
+    check(std::abs(sigma_light / sigma_heavy - std::sqrt(heavy / light)) < 1.0e-15,
+          "the reference sigma does not scale as 1/sqrt(mass)");
+}
+
+void test_tag_sensitivity() {
+    // Changing an atom's tag changes its draw and nothing else's draw. The
+    // final field of the other atoms does move, because the centre-of-mass
+    // shift and the rescale are global and now see a different total -- so the
+    // per-atom statement is made about the PRE-rescale draw, where it is exact,
+    // and the final field is checked only for the atom whose tag changed.
+    const std::uint64_t moved = 1000;
+    for (std::size_t tag = 0; tag < kAtomCount; ++tag) {
+        for (std::size_t d = 0; d < 3; ++d) {
+            const double before = reference_normal(kSeed, tag, d);
+            const double after = reference_normal(kSeed, moved, d);
+            check(before != after,
+                  "an atom retagged from " + std::to_string(tag) + " to " +
+                      std::to_string(moved) + " kept its draw in component " +
+                      std::to_string(d));
+        }
+    }
+
+    // Retag one atom in a real system and confirm its velocity moved
+    // substantially -- not by round-off.
+    auto order = identity_order(kAtomCount);
+    const auto baseline = initialize(order, kSeed, kTargetTemperature);
+    gmd::System system = system_with_order(order);
+    system.mutable_atom_tags()[3] = static_cast<int>(moved);
+    gmd::VelocityInitializer initializer(kSeed);
+    initializer.initialize(system, kTargetTemperature, gmd::VelocityInitMode::Random, true);
+    const auto retagged = velocities_by_tag(system);
+    const auto& original = baseline.at(3);
+    const auto& replaced = retagged.at(static_cast<int>(moved));
+    double difference = 0.0;
+    for (std::size_t d = 0; d < 3; ++d) {
+        difference = std::max(difference, std::abs(original[d] - replaced[d]));
+    }
+    check(difference > 1.0e-4,
+          "retagging an atom changed its velocity by only " + number(difference));
+}
+
+void test_duplicate_and_negative_tags_are_rejected() {
+    auto expect_throw = [&](const char* what, auto&& mutate) {
+        gmd::System system = system_with_order(identity_order(kAtomCount));
+        mutate(system);
+        gmd::VelocityInitializer initializer(kSeed);
+        bool threw = false;
+        try {
+            initializer.initialize(system, kTargetTemperature,
+                                   gmd::VelocityInitMode::Random, true);
+        } catch (const std::exception&) {
+            threw = true;
+        }
+        check(threw, std::string(what) + " was accepted; the tag is the random "
+                                         "draw's identity and must be valid");
+    };
+
+    expect_throw("a duplicated atom tag",
+                 [](gmd::System& s) { s.mutable_atom_tags()[7] = s.atom_tag(2); });
+    expect_throw("a negative atom tag",
+                 [](gmd::System& s) { s.mutable_atom_tags()[5] = -1; });
+
+    // And a valid relabelling that is merely unusual must still be accepted:
+    // tags are identifiers, not indices, so they need not be contiguous.
+    gmd::System system = system_with_order(identity_order(kAtomCount));
+    for (std::size_t i = 0; i < kAtomCount; ++i) {
+        system.mutable_atom_tags()[i] = static_cast<int>(1000 + 7 * i);
+    }
+    gmd::VelocityInitializer initializer(kSeed);
+    bool threw = false;
+    try {
+        initializer.initialize(system, kTargetTemperature,
+                               gmd::VelocityInitMode::Random, true);
+    } catch (const std::exception& error) {
+        threw = true;
+        check(false, std::string("sparse but unique tags were rejected: ") + error.what());
+    }
+    check(!threw, "sparse but unique tags must be accepted");
 }
 
 }  // namespace
@@ -374,7 +580,11 @@ int main() {
     test_no_centre_of_mass_removal_when_disabled();
     test_zero_temperature();
     test_gaussian_width_scales_with_inverse_root_mass();
-    report_storage_order_dependence();
+    test_storage_order_independence();
+    test_field_matches_the_specification();
+    test_gaussian_width_is_exact_per_atom();
+    test_tag_sensitivity();
+    test_duplicate_and_negative_tags_are_rejected();
 
     if (failures == 0) {
         std::cout << "[velocity init] audit passed\n";

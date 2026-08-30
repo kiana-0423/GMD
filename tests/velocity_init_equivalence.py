@@ -83,7 +83,18 @@ def main() -> int:
     parser.add_argument("--mpiexec", default="mpiexec")
     parser.add_argument("--mpiexec-np-flag", default="-n")
     parser.add_argument("--require-match", action="store_true",
-                        help="fail when any field differs from the np=1 field")
+                        help="fail when any field differs from the np=1 field by "
+                             "more than --tolerance")
+    # Not a physics tolerance and not slack for the random draws, which are
+    # bitwise identical by tag. The centre-of-mass and kinetic-energy sums are
+    # accumulated in storage order within a rank and combined by MPI_Allreduce
+    # across ranks, and neither order is the same at every rank count, so the
+    # one shared scale factor and the one shared centre-of-mass shift differ in
+    # their last bits. Measured worst case across np=1/2/4 and a reversed
+    # storage order is 2.8e-17 on velocities averaging 5.1e-02 -- well under an
+    # ulp of a typical component. 1e-15 is ~36x that, and fourteen orders below
+    # the 4.7e-01 the storage-ordered generator produced.
+    parser.add_argument("--tolerance", type=float, default=1.0e-15)
     # k_B from the exact SI definitions, as elsewhere in this repository.
     parser.add_argument("--target-temperature", type=float, default=300.0)
     args = parser.parse_args()
@@ -137,12 +148,13 @@ def main() -> int:
               + (f"   (atom {worst_tag})" if worst_tag >= 0 else ""))
         if worst != 0.0:
             all_match = False
-            if args.require_match:
-                problems.append(
-                    f"{label}: the velocity field differs from np=1 in {differing} "
-                    f"of {len(reference)} atoms, worst component {worst:.6e} at "
-                    f"atom {worst_tag}. The random draw a physical atom receives "
-                    f"must not depend on rank count or local storage order")
+        if args.require_match and worst > args.tolerance:
+            problems.append(
+                f"{label}: the velocity field differs from np=1 in {differing} "
+                f"of {len(reference)} atoms, worst component {worst:.6e} at "
+                f"atom {worst_tag}, above the {args.tolerance:.1e} reduction "
+                f"round-off bound. The random draw a physical atom receives must "
+                f"not depend on rank count or local storage order")
 
     if problems:
         for message in problems:
@@ -152,7 +164,10 @@ def main() -> int:
 
     if all_match:
         print("[velocity equivalence] every arrangement reproduces the np=1 field "
-              "exactly")
+              "bit for bit")
+    elif args.require_match:
+        print(f"[velocity equivalence] every arrangement reproduces the np=1 field "
+              f"to within the {args.tolerance:.1e} reduction round-off bound")
     else:
         print("[velocity equivalence] structural invariants hold; field differences "
               "reported above are not asserted (no --require-match)")

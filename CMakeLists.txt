@@ -151,6 +151,8 @@ if(BUILD_TESTING)
     target_link_libraries(gmd_pressure_unit_tests PRIVATE gmd_core)
     add_executable(gmd_time_unit_tests tests/time_unit_tests.cpp)
     target_link_libraries(gmd_time_unit_tests PRIVATE gmd_core)
+    add_executable(gmd_keyed_random_tests tests/keyed_random_tests.cpp)
+    target_link_libraries(gmd_keyed_random_tests PRIVATE gmd_core)
     add_executable(gmd_velocity_init_tests tests/velocity_init_tests.cpp)
     target_link_libraries(gmd_velocity_init_tests PRIVATE gmd_core)
     add_executable(gmd_pme_energy_force_tests tests/pme_energy_force_tests.cpp)
@@ -325,6 +327,11 @@ if(BUILD_TESTING)
     # What decides which random draw a physical atom receives. Velocities are
     # always compared by atom tag: comparing by array index would make the
     # storage-permutation case vacuous.
+    # The keyed generator, pinned against vectors derived independently in
+    # tests/keyed_random_reference.py rather than captured from this code.
+    add_test(NAME gmd_keyed_random COMMAND gmd_keyed_random_tests)
+    set_tests_properties(gmd_keyed_random
+        PROPERTIES LABELS "unit;system;validation")
     add_test(NAME gmd_velocity_init COMMAND gmd_velocity_init_tests)
     set_tests_properties(gmd_velocity_init
         PROPERTIES LABELS "unit;system;validation")
@@ -553,6 +560,7 @@ if(BUILD_TESTING)
                     --work-dir ${CMAKE_CURRENT_BINARY_DIR}/tests/velocity_init_equivalence
                     --mpiexec ${MPIEXEC_EXECUTABLE}
                     --mpiexec-np-flag=${MPIEXEC_NUMPROC_FLAG}
+                    --require-match
         )
         set_tests_properties(gmd_mpi_velocity_init_equivalence
             PROPERTIES
