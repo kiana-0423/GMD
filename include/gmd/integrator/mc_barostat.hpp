@@ -5,6 +5,7 @@
 #include <string>
 #include <string_view>
 
+#include "gmd/core/physical_constants.hpp"
 #include "gmd/integrator/barostat.hpp"
 
 namespace gmd {
@@ -76,7 +77,8 @@ public:
 
 private:
     // Physical constants (internal unit system: eV, Å, amu, fs).
-    static constexpr double kB_eV           = 8.617333262e-5;  // Boltzmann [eV/K]
+    // Single definition in gmd/core/physical_constants.hpp; not a second literal.
+    static constexpr double kB_eV           = kBoltzmannConstantEVPerKelvin;
     static constexpr double bar_to_eV_per_A3 = 6.2415091e-7;   // 1 bar → eV/Å³
 
     // Adaptive step-size bounds [dimensionless ln-volume displacement].

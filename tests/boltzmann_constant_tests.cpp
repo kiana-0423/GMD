@@ -92,21 +92,24 @@ constexpr double kElementaryChargeCoulombs = 1.602176634e-19;   // exact, SI 201
 constexpr double kReferenceBoltzmann =
     kBoltzmannJoulesPerKelvin / kElementaryChargeCoulombs;
 
-// What each production path is expected to use. Two pins, because at this
-// commit the repository does not have one constant -- see
-// test_paths_are_mutually_consistent().
-constexpr double kExpectedInitializer = 8.617343e-5;
-constexpr double kExpectedShared      = 8.617333262e-5;
+// What every production path is expected to use: gmd::kBoltzmannConstantEVPerKelvin.
+// One pin, because there is now one constant. Both names are kept so the
+// assertions below still read as "initialization agrees with reporting", which
+// is the property that was broken.
+constexpr double kExpectedShared      = 8.617333262145177e-5;
+constexpr double kExpectedInitializer = kExpectedShared;
 
-// CHARACTERIZATION, NOT ENDORSEMENT.
-//
-// src/system/initializer.cpp carries its own literal, 1.130031e-06 above the
-// value the thermostats and the barostat use. A system initialised to 300 K
-// therefore reports 300.000339 K, not 300 K. This file records the exact size
-// of that split so it is a tested fact rather than a remark in a document, and
-// so no commit can correct it without coming through here.
-constexpr double kKnownInitializerSplit = 1.130031e-06;
-constexpr double kSplitTolerance = 1.0e-4;   // relative, on the split itself
+// The rounding policy: the production literal must reproduce the exact rational
+// k_B/e to within double-precision representation. There is no physical
+// uncertainty to hide behind here -- both ingredients are exact by SI
+// definition -- so any looser literal is an arbitrary truncation. For scale,
+// the values this replaced were 1.7e-11 and 1.13e-06 low.
+constexpr double kRoundingPolicyRelative = 1.0e-15;
+
+static_assert(kExpectedShared / kReferenceBoltzmann - 1.0 < kRoundingPolicyRelative &&
+              1.0 - kExpectedShared / kReferenceBoltzmann < kRoundingPolicyRelative,
+              "the pinned production constant no longer matches k_B/e derived "
+              "from the exact SI definitions to the documented rounding policy");
 
 // Round-off budget. Every measurement below is a ratio of quantities the
 // engine computes in double from the same inputs, so agreement is limited by
@@ -236,6 +239,18 @@ double measure_velocity_rescaling_constant(double target = kTargetTemperature) {
 
 // --- tests ------------------------------------------------------------------
 
+void test_production_matches_the_authoritative_value() {
+    const double relative = kExpectedShared / kReferenceBoltzmann - 1.0;
+    std::cout << "\n  k_B from exact SI definitions = " << number(kReferenceBoltzmann)
+              << " eV/K\n";
+    std::cout << "  production                   = " << number(kExpectedShared)
+              << "        relative deviation " << number(relative, 4) << '\n';
+    check(std::fabs(relative) <= kRoundingPolicyRelative,
+          "the production constant deviates from k_B/e by " + number(relative, 4) +
+              ", outside the documented rounding policy of " +
+              number(kRoundingPolicyRelative, 3));
+}
+
 void test_reference_matches_the_authoritative_value() {
     // NIST tabulates k_B as 8.617 333 262... x 10^-5 eV/K, exact. The quoted
     // digits are a truncation of the exact rational, so the derived reference
@@ -309,15 +324,23 @@ void test_paths_are_mutually_consistent() {
                   ", expected " + number(kExpectedShared));
     }
 
-    // The split itself, asserted rather than described.
-    const double split = initializer / reporting - 1.0;
-    std::cout << "    initialization is above reporting by " << number(split, 6) << '\n';
-    check(std::fabs(split / kKnownInitializerSplit - 1.0) <= kSplitTolerance,
-          "velocity initialization and temperature reporting differ by " +
-              number(split, 6) + ", not the documented " +
-              number(kKnownInitializerSplit, 6) +
-              ". If the constants were unified, collapse the two pins into one "
-              "and replace this characterization with an equality assertion.");
+    // The property that was broken: initialization and reporting must agree.
+    // Asserted directly rather than via each matching the pin, so that two
+    // paths drifting together could not pass.
+    check(close(initializer, reporting),
+          "velocity initialization measures k_B = " + number(initializer) +
+              " but temperature reporting measures " + number(reporting) +
+              " (relative " + number(initializer / reporting - 1.0, 4) +
+              "); a system initialised to a target temperature would not report "
+              "that temperature back");
+    for (const auto& [label, value] :
+         {std::pair{"Nose-Hoover thermostat mass", nose_hoover},
+          std::pair{"velocity-rescaling thermostat", rescaling}}) {
+        check(close(value, initializer),
+              std::string(label) + " measures k_B = " + number(value) +
+                  " but velocity initialization measures " + number(initializer) +
+                  "; two production paths are using different constants");
+    }
 }
 
 void test_initialize_then_report_round_trip() {
@@ -332,11 +355,11 @@ void test_initialize_then_report_round_trip() {
     std::cout << "\n  Initialised to " << number(kTargetTemperature, 6)
               << " K, engine reports " << number(reported, 12)
               << " K   (relative " << number(error, 4) << ")\n";
-    check(std::fabs(error / kKnownInitializerSplit - 1.0) <= kSplitTolerance,
+    check(std::fabs(error) <= kRelativeTolerance,
           "a system initialised to " + number(kTargetTemperature, 6) +
               " K reports " + number(reported, 12) + " K, a relative error of " +
-              number(error, 4) + " rather than the documented " +
-              number(kKnownInitializerSplit, 6));
+              number(error, 4) + ". Initialization and reporting are not using "
+              "the same Boltzmann constant.");
 }
 
 void test_zero_temperature_and_degrees_of_freedom() {
@@ -605,6 +628,7 @@ void test_mc_barostat_beta_structure() {
 int main() {
     std::cout << "Boltzmann constant audit\n";
     test_reference_matches_the_authoritative_value();
+    test_production_matches_the_authoritative_value();
     test_known_velocities_give_exact_temperature();
     test_paths_are_mutually_consistent();
     test_initialize_then_report_round_trip();

@@ -57,8 +57,8 @@ std::string number(double value) {
 
 // Must track tests/boltzmann_constant_tests.cpp; both are updated by any commit
 // that changes a production constant.
-constexpr double kExpectedInitializer = 8.617343e-5;
-constexpr double kExpectedShared      = 8.617333262e-5;
+constexpr double kExpectedShared      = 8.617333262145177e-5;
+constexpr double kExpectedInitializer = kExpectedShared;
 
 constexpr std::size_t kTotalAtoms = 8;
 constexpr double kTargetTemperature = 300.0;

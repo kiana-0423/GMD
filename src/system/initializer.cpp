@@ -3,6 +3,7 @@
 #include <cmath>
 #include <stdexcept>
 
+#include "gmd/core/physical_constants.hpp"
 #include "gmd/system/system.hpp"
 
 #ifdef GMD_ENABLE_MPI
@@ -13,7 +14,11 @@ namespace gmd {
 
 namespace {
 
-constexpr double kBoltzmannConstant = 8.617343e-5;
+// One authoritative definition, with its derivation and rounding policy,
+// lives in gmd/core/physical_constants.hpp. This file previously carried
+// its own literal, 1.13e-06 above the one the thermostats and the barostat
+// used, so a system initialised to 300 K reported 300.000339 K.
+constexpr double kBoltzmannConstant = kBoltzmannConstantEVPerKelvin;
 
 #ifdef GMD_ENABLE_MPI
 bool mpi_is_available() noexcept {
