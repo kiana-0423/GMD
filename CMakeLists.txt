@@ -302,6 +302,19 @@ if(BUILD_TESTING)
     add_test(NAME gmd_pressure_units COMMAND gmd_pressure_unit_tests)
     set_tests_properties(gmd_pressure_units
         PROPERTIES LABELS "unit;integrator;io;validation")
+    # The same binary exists in every configured build tree, so "run alone" is
+    # not something the harness can promise. This runs four copies at once; it
+    # would have failed intermittently while the test wrote a fixed filename
+    # into the shared system temporary directory.
+    add_test(
+        NAME gmd_pressure_units_concurrent
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/concurrent_execution.py
+                --executable $<TARGET_FILE:gmd_pressure_unit_tests>
+                --copies 4
+    )
+    set_tests_properties(gmd_pressure_units_concurrent
+        PROPERTIES LABELS "unit;io" PROCESSORS 4)
     # The internal time unit T = A*sqrt(amu/eV), measured back out of the
     # integrator from free flight and from a harmonic oscillator's period.
     add_test(NAME gmd_time_units COMMAND gmd_time_unit_tests)

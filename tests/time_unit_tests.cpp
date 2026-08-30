@@ -73,6 +73,8 @@
 #include <fstream>
 #include <vector>
 
+#include "scoped_temp_dir.hpp"
+
 #include "gmd/core/physical_constants.hpp"
 #include "gmd/core/runtime_context.hpp"
 #include "gmd/force/force_provider.hpp"
@@ -487,8 +489,8 @@ void test_trajectory_time_column_is_passed_through_in_femtoseconds() {
     system.mutable_coordinates()[0] = {1.0, 2.0, 3.0};
 
     const double dt_fs = 2.5;
-    const std::filesystem::path stem =
-        std::filesystem::temp_directory_path() / "gmd_time_unit_probe";
+    const gmd_test::ScopedTempDir scratch("gmd_time_unit_probe");
+    const std::filesystem::path stem = scratch.file("frame");
     gmd::TrajectoryWriter writer;
     writer.open(stem);
     for (std::uint64_t step = 0; step < 4; ++step) {
