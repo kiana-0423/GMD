@@ -574,6 +574,23 @@ if(BUILD_TESTING)
         # comparison cannot happen inside one MPI run: the initializer's
         # centre-of-mass removal and rescale are collective, so a rank cannot
         # initialize a second whole-system copy on the side to compare against.
+        # A real trajectory through the executable, not just the initial field:
+        # serial, np=1, np=2 and np=4 must produce identical logs, and final
+        # states that agree bitwise at np=1 and to reduction round-off beyond.
+        add_test(
+            NAME gmd_mpi_random_velocity_trajectory
+            COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/tests/random_velocity_trajectory.py
+                    --gmd $<TARGET_FILE:gmd>
+                    --work-root ${CMAKE_CURRENT_BINARY_DIR}/tests/random_velocity_trajectory
+                    --mpiexec ${MPIEXEC_EXECUTABLE}
+                    --mpiexec-np-flag=${MPIEXEC_NUMPROC_FLAG}
+        )
+        set_tests_properties(gmd_mpi_random_velocity_trajectory
+            PROPERTIES
+                LABELS "mpi;parallel;integration;system;restart;validation"
+                PROCESSORS 4)
+
         add_test(
             NAME gmd_mpi_velocity_init_equivalence
             COMMAND ${Python3_EXECUTABLE}
