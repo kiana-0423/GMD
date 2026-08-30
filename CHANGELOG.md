@@ -6,6 +6,61 @@ All notable user-facing changes in GMD are documented here.
 
 ### ⚠️ Simulation-results-changing corrections
 
+- **The bar ⇄ eV/Å³ pressure conversion was duplicated and rounded, and the
+  Berendsen barostat was not applying it at all.** Two separate corrections,
+  both affecting pressure.
+
+  **(1) One authoritative conversion.** The factor existed as two independent
+  literals, `6.2415091e-7` in `src/io/trajectory_writer.cpp` and `6.2415091e-7`
+  in `include/gmd/integrator/mc_barostat.hpp`, with nothing keeping them equal.
+  Both sat **4.091837e-09 relative above** the exact value. They are now
+  `gmd::kEVPerAngstromCubedToBar` and `gmd::kBarToEVPerAngstromCubed`.
+
+  **Derivation.** Unlike `k_e` and `k_B` this is not a measured quantity at all
+  — it is a pure unit identity, and all four ingredients are exact by
+  definition: `1 bar = 100000 Pa`, `1 Pa = 1 J/m³`, `1 Å = 1e-10 m`, and
+  `1 eV = 1.602176634e-19 J` (exact since the 2019 SI redefinition). So
+
+  ```
+  1 bar = 1e-25 / 1.602176634e-19 eV/Å³ = 500/801088317 eV/Å³
+        = 6.24150907446076260777624098...e-7 eV/Å³
+  ```
+
+  There is no uncertainty to round to, so eight significant figures had nothing
+  to justify it. The **reverse** direction is the one written as a literal,
+  because unlike the forward direction it *terminates*: **1 eV/Å³ = 1602176.634
+  bar, exactly.** Taken from that decimal, each direction is the nearest
+  `double` to its exact rational *and* the two are exact reciprocals in `double`
+  arithmetic, so a pressure converted out and back returns the original bits.
+  Three `static_assert`s hold the pair to both properties.
+
+  **(2) The Berendsen barostat compared bar against eV/Å³.** It computed its
+  instantaneous pressure as `(2K + tr W) / 3V` — an energy density in eV/Å³ —
+  and subtracted the target pressure from it directly. The target arrives in
+  **bar**. So a run asking for 1 bar was in fact asking for 1 eV/Å³, which is
+  **1602176.634 bar**. This is not a scale error: the comparison sets the *sign*
+  of the coupling, so for any ordinary target the barostat pushed the box the
+  same direction regardless of the true pressure. `beta` is a compressibility in
+  bar⁻¹ (its default 4.5e-5 is liquid water's value in those units), so the
+  comparison now happens in bar and the instantaneous pressure is converted.
+
+  **Affected paths:** the `P[bar]` trajectory-log and `.xyz` columns; the Monte
+  Carlo barostat's `P_ext·ΔV` term; the Berendsen barostat's entire coupling.
+  **Results-changing for reported pressures and for every pressure-controlled
+  run. Berendsen runs change qualitatively, not just numerically.**
+
+  **What does *not* change:** forces, energies, the virial tensor and every
+  static baseline. Pressure is a reported and controlled quantity here, never an
+  input to a force. `nve_lj_fluid`, `nvt_lj_fluid` and `diffusion_lj_fluid` were
+  re-run and are bit-identical (`abs_error` exactly 0.0).
+
+  **Trajectory and restart.** Checkpoints store pressure in eV/Å³, the internal
+  unit, so the conversion is *not* serialized: an old checkpoint resumes under
+  the corrected conversion. The stored number is unchanged; the bar value
+  reported from it moves by 4.09e-09. Old `P[bar]` columns in existing logs and
+  trajectories were written with the superseded factor and are not comparable
+  with new ones at better than that level.
+
 - **Four different Boltzmann constants became one, and velocity initialization
   was using the wrong one.** `k_B` is now
   `gmd::kBoltzmannConstantEVPerKelvin = 8.617333262145177e-5` eV/K everywhere.
@@ -727,14 +782,22 @@ instead.
   that. The sensitivity is measured rather than assumed — restoring the previous
   `8.617333262e-5` moves it by 1.684e-11 and the tolerance is seventeen times
   below that — but it remains a pinned number rather than a predicted one.
-- **Time and pressure unit constants have still not been audited.** The
-  electrostatic and Boltzmann constants have now each been traced to primary
-  sources; `kInternalTimeUnitsPerFs` in `src/io/config_loader.cpp` and the
-  bar-to-eV/Å³ factor `6.2415091e-7`, which appears in both
-  `src/io/trajectory_writer.cpp` and `include/gmd/integrator/mc_barostat.hpp`,
-  have not been. The latter is a second pair of duplicate literals for one
-  conversion, and `6.2415091e-7` is 4.09e-09 relative above the value
-  implied by the exact elementary charge (6.241509074461e-07).
+- **The time unit constant has still not been audited.** The electrostatic,
+  Boltzmann and pressure constants have now each been traced to primary sources;
+  `kInternalTimeUnitsPerFs` in `src/io/config_loader.cpp` has not been.
+- **The MC barostat's critical-temperature pin now tracks two constants.** It
+  sits on a Metropolis exponent containing both `k_B` and the bar conversion, so
+  it moves when either changes — it moved by −4.091837e-09 for this correction,
+  matching the conversion's own relative change to 3.5e-16. That is what makes
+  it a measurement rather than an arbitrary number, but it also means a change
+  to either constant must re-derive it rather than simply re-pin whatever the
+  bisection returns.
+- **The Berendsen barostat has no checked-in numeric baseline.** Its unit
+  correction is covered by direct tests, which recover the pressure the barostat
+  believed it had by inverting the observable coupling factor, but no validation
+  case runs it: `npt_lj_fluid` uses the Monte Carlo barostat. Its long-run
+  behaviour after this correction is therefore untested at the trajectory
+  level.
 - TorchScript `edge_shift` is directly covered (see *Added*), but only in a build configured with `GMD_ENABLE_TORCH=ON`. A build without LibTorch does not register the test and reports that at configure time; in such a build the contract is unverified.
 
 ## [v2.4] - 2026-05-24

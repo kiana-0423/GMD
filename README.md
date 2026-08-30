@@ -40,6 +40,8 @@ These change simulation results for the configurations they affect.
 | **PME reciprocal forces were identically zero** — `bspline_deriv(u, p)` evaluates `M_(p-1)`, but `bspline()` implemented only orders 4 and 6 and returned `0.0` for anything else. Every derivative weight was therefore zero and **`coulomb pme` applied no reciprocal electrostatic force at all**, at any order. Orders 2, 3 and 5 are now implemented — every supported order needs its predecessor, all the way down. Energies were unaffected, which is why the existing PME regression baseline never noticed | `src/force/pme_force_provider.cpp` |
 | **PME force interpolation was missing the mesh-point-count factor** — the energy uses an unnormalised forward transform while `fft3d(..., true)` divides by `K1·K2·K3`, so `dE/dQ(j) = N·IFFT[G·Q̂](j)`. The factor `N` was absent, leaving every PME reciprocal force `N` times too small. Masked by the defect above, which zeroed the term outright | `src/force/pme_force_provider.cpp` |
 | **PME B-spline order 6 was wrong on three of its six intervals** — the hard-coded quintic polynomials on `[2,3)`, `[3,4)` and `[4,5)` did not match `M_6`; the spline went negative, summed to 0.9 instead of 1 under partition of unity, and broke the symmetry `M(u) = M(6-u)`. `pme_order 6` produced nonsense energies (13401 eV where the correct value is -3.05 eV) | `src/force/pme_force_provider.cpp` |
+| **The Berendsen barostat compared a target in bar against a pressure in eV/Å³** — it subtracted the two directly with no conversion on either side, so a run asking for 1 bar was asking for 1 eV/Å³, or 1602176.634 bar. The comparison sets the *sign* of the coupling, so for any ordinary target the box was pushed the same direction regardless of the true pressure. The instantaneous pressure is now converted to bar, where `beta` already lived | `src/integrator/berendsen_barostat.cpp` `include/gmd/integrator/berendsen_barostat.hpp` |
+| **One authoritative bar ⇄ eV/Å³ conversion** — the factor existed as two independent literals, both `6.2415091e-7` and both 4.091837e-09 relative high. It is a pure unit identity with four exact ingredients, so there was no precision to round to; the terminating reverse direction `1 eV/Å³ = 1602176.634 bar` is now the single definition | `include/gmd/core/physical_constants.hpp` `src/io/trajectory_writer.cpp` `include/gmd/integrator/mc_barostat.hpp` |
 | **`MLForceProvider` states its virial contract** — it left `virial`/`virial_valid` untouched, so a reused `ForceResult` would carry a previous provider's tensor and have it attributed to the model. It now clears both explicitly. `Σ r ⊗ F` is deliberately *not* synthesised: for a periodic, cell-dependent model that expression is not the virial | `src/force/ml_force_provider.cpp` |
 
 ---
@@ -121,6 +123,113 @@ strain-derivative reference, and not a general rotation.
 Tests: `tests/virial_source_inventory_tests.cpp`,
 `tests/pme_reciprocal_virial_tests.cpp`, `tests/mpi_virial_sources.cpp`, with
 the shared references in `tests/virial_reference.hpp`.
+
+### The pressure unit conversion
+
+GMD computes pressure internally as `P = (2K + tr W) / 3V`, which in eV and
+Ångström is an energy density in **eV/Å³**. Users never see that: they set a
+target in **bar** and read a `P[bar]` log column. Exactly one conversion stands
+between the two, and two things were wrong with it.
+
+**One authoritative conversion, and it is exact.** The factor existed as two
+independent literals — `6.2415091e-7` in `src/io/trajectory_writer.cpp` and
+`6.2415091e-7` in `include/gmd/integrator/mc_barostat.hpp` — with nothing
+keeping them equal, both **4.091837e-09 relative high**. They are now
+
+```
+gmd::kEVPerAngstromCubedToBar = 1602176.634          // include/gmd/core/physical_constants.hpp
+gmd::kBarToEVPerAngstromCubed = 1.0 / kEVPerAngstromCubedToBar
+```
+
+Unlike `k_e` and `k_B` this is not a measured quantity — it is a pure unit
+identity whose four ingredients are all exact by definition:
+
+| Ingredient | Value | Source |
+|---|---|---|
+| bar | 100000 Pa, by definition | — |
+| pascal | 1 J/m³, by definition | — |
+| ångström | 1e-10 m, by definition | — |
+| eV | 1.602176634e-19 J, exact | [physics.nist.gov/cgi-bin/cuu/Value?evj](https://physics.nist.gov/cgi-bin/cuu/Value?evj) |
+
+```
+1 bar = 1e5 J/m³ = 1e-25 J/Å³ = 1e-25 / 1.602176634e-19 eV/Å³
+      = 500/801088317 = 6.24150907446076260777624098...e-7 eV/Å³
+```
+
+There is no uncertainty to round to, so eight significant figures had nothing
+behind it. The **reverse** direction is the one written as a literal, because
+unlike the forward direction it **terminates**: `1 eV/Å³ = 1602176.634 bar`,
+exactly. Taken from that decimal, each direction is the nearest `double` to its
+exact rational *and* the two are exact reciprocals in `double` arithmetic, so a
+pressure converted out and back returns the original bits. Writing the forward
+direction as the literal instead, or routing either through the SI constants,
+rounds more than once and lands one ulp off. Three `static_assert`s hold the
+pair to all of it.
+
+**The Berendsen barostat was comparing bar against eV/Å³.** It computed
+`(2K + tr W) / 3V` and subtracted the target pressure from it with no
+conversion on either side. The target arrives in bar — it is the run input's
+`pressure` field, set through the same `set_target_pressure()` the Monte Carlo
+barostat reads and converts. So **a run asking for 1 bar was asking for 1 eV/Å³,
+which is 1602176.634 bar.** That is not a scale error: the comparison sets the
+*sign* of the coupling, so for any ordinary target the barostat pushed the box
+the same direction regardless of the true pressure. `beta` is a compressibility
+in bar⁻¹ — its default 4.5e-5 is liquid water's value in those units — so the
+comparison belongs in bar, and it is the instantaneous pressure that is now
+converted. No algorithm, sign convention or virial handling changed.
+
+**Affected production paths.** The `P[bar]` column of the log and the `.xyz`
+comment line; the Monte Carlo barostat's `P_ext·ΔV` term; the Berendsen
+barostat's entire coupling. **Results-changing for reported pressures and for
+pressure-controlled runs; Berendsen runs change qualitatively.**
+
+**What does not change.** Forces, energies and the virial tensor. Pressure here
+is reported and controlled, never an input to a force, so every static energy,
+force and virial baseline is untouched by construction.
+
+**Baseline impact.** One reference moved, and the trajectory behind it did not.
+
+| Case | Metric | Relative change | Tolerance |
+|---|---|---|---|
+| `npt_lj_fluid` | pressure mean / stddev | +4.327e-09 / +4.752e-09 | 2000 bar |
+| `npt_lj_fluid` | temperature mean / stddev | **0** — bit-identical | 10.0 K |
+| `nve` / `nvt` / `diffusion` | all metrics | **0** — bit-identical | — |
+
+Every log column except pressure — step, time, PE, KE, total energy,
+temperature and volume — is bit-identical across all 201 frames, so the
+barostat accepted exactly the same sequence of volume moves. The pressure
+metrics do **not** move by the constant's own 4.0918e-09 ratio, and the reason
+is the log rather than the physics: at ~46 bar printed with six decimals one
+printed unit is 1e-6 bar, while the conversion moves each value by ~1.9e-7. The
+metric is a mean of quantized values. Frame by frame the effect is bounded and
+fully accounted for: 62 of 201 frames changed, every one by exactly one unit in
+the last printed place, 51 up (all with positive pressure) and 11 down (all with
+negative pressure), no exceptions. The net shift those counts predict,
+`(51−11)·1e-6/201 = 1.9900497512e-07` bar, matches the observed shift in the
+mean, `1.9900497250e-07` bar, to 2.6e-15.
+
+**Restart implications.** Checkpoints store pressure in eV/Å³, the internal
+unit, so the conversion is **not** serialized and an old checkpoint resumes
+under the corrected one. The stored number does not change; the bar value
+reported from it moves by 4.09e-09. Existing logs and trajectories carry
+`P[bar]` columns written with the superseded factor and are not comparable with
+new ones below that level.
+
+**What is asserted.** `tests/pressure_unit_tests.cpp` and
+`tests/mpi_pressure_units.cpp` read no production constant — a test that
+imported one would agree with a wrong one. The reference is derived from the SI
+definitions as the rational `500/801088317` and cross-checked against the naive
+floating-point route. Each path is then measured back out of the engine:
+reporting by writing a frame with a known internal pressure and reading the bar
+column; the Monte Carlo barostat by bisecting for the target pressure at which a
+fixed-seed trial move flips from accepted to rejected, run twice at different
+atom counts so that the subtraction cancels the unobservable uniform draw *and*
+the Boltzmann factor exactly; Berendsen by inverting its observable coupling
+factor to recover the pressure it believed it had. Omitting the conversion
+(measures 1), applying it twice (`c²`), inverting it (`1/c`), reversing the
+pressure-work sign and restoring the superseded literal are each named failures.
+Under MPI the measurement is repeated at 1, 2 and 4 ranks with one empty rank,
+since the pressure it converts is itself a reduced quantity.
 
 ### The Boltzmann constant
 
