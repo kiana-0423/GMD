@@ -43,12 +43,14 @@
     ],
     "regenerated": {
       "build_type": "Release (-DCMAKE_BUILD_TYPE=Release)",
+      "constrained_initialization_unaffected": "This case runs no constraints, so the constraint-aware initialization change does not reach it and its numbers do not move.",
       "date": "2026-08-30",
       "distribution_is_unchanged": "Target temperature, the sqrt(k_B T/m) Gaussian width, centre-of-mass removal and the 3N-3 rescale are untouched.",
       "explanation": "expand_volume_ratio 1.1102 -> 1.1046 and compress_volume_ratio 0.9510 -> 0.9490: the barostat's response is barely changed, because it integrates a pressure mismatch over 500 steps and is insensitive to which particular Maxwell-Boltzmann sample the run started from. The direction and magnitude assertions, which are what this case exists for, do not read these numbers at all and are unaffected.",
+      "fixture_changed_without_regenerating": "expand.run gained a checkpoint_file directive so the serial/MPI comparison can check the final per-atom state at full precision instead of only through the log's six decimals. Writing a checkpoint does not touch the dynamics, and the case was re-run to confirm it: every metric reproduces bit-for-bit, abs_error exactly 0.0. Only the recorded hash changes. Files whose hash moved: expand.run.",
       "fixture_sha256": {
         "compress.run": "719284996f10e77545652b22a8a1b40c96067bee60afbea408d0c17dfda9543f",
-        "expand.run": "4e55f0359fde34225b1466d39983f77ebfe6f6fdadb2ef2db527f63cc8992c19",
+        "expand.run": "43151f2418f0ecf113b8a6bca2244dc556ab2d0dca1eaeb3e50ae2f57778d101",
         "lj32_compressed.xyz": "2aa21765d85ffec86ffe94120beb527ea89c645c3d20dab13dde16f6f01ae8ea",
         "restart_first.run": "c0b222d6acd3125a6c16dbb1e9df35502b7a7454cbaa5254d3f55b0f14ddb64d",
         "restart_second.run": "b951ec70356db53948f5ece68d8a1727a98990ba6ea5cce93cc1f8bf882c1879"
@@ -85,6 +87,7 @@
       "rng_new": "SplitMix64 keyed on (seed, stream, global atom tag, component), Box-Muller",
       "rng_old": "std::mt19937 advanced in local storage order, std::normal_distribution",
       "serial_compatibility": "Serial results change. The old serial stream is not preserved, because preserving it would mean keeping traversal order as the random identity.",
+      "serial_mpi_now_enforced": "The serial/MPI comparison in analyze.py was report-only and is now an assertion. It was written when velocity_init random was rank dependent; with draws keyed on the global atom tag the logs agree BIT FOR BIT at np=1, 2 and 4. The final per-atom state is bitwise identical at np=1 and within 1e-12 beyond it -- measured worst case 1.7e-14 at np=2 and 2.1e-14 at np=4, which is the Berendsen coupling factor's globally reduced inputs being summed in a different order, amplified over 500 steps. See tolerance.serial_mpi_state_abs.",
       "src_system_initializer_cpp_sha256": "a1609359a44b79c6eb337594e8e31e8005edddb21fcae4310eec829f53f0d945",
       "static_baselines_unaffected": "static_lj_cluster, static_special_pairs, static_coulomb, static_bonded_reference and pme_external were re-run and pass unchanged: none of them assigns velocities.",
       "working_directory": "<repo>"
