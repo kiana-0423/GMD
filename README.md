@@ -40,6 +40,8 @@ These change simulation results for the configurations they affect.
 | **PME reciprocal forces were identically zero** — `bspline_deriv(u, p)` evaluates `M_(p-1)`, but `bspline()` implemented only orders 4 and 6 and returned `0.0` for anything else. Every derivative weight was therefore zero and **`coulomb pme` applied no reciprocal electrostatic force at all**, at any order. Orders 2, 3 and 5 are now implemented — every supported order needs its predecessor, all the way down. Energies were unaffected, which is why the existing PME regression baseline never noticed | `src/force/pme_force_provider.cpp` |
 | **PME force interpolation was missing the mesh-point-count factor** — the energy uses an unnormalised forward transform while `fft3d(..., true)` divides by `K1·K2·K3`, so `dE/dQ(j) = N·IFFT[G·Q̂](j)`. The factor `N` was absent, leaving every PME reciprocal force `N` times too small. Masked by the defect above, which zeroed the term outright | `src/force/pme_force_provider.cpp` |
 | **PME B-spline order 6 was wrong on three of its six intervals** — the hard-coded quintic polynomials on `[2,3)`, `[3,4)` and `[4,5)` did not match `M_6`; the spline went negative, summed to 0.9 instead of 1 under partition of unity, and broke the symmetry `M(u) = M(6-u)`. `pme_order 6` produced nonsense energies (13401 eV where the correct value is -3.05 eV) | `src/force/pme_force_provider.cpp` |
+| **Nosé–Hoover and Berendsen relaxation times were consumed in internal time units while being written, printed and defaulted in femtoseconds** — `tau = 100 fs` relaxed on 1018.05 fs and `tau_P = 2000 fs` coupled on 20361 fs, both exactly `T` too long. Neither was visible from inside its own file: every quantity was self-consistent | `src/io/config_loader.cpp` `include/gmd/io/config_loader.hpp` `app/gmd_main.cpp` |
+| **The internal time constant was rounded to seven figures and inversely named** — `kInternalTimeUnitsPerFs = 1.018051e+1` was 4.206204e-07 above `Å·√(amu/eV)`, ~2700× the CODATA uncertainty, and was *divided into* a femtosecond timestep despite its name | `include/gmd/core/physical_constants.hpp` `src/io/config_loader.cpp` |
 | **The Berendsen barostat compared a target in bar against a pressure in eV/Å³** — it subtracted the two directly with no conversion on either side, so a run asking for 1 bar was asking for 1 eV/Å³, or 1602176.634 bar. The comparison sets the *sign* of the coupling, so for any ordinary target the box was pushed the same direction regardless of the true pressure. The instantaneous pressure is now converted to bar, where `beta` already lived | `src/integrator/berendsen_barostat.cpp` `include/gmd/integrator/berendsen_barostat.hpp` |
 | **One authoritative bar ⇄ eV/Å³ conversion** — the factor existed as two independent literals, both `6.2415091e-7` and both 4.091837e-09 relative high. It is a pure unit identity with four exact ingredients, so there was no precision to round to; the terminating reverse direction `1 eV/Å³ = 1602176.634 bar` is now the single definition | `include/gmd/core/physical_constants.hpp` `src/io/trajectory_writer.cpp` `include/gmd/integrator/mc_barostat.hpp` |
 | **`MLForceProvider` states its virial contract** — it left `virial`/`virial_valid` untouched, so a reused `ForceResult` would carry a previous provider's tensor and have it attributed to the model. It now clears both explicitly. `Σ r ⊗ F` is deliberately *not* synthesised: for a periodic, cell-dependent model that expression is not the virial | `src/force/ml_force_provider.cpp` |
@@ -123,6 +125,129 @@ strain-derivative reference, and not a general rotation.
 Tests: `tests/virial_source_inventory_tests.cpp`,
 `tests/pme_reciprocal_virial_tests.cpp`, `tests/mpi_virial_sources.cpp`, with
 the shared references in `tests/virial_reference.hpp`.
+
+### The internal time unit
+
+GMD integrates
+
+```
+v += (F/m)·dt        r += v·dt
+```
+
+with `F` in eV/Å and `m` in amu. Neither line mentions seconds, so the time
+unit is **not a free choice**: requiring `F/m` to be an acceleration in this
+unit system fixes it.
+
+| | |
+|---|---|
+| **Definition** | `T = Å·√(amu/eV) = √(m_u/e)·1e5 fs` |
+| **Value** | `10.1805057178711931...` fs |
+| **Velocity unit** | `√(eV/amu) = 0.0982269474...` Å/fs |
+| **Uncertainty** | 1.57e-10 relative |
+
+| Ingredient | Value | Source |
+|---|---|---|
+| `e` | 1.602176634e-19 J, exact | [physics.nist.gov/cgi-bin/cuu/Value?evj](https://physics.nist.gov/cgi-bin/cuu/Value?evj) |
+| `m_u` | 1.66053906892(52)e-27 kg | [physics.nist.gov/cgi-bin/cuu/Value?ukg](https://physics.nist.gov/cgi-bin/cuu/Value?ukg) |
+| Å | 1e-10 m, by definition | — |
+| fs | 1e-15 s, by definition | — |
+
+Unlike `k_B` and the pressure conversion, this one **is** uncertain: `m_u`
+carries 3.1e-10 relative, halved by the square root. Both directions live in
+`include/gmd/core/physical_constants.hpp` as
+`gmd::kFemtosecondsPerInternalTime` and `gmd::kInternalTimePerFemtosecond`,
+held to being exact reciprocals by `static_assert`.
+
+**Units, stated.** Coordinates Å · velocities Å/`T` · masses amu · forces eV/Å ·
+accelerations Å/`T²` · internal time `T` · **displayed time fs** · diffusion
+coefficients **Å²/ps**.
+
+**Three defects, one audit.**
+
+| # | Was | Effect |
+|---|---|---|
+| 1 | `kInternalTimeUnitsPerFs = 1.018051e+1` | **+4.206204e-07** on `dt`; ~2700× the CODATA uncertainty. Its *name* was also the reciprocal of its use — it was **divided into** a femtosecond timestep. |
+| 2 | Nosé–Hoover `tau` never converted | `Q = dof·k_B·T·tau²` built from femtoseconds, `ξ` integrated against an internal `dt`. **`tau = 100 fs` relaxed on 1018.05 fs**; `Q` was `T² = 103.6427`× too large. |
+| 3 | Berendsen `tau_P` never converted | Same in `mu³ = 1 − beta·(dt/tau)·ΔP`. **`tau = 2000 fs` coupled on 20361 fs.** |
+
+Neither tau defect was visible from inside its own file — every quantity was
+self-consistent, and both objects are constructed straight from `RunConfig`.
+`RunConfig` now carries `thermostat_tau_fs`/`thermostat_tau` and
+`barostat_tau_fs`/`barostat_tau`, exactly as it already carried
+`time_step_fs`/`time_step`: the `_fs` field is what the user wrote and what the
+CLI prints, the unsuffixed one is what the object consumes. **No thermostat or
+barostat equation changed.**
+
+**What was already correct.** The trajectory `time[fs]` column
+(`step × time_step_fs`, computed by the caller), the checkpoint's `time_fs`,
+and the femtosecond-to-picosecond conversion behind the reported diffusion
+coefficient. `Simulation` passes `force_time` to force providers in *internal*
+units — a different quantity from the reported column, and not what any log or
+checkpoint carries.
+
+**Baseline impact.** Results-changing for every dynamics run, and substantially
+for thermostatted ones — the thermostat is now about ten times more strongly
+coupled.
+
+| Case | Metric | Change | Tolerance |
+|---|---|---|---|
+| `nvt_lj_fluid` | T mean / stddev | 123.81 → 120.41 K / 15.66 → **22.00** K | 5.0 K |
+| `npt_lj_fluid` | T mean / stddev | 126.44 → 119.92 K / 17.04 → 21.17 K | 10.0 K |
+| `npt_lj_fluid` | pressure mean | 45.99 → 35.56 bar | 2000 bar |
+| `diffusion_lj_fluid` | D | 1.79598 → 1.79603 Å²/ps | 0.05 |
+| `nve_lj_fluid` | drift | **0** — bit-identical | 1e-06 |
+
+The nvt standard deviation is the only metric in the repository this puts
+*outside* its tolerance. Tighter coupling raising the fluctuation while pulling
+the mean toward the run's 120 K target is the expected signature, not drift.
+`diffusion_lj_fluid` moves only 2.8e-05 because that run configures no
+thermostat at all. `nve_lj_fluid` has neither thermostat nor barostat, and its
+drift metric — a difference of two six-decimal energies — does not resolve
+4.2e-07. **No static energy, force or virial baseline involves time; none is
+regenerated and none changes.**
+
+**What is asserted.** `tests/time_unit_tests.cpp` reads no production constant
+for its reference — it derives `T` from the SI definitions and cross-checks the
+grouping, which matters: applying the metre and second conversions separately
+rounds twice and lands one ulp low. It then measures the unit back out of the
+integrator three ways: free flight (the distance a particle carrying one
+velocity unit covers per femtosecond), a harmonic oscillator's period against
+the exact `2π√(m/k)`, and exact `t`/`t²` scaling under a constant force in all
+three components and both signs. Second-order convergence is checked separately,
+so "the unit is right" is distinguished from "the integrator is accurate at one
+step size". The relaxation times are recovered from the thermostat mass and
+from the observable Berendsen coupling factor and required to match what was
+asked for, at three values each.
+
+### Berendsen NPT trajectory validation
+
+`validation/berendsen_npt_lj` is the only trajectory-level coverage of the
+Berendsen barostat — `npt_lj_fluid` uses the Monte Carlo barostat, so the
+Berendsen path previously had only unit tests. It is a **dynamics regression
+case, not an external reference**: every number is GMD's own.
+
+It is a sign-sensitive pair on a compressed 32-atom LJ fixture whose mean
+pressure is ~2300 bar. `expand.run` targets 200 bar and the cell must grow;
+`compress.run` targets 4000 bar and it must shrink. The direction and magnitude
+assertions do not read `reference.json`.
+
+Both previously-corrected defects are caught by construction, with thresholds
+**measured from the defective code**:
+
+| Restored defect | expand | compress | Caught by |
+|---|---|---|---|
+| *(correct)* | 1.1102 | 0.9510 | — |
+| bar compared against eV/Å³ | 0.9911 | 0.8355 | both runs compress → `expand_direction` |
+| `tau` unconverted | 1.0129 | 0.9962 | response 0.0129 < `min_volume_response` 0.03 |
+
+It also checks that volume, energies, temperature and pressure stay finite,
+that the cell never leaves `[0.25, 4.0]×` its initial volume, and that a run
+split across a checkpoint ends at a **bit-identical** volume. Unlike the other
+long-dynamics cases it is registered as a CTest test: four 500-step runs of 32
+atoms take well under a second, so the path is genuinely gated.
+
+**Serial/MPI is reported, not asserted**, and the reason is a pre-existing
+defect this case surfaced: see *Known limitations*.
 
 ### The pressure unit conversion
 
@@ -1703,6 +1828,8 @@ ForceProvider (interface)                                      │  MpiCommunica
 - The SHAKE reference-gradient linearisation has no solution when a bond turns through ~90° in a single step (`r(t+dt)·r(t) → 0`). That is diagnosed as a hard error naming the pair and asking for a smaller time step, rather than being allowed to produce a wild correction
 - Off-diagonal virial components are validated for the **constraint** term only (see *Constraint independence*, below, and *Virial and pressure*). The force providers' own off-diagonal virial is still unvalidated: `Box` stores three edge lengths, so the engine is orthorhombic-only and no shear strain can be applied to finite-difference it
 - A Nose-Hoover checkpoint can only be restarted into a run with the same degrees of freedom. Changing the constraint set, the centre-of-mass removal setting or the atom count is rejected, as is a checkpoint predating constraint-aware DOF accounting (the old `3N-3` rule) whenever the two disagree. There is no migration path: the thermostat mass `Q` and friction variable `xi` belong to the DOF they were generated under. Restart from the input instead
+- **An MPI run started from `velocity_init random` does not reproduce the serial trajectory for the same seed.** `VelocityInitializer` draws from one generator sequentially by *local* atom index, so each rank hands its own first atom the generator's first three draws — under decomposition a different physical atom than in a serial run. The rescale to the target temperature then hides it: step 0 reports an identical temperature and an identical potential energy while the underlying velocity field differs. It is not a barostat or force issue: the same fixture run as plain NVE diverges between np=1 and np=2 identically, and the same fixture run with `velocity 0.0` stays **bit-identical for 50 steps**. Fixing it means drawing per global atom tag, which changes every random-velocity trajectory. Consequently `validation/berendsen_npt_lj` reports its serial/MPI difference without asserting on it, and the rank-independence that *can* be asserted about the barostat lives in `tests/mpi_berendsen_barostat.cpp`, which builds the same velocity field on every rank from the global tag
+- The internal time unit is now audited, but the **Monte Carlo barostat's `mc_frequency` is a step count, not a time**, so it does not scale with the timestep: halving `time_step` halves the physical interval between volume-move attempts. That is the documented behaviour rather than a defect, but it is the one scheduling parameter in the code that is not expressed in femtoseconds
 - No GPU execution (CUDA option present but CPU-only)
 - Checkpoint/restart uses a readable replicated text file; large-scale binary/parallel checkpoint I/O is not implemented
 - Berendsen barostat requires virial from every active force term; barostat pressure is computed with MPI-allreduced kinetic energy and virial. Every provider now reports a physically derived virial rather than a coordinate approximation (see *Virial and pressure* below), and each contribution is reduced exactly once across the communicator
