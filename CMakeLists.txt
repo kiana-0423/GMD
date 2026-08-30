@@ -559,6 +559,65 @@ if(BUILD_TESTING)
         add_executable(gmd_mpi_velocity_init_tag_tests tests/mpi_velocity_init_tags.cpp)
         target_link_libraries(gmd_mpi_velocity_init_tag_tests PRIVATE gmd_core)
 
+        add_executable(gmd_mpi_constrained_velocity_init_tests
+            tests/mpi_constrained_velocity_init.cpp)
+        target_link_libraries(gmd_mpi_constrained_velocity_init_tests PRIVATE gmd_core)
+
+        # Constrained initialization at 1, 2 and 4 ranks. The fixture strides
+        # tags by one, so every molecule is split and every constraint spans
+        # ranks; at np=4 the last rank owns nothing. Each run asserts that all
+        # ranks agree on the authoritative DOF and that the field is tangent,
+        # momentum-free and at exactly the target temperature; the driver then
+        # compares the fields across rank counts by atom tag.
+        foreach(constrained_np 1 2 4)
+            add_test(
+                NAME gmd_mpi_constrained_velocity_init_${constrained_np}proc
+                COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${constrained_np}
+                        $<TARGET_FILE:gmd_mpi_constrained_velocity_init_tests>
+            )
+            set_tests_properties(gmd_mpi_constrained_velocity_init_${constrained_np}proc
+                PROPERTIES
+                    LABELS "mpi;parallel;system;integrator;validation"
+                    PROCESSORS ${constrained_np}
+                    TIMEOUT 120)
+        endforeach()
+
+        # A dependent constraint set must be rejected on EVERY rank. The timeout
+        # matters: a rank that threw while the others waited in the constraint
+        # gather would hang rather than fail.
+        foreach(constrained_reject_np 1 2 4)
+            add_test(
+                NAME gmd_mpi_constrained_velocity_reject_${constrained_reject_np}proc
+                COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${constrained_reject_np}
+                        $<TARGET_FILE:gmd_mpi_constrained_velocity_init_tests>
+                        --redundant-only
+            )
+            set_tests_properties(gmd_mpi_constrained_velocity_reject_${constrained_reject_np}proc
+                PROPERTIES
+                    LABELS "mpi;parallel;system;integrator"
+                    PROCESSORS ${constrained_reject_np}
+                    TIMEOUT 120)
+        endforeach()
+
+        # The same by-tag field comparison the unconstrained case gets, driven
+        # against the constrained emitter.
+        add_test(
+            NAME gmd_mpi_constrained_velocity_equivalence
+            COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/tests/velocity_init_equivalence.py
+                    --executable $<TARGET_FILE:gmd_mpi_constrained_velocity_init_tests>
+                    --work-dir ${CMAKE_CURRENT_BINARY_DIR}/tests/constrained_velocity_equivalence
+                    --mpiexec ${MPIEXEC_EXECUTABLE}
+                    --mpiexec-np-flag=${MPIEXEC_NUMPROC_FLAG}
+                    --require-match
+                    --tolerance 1e-11
+        )
+        set_tests_properties(gmd_mpi_constrained_velocity_equivalence
+            PROPERTIES
+                LABELS "mpi;parallel;system;integrator;validation"
+                PROCESSORS 4
+                TIMEOUT 300)
+
         # The tag is the random draw's identity, so it is validated
         # collectively. A duplicate can span ranks -- each rank's own tags
         # unique, two ranks sharing one -- and only a global check sees that.

@@ -43,6 +43,11 @@ def read_field(path: pathlib.Path) -> tuple[dict[int, tuple[float, float, float]
             meta["momentum"] = tuple(float(v) for v in fields[1:4])
         elif fields[0] == "twice_kinetic_energy":
             meta["twice_ke"] = float(fields[1])
+        elif fields[0] == "degrees_of_freedom":
+            # Constrained fixtures emit the authoritative count. Unconstrained
+            # ones omit it and the 3N-3 default below applies, which for them is
+            # the same number.
+            meta["dof"] = int(fields[1])
         else:
             tag = int(fields[0])
             if tag in velocities:
@@ -54,6 +59,7 @@ def read_field(path: pathlib.Path) -> tuple[dict[int, tuple[float, float, float]
 def run(args, np_count: int, out: pathlib.Path, reverse: bool) -> None:
     command = [args.mpiexec, args.mpiexec_np_flag, str(np_count), args.executable,
                "--out", str(out)]
+    command += args.extra_arg
     if reverse:
         command.append("--reverse-storage")
     result = subprocess.run(command, text=True, stdout=subprocess.PIPE,
@@ -97,6 +103,8 @@ def main() -> int:
     parser.add_argument("--tolerance", type=float, default=1.0e-15)
     # k_B from the exact SI definitions, as elsewhere in this repository.
     parser.add_argument("--target-temperature", type=float, default=300.0)
+    parser.add_argument("--extra-arg", action="append", default=[],
+                        help="passed through to the executable on every run")
     args = parser.parse_args()
 
     boltzmann = 1.380649e-23 / 1.602176634e-19
@@ -131,7 +139,7 @@ def main() -> int:
         scale = max(abs(x) for v in field.values() for x in v) or 1.0
         check(all(abs(p) < 1.0e-12 * scale * len(field) for p in momentum),
               f"{label}: residual centre-of-mass momentum {momentum}")
-        dof = 3 * len(field) - 3
+        dof = meta.get("dof", 3 * len(field) - 3)
         temperature = meta["twice_ke"] / (dof * boltzmann)
         check(abs(temperature / args.target_temperature - 1.0) < 1.0e-12,
               f"{label}: field carries {temperature!r} K, not "
