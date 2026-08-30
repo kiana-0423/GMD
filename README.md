@@ -40,6 +40,7 @@ These change simulation results for the configurations they affect.
 | **PME reciprocal forces were identically zero** — `bspline_deriv(u, p)` evaluates `M_(p-1)`, but `bspline()` implemented only orders 4 and 6 and returned `0.0` for anything else. Every derivative weight was therefore zero and **`coulomb pme` applied no reciprocal electrostatic force at all**, at any order. Orders 2, 3 and 5 are now implemented — every supported order needs its predecessor, all the way down. Energies were unaffected, which is why the existing PME regression baseline never noticed | `src/force/pme_force_provider.cpp` |
 | **PME force interpolation was missing the mesh-point-count factor** — the energy uses an unnormalised forward transform while `fft3d(..., true)` divides by `K1·K2·K3`, so `dE/dQ(j) = N·IFFT[G·Q̂](j)`. The factor `N` was absent, leaving every PME reciprocal force `N` times too small. Masked by the defect above, which zeroed the term outright | `src/force/pme_force_provider.cpp` |
 | **PME B-spline order 6 was wrong on three of its six intervals** — the hard-coded quintic polynomials on `[2,3)`, `[3,4)` and `[4,5)` did not match `M_6`; the spline went negative, summed to 0.9 instead of 1 under partition of unity, and broke the symmetry `M(u) = M(6-u)`. `pme_order 6` produced nonsense energies (13401 eV where the correct value is -3.05 eV) | `src/force/pme_force_provider.cpp` |
+| **`velocity_init random` was rank-dependent** — one `std::mt19937` advanced in local storage order, so an atom's draw was decided by its array position and an MPI run never reproduced the serial trajectory for the same seed. The global temperature rescale hid it. Draws are now keyed on `(seed, stream, global atom tag, component)` | `include/gmd/core/keyed_random.hpp` `src/system/initializer.cpp` `include/gmd/system/initializer.hpp` |
 | **Nosé–Hoover and Berendsen relaxation times were consumed in internal time units while being written, printed and defaulted in femtoseconds** — `tau = 100 fs` relaxed on 1018.05 fs and `tau_P = 2000 fs` coupled on 20361 fs, both exactly `T` too long. Neither was visible from inside its own file: every quantity was self-consistent | `src/io/config_loader.cpp` `include/gmd/io/config_loader.hpp` `app/gmd_main.cpp` |
 | **The internal time constant was rounded to seven figures and inversely named** — `kInternalTimeUnitsPerFs = 1.018051e+1` was 4.206204e-07 above `Å·√(amu/eV)`, ~2700× the CODATA uncertainty, and was *divided into* a femtosecond timestep despite its name | `include/gmd/core/physical_constants.hpp` `src/io/config_loader.cpp` |
 | **The Berendsen barostat compared a target in bar against a pressure in eV/Å³** — it subtracted the two directly with no conversion on either side, so a run asking for 1 bar was asking for 1 eV/Å³, or 1602176.634 bar. The comparison sets the *sign* of the coupling, so for any ordinary target the box was pushed the same direction regardless of the true pressure. The instantaneous pressure is now converted to bar, where `beta` already lived | `src/integrator/berendsen_barostat.cpp` `include/gmd/integrator/berendsen_barostat.hpp` |
@@ -125,6 +126,114 @@ strain-derivative reference, and not a general rotation.
 Tests: `tests/virial_source_inventory_tests.cpp`,
 `tests/pme_reciprocal_virial_tests.cpp`, `tests/mpi_virial_sources.cpp`, with
 the shared references in `tests/virial_reference.hpp`.
+
+### Reproducible random velocity initialization
+
+`velocity_init random` used to be **rank-dependent**: the same seed gave a
+different velocity field at every rank count, so an MPI run never reproduced
+the serial trajectory.
+
+**Root cause.** `VelocityInitializer` advanced one `std::mt19937` in a loop
+over local storage, so the draw a physical atom received was decided by its
+position in the array. Under decomposition every rank starts from the same
+seeded state and hands it to its own first local atom — a different physical
+atom on every rank and at every rank count. The global temperature rescale then
+hid it: total kinetic energy is forced to the target either way, so step 0
+reported an identical temperature *and* an identical potential energy while the
+underlying field differed.
+
+**The fix.** The draw is now a pure function of identity, with no state carried
+between atoms and no dependence on visitation order:
+
+```
+value = f(seed, stream, global atom tag, component)
+```
+
+`include/gmd/core/keyed_random.hpp` implements it with SplitMix64 (Steele, Lea
+and Flood, OOPSLA 2014 — the finalizer behind `java.util.SplittableRandom`):
+two multiply-xorshift rounds over documented constants, exact integer
+arithmetic. Each input is absorbed through a full mixing round so it avalanches
+over the whole key.
+
+| Detail | Choice, and why |
+|---|---|
+| Uniform | `((bits >> 12) + 0.5) / 2^52`, strictly inside `(0,1)`. **Twelve** bits, not eleven: with 53 the largest value is `(2^53 − 1) + 0.5`, which is not representable — doubles are spaced 1.0 there — so it rounds half-to-even up to `2^53` and the quotient is exactly `1.0`, putting `log(u)` at exactly `0`. A test asserts that the 53-bit variant *does* round to 1.0, so the reason is recorded rather than remembered. |
+| Bias | a bit shift and a power-of-two division; there is no modulus anywhere |
+| Components | x, y and z each draw their **own** pair of uniforms from their own key — never `cos` and `sin` of a shared pair, which makes two outputs exactly dependent. Half the entropy per pair is discarded, which costs nothing here. |
+| Streams | `RandomStream` separates draws, so adding a random feature later cannot shift the numbers this one produces |
+
+**Tag validation.** The tag is now load-bearing, so it is checked before use.
+Negative tags are rejected, and duplicates are found by a collective
+gather-sort whose verdict is broadcast. A duplicate can **span ranks** — each
+rank's own tags unique, two ranks sharing one — and only a global check sees
+that. Every rank throws the same diagnostic naming the same tag: a rank that
+noticed nothing would wait alone in the next collective, and a bad input would
+present as a hang rather than an error. There is no silent fallback to the
+array index; that fallback was the defect.
+
+**Ghost atoms are not initialized.** A ghost carries its owner's tag, so keyed
+on the tag it would draw the owner's velocity — the right value. What would be
+wrong is the reductions: that atom's momentum and energy would enter the
+centre-of-mass sum and the rescale twice. Sampling and all three reductions
+iterate owned atoms only, and the tag validation likewise, so a halo's repeated
+tags are not mistaken for duplicates.
+
+#### What is guaranteed
+
+| Property | Guarantee |
+|---|---|
+| Same seed, same tags/masses/configuration | same field |
+| np=1 vs np=2 vs np=4, and reversed local storage | identical **to 2.8e-17** |
+| The draws themselves | **bitwise** identical by tag |
+| Trajectory: serial vs np=1/2/4, 50 steps | **identical logs**; final state bitwise identical at np=1, within 8.9e-16 (~28 ulp) beyond |
+| Serial run split across a checkpoint | **bitwise** identical to the continuous run |
+| Changing the seed, or any atom's tag | changes that atom's draw |
+| Cross-platform | a few ulp, not bitwise — see below |
+
+The residual is **reduction round-off**, not the draws: the centre-of-mass and
+kinetic-energy sums are accumulated in storage order within a rank and combined
+by `MPI_Allreduce` across ranks, and neither order is the same at every rank
+count. That reaches every atom through one shared shift and one shared factor.
+Before the fix all 24 atoms of the equivalence fixture differed with a worst
+component of **4.7e-01** — the improvement is sixteen orders of magnitude.
+
+Key derivation, the mixer and the uniform mapping are exact integer arithmetic
+and identical on every platform and in every optimisation mode. `sqrt`, `log`
+and `cos` are not guaranteed bit-identical across libm implementations, so
+cross-platform agreement is to a few ulp. The integer path is pinned by
+`tests/keyed_random_tests.cpp` against vectors derived independently in
+`tests/keyed_random_reference.py` — a third implementation, in another
+language, that the vectors came *from* rather than were captured from.
+
+#### Serial compatibility and baselines
+
+**Serial results change.** This is a different random stream, and the old one
+is deliberately not preserved: keeping it would mean keeping traversal order as
+the random identity. The **distribution** does not change — target temperature,
+the `sqrt(k_B T/m)` width, centre-of-mass removal and the 3N−3 rescale are
+untouched, and `tests/velocity_init_tests.cpp` predicts the entire field from
+an independent reimplementation of the specification and matches it to 2.8e-17.
+
+| Case | Change |
+|---|---|
+| `nve_lj_fluid` | drift +4.687e-08 → −1.563e-08 eV/atom/ps |
+| `nvt_lj_fluid` | T mean 120.41 → 119.74 K, stddev 22.00 → 18.72 K |
+| `npt_lj_fluid` | T mean 119.92 → 120.14 K, pressure 35.56 → 47.32 bar |
+| `berendsen_npt_lj` | expand ratio 1.1102 → 1.1046 |
+| `diffusion_lj_fluid` | 1.796 → 3.273 Å²/ps — **the only metric put outside its tolerance** |
+
+That tolerance, 0.05, is a *fixed-seed reproducibility* bound and not a
+statement about how well D is determined: running the unchanged fixture under
+five seeds gives 3.273, 2.664, 2.260, 2.224 and 2.205 Å²/ps, a spread of ~48%.
+The new value is an ordinary draw from that spread; the old one sat at its low
+end. **Static energy, force and virial references are untouched** — none of
+them assigns velocities.
+
+**Restart** is unaffected: a restart does not install the velocity initializer
+at all, so checkpoint velocities are resumed rather than resampled, and no RNG
+state is serialized. `velocity_init input` and a checkpoint restart are
+distinct: the former reads velocities from the `.xyz`, the latter from the
+checkpoint.
 
 ### The internal time unit
 
@@ -1828,7 +1937,10 @@ ForceProvider (interface)                                      │  MpiCommunica
 - The SHAKE reference-gradient linearisation has no solution when a bond turns through ~90° in a single step (`r(t+dt)·r(t) → 0`). That is diagnosed as a hard error naming the pair and asking for a smaller time step, rather than being allowed to produce a wild correction
 - Off-diagonal virial components are validated for the **constraint** term only (see *Constraint independence*, below, and *Virial and pressure*). The force providers' own off-diagonal virial is still unvalidated: `Box` stores three edge lengths, so the engine is orthorhombic-only and no shear strain can be applied to finite-difference it
 - A Nose-Hoover checkpoint can only be restarted into a run with the same degrees of freedom. Changing the constraint set, the centre-of-mass removal setting or the atom count is rejected, as is a checkpoint predating constraint-aware DOF accounting (the old `3N-3` rule) whenever the two disagree. There is no migration path: the thermostat mass `Q` and friction variable `xi` belong to the DOF they were generated under. Restart from the input instead
-- **An MPI run started from `velocity_init random` does not reproduce the serial trajectory for the same seed.** `VelocityInitializer` draws from one generator sequentially by *local* atom index, so each rank hands its own first atom the generator's first three draws — under decomposition a different physical atom than in a serial run. The rescale to the target temperature then hides it: step 0 reports an identical temperature and an identical potential energy while the underlying velocity field differs. It is not a barostat or force issue: the same fixture run as plain NVE diverges between np=1 and np=2 identically, and the same fixture run with `velocity 0.0` stays **bit-identical for 50 steps**. Fixing it means drawing per global atom tag, which changes every random-velocity trajectory. Consequently `validation/berendsen_npt_lj` reports its serial/MPI difference without asserting on it, and the rank-independence that *can* be asserted about the barostat lives in `tests/mpi_berendsen_barostat.cpp`, which builds the same velocity field on every rank from the global tag
+- **The initial velocity field is reproducible across rank counts to reduction round-off, not bitwise.** The draws are bitwise identical by tag, but the centre-of-mass and kinetic-energy sums are accumulated in storage order within a rank and combined by `MPI_Allreduce` across ranks, and neither order is the same at every rank count. That reaches every atom through one shared shift and one shared factor: 2.8e-17 on the initial field, amplifying to 8.9e-16 (~28 ulp) over 50 steps. Making it bitwise would need a fixed-order global reduction — an O(N) gather on every initialization — for a difference far below anything physical
+- **The keyed generator's normal transform is not bit-portable across standard libraries.** Key derivation, the SplitMix64 mixer and the uniform mapping are exact integer arithmetic and identical everywhere; `sqrt`, `log` and `cos` are not guaranteed bit-identical across libm implementations, so cross-platform agreement is to a few ulp
+- **The velocity initializer's degrees-of-freedom convention is its own.** It rescales against 3N−3 (or 3N) directly, while thermostats and temperature reporting use the constraint-aware `compute_degrees_of_freedom()`. For an unconstrained system the two agree exactly; for a constrained one a system initialized to T will not report exactly T. Pre-existing and not addressed here
+- **`validation/berendsen_npt_lj` still reports rather than asserts its serial/MPI difference.** With the initializer corrected the two now agree to reduction round-off, but the case's comparison was written when they did not and has not been tightened; the rank-independence asserted about the barostat itself lives in `tests/mpi_berendsen_barostat.cpp`
 - The internal time unit is now audited, but the **Monte Carlo barostat's `mc_frequency` is a step count, not a time**, so it does not scale with the timestep: halving `time_step` halves the physical interval between volume-move attempts. That is the documented behaviour rather than a defect, but it is the one scheduling parameter in the code that is not expressed in femtoseconds
 - No GPU execution (CUDA option present but CPU-only)
 - Checkpoint/restart uses a readable replicated text file; large-scale binary/parallel checkpoint I/O is not implemented

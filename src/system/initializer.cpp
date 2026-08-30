@@ -1,8 +1,13 @@
 #include "gmd/system/initializer.hpp"
 
+#include <algorithm>
 #include <cmath>
+#include <limits>
 #include <stdexcept>
+#include <string>
+#include <vector>
 
+#include "gmd/core/keyed_random.hpp"
 #include "gmd/core/physical_constants.hpp"
 #include "gmd/system/system.hpp"
 
@@ -33,14 +38,16 @@ bool mpi_is_available() noexcept {
 }  // namespace
 
 VelocityInitializer::VelocityInitializer(std::uint32_t seed) noexcept
-    : generator_(seed) {}
+    : seed_(seed) {}
 
 double VelocityInitializer::kinetic_energy(const System& system) const noexcept {
     const auto masses = system.masses();
     const auto velocities = system.velocities();
 
     double kinetic_energy = 0.0;
-    for (std::size_t atom_index = 0; atom_index < velocities.size(); ++atom_index) {
+    // Owned atoms only. A ghost is another rank's atom borrowed for force
+    // evaluation; adding its energy here would count that atom twice.
+    for (std::size_t atom_index = 0; atom_index < system.num_local_atoms(); ++atom_index) {
         const auto& velocity = velocities[atom_index];
         const double velocity_squared = velocity[0] * velocity[0] +
                                         velocity[1] * velocity[1] +
@@ -54,7 +61,12 @@ void VelocityInitializer::sample_random_velocities(System& system, double target
     auto masses = system.masses();
     auto velocities = system.mutable_velocities();
 
-    for (std::size_t atom_index = 0; atom_index < system.atom_count(); ++atom_index) {
+    // Owned atoms only. Ghosts are copies of atoms another rank owns and
+    // receive their velocities through the normal communication path; sampling
+    // them here would be harmless for the value -- the key is the tag, so a
+    // ghost would draw its owner's velocity -- but it would double that atom's
+    // contribution to the reductions below.
+    for (std::size_t atom_index = 0; atom_index < system.num_local_atoms(); ++atom_index) {
         if (masses[atom_index] <= 0.0) {
             throw std::runtime_error("All particle masses must be positive before velocity initialization");
         }
@@ -64,9 +76,117 @@ void VelocityInitializer::sample_random_velocities(System& system, double target
             continue;
         }
 
-        const double sigma = std::sqrt(kBoltzmannConstant * target_temperature / masses[atom_index]);
-        std::normal_distribution<double> distribution(0.0, sigma);
-        velocities[atom_index] = {distribution(generator_), distribution(generator_), distribution(generator_)};
+        // The atom's stable global tag is the random identity -- never its
+        // index in this array, and never the rank. validate_atom_tags() has
+        // already established that the tag is non-negative and globally
+        // unique.
+        const auto identity = static_cast<std::uint64_t>(system.atom_tag(atom_index));
+        const double sigma =
+            std::sqrt(kBoltzmannConstant * target_temperature / masses[atom_index]);
+        velocities[atom_index] = {
+            sigma * standard_normal(seed_, RandomStream::VelocityInitialization, identity, 0),
+            sigma * standard_normal(seed_, RandomStream::VelocityInitialization, identity, 1),
+            sigma * standard_normal(seed_, RandomStream::VelocityInitialization, identity, 2),
+        };
+    }
+}
+
+void VelocityInitializer::validate_atom_tags(const System& system) const {
+    // The tag is the random draw's identity, so a duplicate would hand two
+    // physical atoms the same velocity and a negative one has no defined
+    // mapping. Both are rejected loudly rather than silently falling back to
+    // an array index, which is the behaviour this replaced.
+    // Negative tags are found first and reported COLLECTIVELY. Throwing here
+    // the moment one is seen would leave the other ranks waiting in the gather
+    // below, turning a bad input into a hang; every rank has to learn the
+    // verdict and every rank has to throw.
+    constexpr long long kNoNegative = std::numeric_limits<long long>::max();
+    long long negative_tag = kNoNegative;
+    std::vector<long long> local_tags;
+    local_tags.reserve(system.num_local_atoms());
+    for (std::size_t atom_index = 0; atom_index < system.num_local_atoms(); ++atom_index) {
+        const int tag = system.atom_tag(atom_index);
+        if (tag < 0) {
+            negative_tag = std::min(negative_tag, static_cast<long long>(tag));
+            continue;
+        }
+        local_tags.push_back(static_cast<long long>(tag));
+    }
+
+#ifdef GMD_ENABLE_MPI
+    if (mpi_is_available()) {
+        long long global_negative = kNoNegative;
+        MPI_Allreduce(&negative_tag, &global_negative, 1, MPI_LONG_LONG,
+                      MPI_MIN, MPI_COMM_WORLD);
+        negative_tag = global_negative;
+    }
+#endif
+
+    if (negative_tag != kNoNegative) {
+        throw std::runtime_error(
+            "Atom tag " + std::to_string(negative_tag) + " is negative. Random velocity "
+            "initialization keys each atom's draw on its global tag, which must "
+            "be a non-negative identifier");
+    }
+
+    long long duplicate = -1;
+
+#ifdef GMD_ENABLE_MPI
+    if (mpi_is_available()) {
+        int rank = 0;
+        int size = 1;
+        MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+        MPI_Comm_size(MPI_COMM_WORLD, &size);
+
+        const int local_count = static_cast<int>(local_tags.size());
+        std::vector<int> counts(static_cast<std::size_t>(size), 0);
+        MPI_Gather(&local_count, 1, MPI_INT, counts.data(), 1, MPI_INT, 0, MPI_COMM_WORLD);
+
+        std::vector<int> displacements(static_cast<std::size_t>(size), 0);
+        int total = 0;
+        if (rank == 0) {
+            for (int r = 0; r < size; ++r) {
+                displacements[static_cast<std::size_t>(r)] = total;
+                total += counts[static_cast<std::size_t>(r)];
+            }
+        }
+        // Gathered on rank 0 rather than allgathered, so no rank has to hold a
+        // buffer the size of the whole system just to check the tags.
+        std::vector<long long> all_tags(rank == 0 ? static_cast<std::size_t>(total) : 0);
+        MPI_Gatherv(local_tags.data(), local_count, MPI_LONG_LONG,
+                    all_tags.data(), counts.data(), displacements.data(),
+                    MPI_LONG_LONG, 0, MPI_COMM_WORLD);
+
+        if (rank == 0) {
+            std::sort(all_tags.begin(), all_tags.end());
+            for (std::size_t i = 1; i < all_tags.size(); ++i) {
+                if (all_tags[i] == all_tags[i - 1]) {
+                    duplicate = all_tags[i];
+                    break;
+                }
+            }
+        }
+        // Every rank must learn the verdict and every rank must throw, or the
+        // ranks that did not would run on into the next collective alone.
+        MPI_Bcast(&duplicate, 1, MPI_LONG_LONG, 0, MPI_COMM_WORLD);
+    } else
+#endif
+    {
+        std::vector<long long> sorted = local_tags;
+        std::sort(sorted.begin(), sorted.end());
+        for (std::size_t i = 1; i < sorted.size(); ++i) {
+            if (sorted[i] == sorted[i - 1]) {
+                duplicate = sorted[i];
+                break;
+            }
+        }
+    }
+
+    if (duplicate >= 0) {
+        throw std::runtime_error(
+            "Global atom tag " + std::to_string(duplicate) + " appears more than once. "
+            "Random velocity initialization keys each atom's draw on its global tag, so "
+            "duplicated tags would give two physical atoms the same velocity");
     }
 }
 
@@ -75,7 +195,9 @@ void VelocityInitializer::remove_center_of_mass_velocity(System& system) const {
     auto velocities = system.mutable_velocities();
     double total_mass = 0.0;
     System::Vec3 center_of_mass_velocity = {0.0, 0.0, 0.0};
-    for (std::size_t atom_index = 0; atom_index < velocities.size(); ++atom_index) {
+    // Owned atoms only, for the same reason as in kinetic_energy(): a ghost
+    // would contribute its owner's momentum a second time.
+    for (std::size_t atom_index = 0; atom_index < system.num_local_atoms(); ++atom_index) {
         const auto mass = masses[atom_index];
         if (mass <= 0.0) {
             throw std::runtime_error("All particle masses must be positive before velocity initialization");
@@ -114,10 +236,10 @@ void VelocityInitializer::remove_center_of_mass_velocity(System& system) const {
     center_of_mass_velocity[1] /= total_mass;
     center_of_mass_velocity[2] /= total_mass;
 
-    for (auto& velocity : velocities) {
-        velocity[0] -= center_of_mass_velocity[0];
-        velocity[1] -= center_of_mass_velocity[1];
-        velocity[2] -= center_of_mass_velocity[2];
+    for (std::size_t atom_index = 0; atom_index < system.num_local_atoms(); ++atom_index) {
+        velocities[atom_index][0] -= center_of_mass_velocity[0];
+        velocities[atom_index][1] -= center_of_mass_velocity[1];
+        velocities[atom_index][2] -= center_of_mass_velocity[2];
     }
 }
 
@@ -126,14 +248,14 @@ void VelocityInitializer::rescale_temperature(System& system,
                                               bool center_of_mass_removed) const {
     if (target_temperature == 0.0) {
         auto velocities = system.mutable_velocities();
-        for (auto& velocity : velocities) {
-            velocity = {0.0, 0.0, 0.0};
+        for (std::size_t atom_index = 0; atom_index < system.num_local_atoms(); ++atom_index) {
+            velocities[atom_index] = {0.0, 0.0, 0.0};
         }
         return;
     }
 
     double current_kinetic_energy = kinetic_energy(system);
-    double atom_count = static_cast<double>(system.atom_count());
+    double atom_count = static_cast<double>(system.num_local_atoms());
 
 #ifdef GMD_ENABLE_MPI
     if (mpi_is_available()) {
@@ -141,7 +263,7 @@ void VelocityInitializer::rescale_temperature(System& system,
         MPI_Allreduce(&current_kinetic_energy, &global_ke, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
         current_kinetic_energy = global_ke;
 
-        long long local_n = static_cast<long long>(system.atom_count());
+        long long local_n = static_cast<long long>(system.num_local_atoms());
         long long global_n = 0;
         MPI_Allreduce(&local_n, &global_n, 1, MPI_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
         atom_count = static_cast<double>(global_n);
@@ -162,10 +284,10 @@ void VelocityInitializer::rescale_temperature(System& system,
     const double scale_factor = std::sqrt(target_temperature / current_temperature);
 
     auto velocities = system.mutable_velocities();
-    for (auto& velocity : velocities) {
-        velocity[0] *= scale_factor;
-        velocity[1] *= scale_factor;
-        velocity[2] *= scale_factor;
+    for (std::size_t atom_index = 0; atom_index < system.num_local_atoms(); ++atom_index) {
+        velocities[atom_index][0] *= scale_factor;
+        velocities[atom_index][1] *= scale_factor;
+        velocities[atom_index][2] *= scale_factor;
     }
 }
 
@@ -181,7 +303,7 @@ void VelocityInitializer::initialize(System& system,
     // other ranks may participate in collective MPI_Allreduce calls inside
     // remove_center_of_mass_velocity() and rescale_temperature(). Skipping
     // those calls on this rank would cause MPI_ERR_TRUNCATE.
-    if (system.atom_count() == 0) {
+    if (system.num_local_atoms() == 0) {
 #ifdef GMD_ENABLE_MPI
         if (!mpi_is_available()) return;
         // Fall through — participate in allreduces with zero contributions.
@@ -191,6 +313,9 @@ void VelocityInitializer::initialize(System& system,
     }
 
     if (mode == VelocityInitMode::Random) {
+        // Collective, and before any sampling: the tags are the draw's
+        // identity, so they must be shown to be usable before they are used.
+        validate_atom_tags(system);
         sample_random_velocities(system, target_temperature);
     }
 

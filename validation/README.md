@@ -23,6 +23,49 @@
 - `pme_external/`：**已完成的 PME 外部参考**。OpenMM 8.6.0 PME 为主参考，LAMMPS 22 Jul 2025 - Update 5 的 PPPM 与 exact Ewald 为第二引擎。Coulomb-only、非立方 18x22x26 A、12 原子、精确电中性、无对称性的 fixture。alpha / grid / cutoff / 边界条件 / 无 exclusion 全部精确对齐；B-spline order 无法与 OpenMM 对齐（其固定为 5，无 API 暴露）；LAMMPS PPPM 用的是 optimised Green's function，本身就是另一种 mesh 近似。三个代码对同一物理常数的取舍不同：GMD 用 CODATA 2022 的 14.3996454686836（`gmd::kCoulombConstant`），LAMMPS 用 14.399645（自身六位小数，低 3.255e-08），OpenMM 折算为 14.399645478（高 6.765e-10）；两个引擎的常数在生成时实测而非引用文档。由于每一项都精确携带一个 k_e 因子，按 k_e^GMD / k_e^engine 线性缩放是精确修正。**在 GMD 的常数被修正之前**该因子还要补偿 GMD 自身 3.16e-06 的截断，那个偏差会超过 grid 128 的 mesh error 并被误读为收敛下限；现在只剩引擎自身的舍入。三个引擎在 16/32/64/128 网格上单调收敛到同一个 exact Ewald 极限。reference settings（grid 64^3，GMD order 6 vs OpenMM order 5）下 energy 差 1.13e-06 eV、force 最大分量差 1.53e-06 eV/A；容差取 |GMD-exact| + |OpenMM-exact| 三角不等式界的两倍，而非把观测值向上取整。**virial 张量全部九个分量对 LAMMPS 验证**（exact Ewald 1.6e-07 eV，PPPM 8.6e-07 eV）；OpenMM 完全不暴露 virial。重新生成 reference 需要两个外部引擎，CI 比较不需要。
 - 长时间 NVE/NVT/NPT/diffusion cases：仍为 provisional workflow/regression baselines。
 
+随机初速度的 rank 无关性修正（2026-08-30）：
+
+- **缺陷**：`velocity_init random` 依赖 rank。`VelocityInitializer` 用单个
+  `std::mt19937` 按**本地存储顺序**推进，因此一个物理原子拿到哪几个随机数由它在数组中的
+  位置决定。区域分解下每个 rank 都从相同的种子状态出发，并把最初几个抽样给了**自己的**
+  第一个本地原子——在不同 rank、不同 rank 数下那是不同的物理原子。随后对目标温度的全局
+  rescale 又把差异掩盖：总动能无论如何都被拉到目标，所以 step 0 的温度与势能完全相同，
+  而底层速度场不同。MPI 运行因此从不复现同种子的串行轨迹。
+- **修正**：抽样改为身份的纯函数，`value = f(seed, stream, 全局 atom tag, 分量)`，
+  原子之间不携带任何状态，也不依赖遍历顺序。实现见
+  `include/gmd/core/keyed_random.hpp`：SplitMix64（Steele/Lea/Flood, OOPSLA 2014，
+  即 `java.util.SplittableRandom` 所用的 finalizer），两轮 multiply-xorshift，
+  常数有据可查，纯整数运算。
+  - 均匀数取 `((bits >> 12) + 0.5) / 2^52`，严格落在开区间 `(0,1)`。**丢弃 12 位而非 11 位**：
+    用 53 位时最大值 `(2^53−1)+0.5` 不可表示（该量级间距为 1.0），按 half-to-even 进位到
+    `2^53`，商恰为 `1.0`，于是 `log(u)` 恰为 0。测试专门断言 53 位版本确实会进位到 1.0。
+  - 无取模，故无 modulo bias。
+  - x/y/z **各自**用自己的 key 抽取自己的一对均匀数，而不是共用一对取 cos/sin——后者会让
+    两个输出严格相关。
+  - `RandomStream` 分离流，将来新增随机功能不会挪动这里的数值。
+- **tag 校验**：tag 成为承载语义的量，故使用前先校验。负 tag 与重复 tag 均被拒绝；重复可能
+  **跨 rank**（各 rank 内部唯一、两个 rank 共用一个），只有全局检查能发现。所有 rank 抛出
+  同一条诊断：只有部分 rank 抛出会让其余 rank 独自阻塞在下一个 collective，把错误输入变成
+  死锁而非报错。**不会**静默回退到数组下标——那正是缺陷本身。
+- **ghost 原子不参与初始化**。ghost 携带宿主的 tag，按 tag 抽样反而会得到正确的值；真正错误
+  的是归约：该原子的动量与动能会被计入质心和与 rescale 两次。采样与三处归约、以及 tag 校验
+  都只遍历 owned 原子，因此 halo 中重复的 tag 不会被误判为重复。
+- **保证**：按 tag 比较，np=1/2/4 以及本地存储顺序反转下均一致，误差 **2.8e-17**；抽样本身
+  **逐位相同**。残差来自归约顺序（rank 内按存储顺序累加、跨 rank 由 `MPI_Allreduce` 合并，
+  两者在不同 rank 数下都不同），经由唯一的质心平移与唯一的 scale 因子传播到每个原子。
+  修正前等价性 fixture 的 24 个原子**全部**不同，最差分量 4.7e-01——改善十六个数量级。
+  端到端：50 步轨迹在 serial/np=1/2/4 下日志**完全相同**，最终状态在 np=1 逐位相同、
+  np≥2 内 8.9e-16（约 28 ulp）。
+- **串行结果改变**，且**刻意不保留**旧的串行随机流：保留它就等于保留"遍历顺序即随机身份"，
+  那就是缺陷。**分布未变**：目标温度、`sqrt(k_B T/m)` 宽度、质心移除、3N−3 rescale 全部不变，
+  且整个速度场已对照该规范的独立重实现验证到 2.8e-17。
+- **restart 不受影响**：restart 根本不安装 velocity initializer，checkpoint 中的速度被恢复
+  而非重新采样，因此无需序列化任何 RNG 状态。串行运行跨 checkpoint 拆分后与连续运行逐位相同。
+- **baseline**：五个 dynamics reference 全部重新生成。`diffusion_lj_fluid` 是全仓库唯一被推出
+  原容差的指标（1.796 → 3.273 Å²/ps）；该容差是**固定种子下的可复现性**边界，而非 D 的测量
+  精度：同一 fixture 换五个种子给出 3.273、2.664、2.260、2.224、2.205，离散度约 48%，新值只是
+  其中一次普通抽样。**所有 static energy / force / virial reference 均未改变**——它们都不赋速度。
+
 内部时间单位审计与 Berendsen 轨迹验证（2026-08-30）：
 
 - **内部时间单位不是自由选择**。GMD 以 `v += (F/m)·dt`、`r += v·dt` 积分，`F` 为 eV/Å、

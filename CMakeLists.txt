@@ -151,6 +151,10 @@ if(BUILD_TESTING)
     target_link_libraries(gmd_pressure_unit_tests PRIVATE gmd_core)
     add_executable(gmd_time_unit_tests tests/time_unit_tests.cpp)
     target_link_libraries(gmd_time_unit_tests PRIVATE gmd_core)
+    add_executable(gmd_keyed_random_tests tests/keyed_random_tests.cpp)
+    target_link_libraries(gmd_keyed_random_tests PRIVATE gmd_core)
+    add_executable(gmd_velocity_init_tests tests/velocity_init_tests.cpp)
+    target_link_libraries(gmd_velocity_init_tests PRIVATE gmd_core)
     add_executable(gmd_pme_energy_force_tests tests/pme_energy_force_tests.cpp)
     target_link_libraries(gmd_pme_energy_force_tests PRIVATE gmd_core)
     add_executable(gmd_ml_virial_contract_tests tests/ml_virial_contract_tests.cpp)
@@ -320,6 +324,17 @@ if(BUILD_TESTING)
     add_test(NAME gmd_time_units COMMAND gmd_time_unit_tests)
     set_tests_properties(gmd_time_units
         PROPERTIES LABELS "unit;integrator;io;validation")
+    # What decides which random draw a physical atom receives. Velocities are
+    # always compared by atom tag: comparing by array index would make the
+    # storage-permutation case vacuous.
+    # The keyed generator, pinned against vectors derived independently in
+    # tests/keyed_random_reference.py rather than captured from this code.
+    add_test(NAME gmd_keyed_random COMMAND gmd_keyed_random_tests)
+    set_tests_properties(gmd_keyed_random
+        PROPERTIES LABELS "unit;system;validation")
+    add_test(NAME gmd_velocity_init COMMAND gmd_velocity_init_tests)
+    set_tests_properties(gmd_velocity_init
+        PROPERTIES LABELS "unit;system;validation")
     # The femtosecond-to-picosecond conversion inside the validation analyzers.
     # The diffusion case compares one fitted number against a stored one, so a
     # conversion wrong by 1000 in both would agree with itself forever; this
@@ -527,6 +542,69 @@ if(BUILD_TESTING)
         add_executable(gmd_mpi_berendsen_barostat_tests
             tests/mpi_berendsen_barostat.cpp)
         target_link_libraries(gmd_mpi_berendsen_barostat_tests PRIVATE gmd_core)
+
+        add_executable(gmd_mpi_velocity_init_tests tests/mpi_velocity_init.cpp)
+        target_link_libraries(gmd_mpi_velocity_init_tests PRIVATE gmd_core)
+
+        add_executable(gmd_mpi_velocity_init_tag_tests tests/mpi_velocity_init_tags.cpp)
+        target_link_libraries(gmd_mpi_velocity_init_tag_tests PRIVATE gmd_core)
+
+        # The tag is the random draw's identity, so it is validated
+        # collectively. A duplicate can span ranks -- each rank's own tags
+        # unique, two ranks sharing one -- and only a global check sees that.
+        # Every rank must also THROW, or the ones that did not would wait alone
+        # in the next collective and a bad input would present as a hang.
+        foreach(velocity_tag_np 1 2 4)
+            add_test(
+                NAME gmd_mpi_velocity_init_tags_${velocity_tag_np}proc
+                COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${velocity_tag_np}
+                        $<TARGET_FILE:gmd_mpi_velocity_init_tag_tests>
+            )
+            set_tests_properties(gmd_mpi_velocity_init_tags_${velocity_tag_np}proc
+                PROPERTIES
+                    LABELS "mpi;parallel;system;validation"
+                    PROCESSORS ${velocity_tag_np}
+                    TIMEOUT 120)
+        endforeach()
+
+
+        # Emits the velocity field keyed by atom tag; the driver runs it at
+        # np=1, 2 and 4 and again at np=2 with each rank's local storage
+        # reversed, then compares every field against the np=1 one. The
+        # comparison cannot happen inside one MPI run: the initializer's
+        # centre-of-mass removal and rescale are collective, so a rank cannot
+        # initialize a second whole-system copy on the side to compare against.
+        # A real trajectory through the executable, not just the initial field:
+        # serial, np=1, np=2 and np=4 must produce identical logs, and final
+        # states that agree bitwise at np=1 and to reduction round-off beyond.
+        add_test(
+            NAME gmd_mpi_random_velocity_trajectory
+            COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/tests/random_velocity_trajectory.py
+                    --gmd $<TARGET_FILE:gmd>
+                    --work-root ${CMAKE_CURRENT_BINARY_DIR}/tests/random_velocity_trajectory
+                    --mpiexec ${MPIEXEC_EXECUTABLE}
+                    --mpiexec-np-flag=${MPIEXEC_NUMPROC_FLAG}
+        )
+        set_tests_properties(gmd_mpi_random_velocity_trajectory
+            PROPERTIES
+                LABELS "mpi;parallel;integration;system;restart;validation"
+                PROCESSORS 4)
+
+        add_test(
+            NAME gmd_mpi_velocity_init_equivalence
+            COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/tests/velocity_init_equivalence.py
+                    --executable $<TARGET_FILE:gmd_mpi_velocity_init_tests>
+                    --work-dir ${CMAKE_CURRENT_BINARY_DIR}/tests/velocity_init_equivalence
+                    --mpiexec ${MPIEXEC_EXECUTABLE}
+                    --mpiexec-np-flag=${MPIEXEC_NUMPROC_FLAG}
+                    --require-match
+        )
+        set_tests_properties(gmd_mpi_velocity_init_equivalence
+            PROPERTIES
+                LABELS "mpi;parallel;system;validation"
+                PROCESSORS 4)
 
         # validation/berendsen_npt_lj exercises the barostat over a trajectory
         # but cannot compare rank counts: a run started from velocity_init
