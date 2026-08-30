@@ -1,9 +1,57 @@
 {
   "metrics": {
-    "pressure_mean": 45.98840553731345,
-    "pressure_stddev": 62.56975693815316,
-    "temperature_mean": 126.44391630348254,
-    "temperature_stddev": 17.042278062727927
+    "pressure_mean": 45.98756481592038,
+    "pressure_stddev": 62.56968349643829,
+    "temperature_mean": 126.44395810447752,
+    "temperature_stddev": 17.042315427431724
   },
-  "source": "provisional_gmd_baseline_2026-05-23"
+  "reference_details": {
+    "regenerated": {
+      "boltzmann_constant_new": 8.617333262145177e-05,
+      "boltzmann_constant_old": 8.617343e-05,
+      "boltzmann_constant_relative_change": -1.13003e-06,
+      "build_type": "Release (-DCMAKE_BUILD_TYPE=Release)",
+      "coulomb_constant_unrelated": "Static energy, force and virial baselines are NOT regenerated and do not change: no Coulomb, Lennard-Jones or bonded quantity depends on k_B.",
+      "date": "2026-08-30",
+      "explanation": "temperature_mean moves by 3.306e-07 and temperature_stddev by 2.192e-06, as in the NVT case. pressure_mean moves by -1.828e-05, much more than the constant change: the mean pressure of this small box is a near-cancelling sum of a large positive kinetic term and a large negative virial term, so a small shift in either is amplified in the difference. The MC barostat also accepts or rejects a slightly different sequence of volume moves once the trajectory diverges, which is a discrete change rather than a smooth one.",
+      "fixture_sha256": {
+        "lj32.xyz": "90de3ac2691f9b204eb507781512801a8e72530b12ea095580fe338a9bc6322b",
+        "npt.run": "1e77ac4f45841ada2cda938fb7f9a6b7e52e1e986ff8a2f84e58f60be4d0fbaa"
+      },
+      "generated_at_commit": "59da2659110604ede797a562bb7867b0a3ab2885",
+      "generated_at_commit_subject": "fix: use an authoritative Boltzmann constant",
+      "generated_file": "<work>/npt_lj_fluid/summary.json",
+      "include_gmd_core_physical_constants_hpp_sha256": "b60e56793d49e60e55e61d62dca0b211a19de0788a792e9814835e37b560a258",
+      "include_gmd_integrator_mc_barostat_hpp_sha256": "1da4dafa4f8275bf3a4dd8ea76c42a2a1fe6c501ee8cb117349f81a122435a48",
+      "include_gmd_integrator_thermostat_hpp_sha256": "5fab8769ea0d3ecb4442c3adcb78dbc5e095a42aef26ee62139908321eb7e070",
+      "metrics_new": {
+        "pressure_mean": 45.98756481592038,
+        "pressure_stddev": 62.56968349643829,
+        "temperature_mean": 126.44395810447752,
+        "temperature_stddev": 17.042315427431724
+      },
+      "metrics_old": {
+        "pressure_mean": 45.98840553731345,
+        "pressure_stddev": 62.56975693815316,
+        "temperature_mean": 126.44391630348254,
+        "temperature_stddev": 17.042278062727927
+      },
+      "procedure": [
+        "python3 validation/run_validation.py --case npt_lj_fluid --gmd <build>/gmd --gmd-validate <build>/gmd_validate --work-root <work>",
+        "read the regenerated metrics from <work>/npt_lj_fluid/summary.json"
+      ],
+      "reason": "The velocity initializer's Boltzmann constant was corrected from 8.617343e-5 to the authoritative 8.617333262145177e-5, a relative change of -1.130030e-06. Maxwell-Boltzmann sampling draws sigma = sqrt(k_B T/m) and the rescale that follows targets 2K = dof k_B T, so every initial velocity is scaled by sqrt of that ratio, -5.650e-07 relative. These runs start from randomly sampled velocities, so the whole trajectory moves.",
+      "relative_change": {
+        "pressure_mean": -1.828115985424983e-05,
+        "pressure_stddev": -1.173757394501429e-06,
+        "temperature_mean": 3.305892146698852e-07,
+        "temperature_stddev": 2.192471197703938e-06
+      },
+      "src_system_initializer_cpp_sha256": "91a3b8027f2155d1c69663d7aad1823fee641888676c5077bff6165b3e4b768c",
+      "still_within_previous_tolerance": true,
+      "still_within_previous_tolerance_note": "Every metric stayed inside the case's existing tolerance, so this case would have passed without regeneration. It is regenerated anyway because the stored values had reproduced bit-for-bit and no longer do; leaving them would turn an exact baseline into an approximate one without saying so.",
+      "working_directory": "<repo>"
+    }
+  },
+  "source": "provisional_gmd_baseline_2026-08-30"
 }

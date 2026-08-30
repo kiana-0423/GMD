@@ -1,7 +1,49 @@
 {
   "metrics": {
-    "temperature_mean": 123.81444532835826,
-    "temperature_stddev": 15.655682267215484
+    "temperature_mean": 123.81445869154227,
+    "temperature_stddev": 15.655712200092797
   },
-  "source": "provisional_gmd_baseline_2026-05-23"
+  "reference_details": {
+    "regenerated": {
+      "boltzmann_constant_new": 8.617333262145177e-05,
+      "boltzmann_constant_old": 8.617343e-05,
+      "boltzmann_constant_relative_change": -1.13003e-06,
+      "build_type": "Release (-DCMAKE_BUILD_TYPE=Release)",
+      "coulomb_constant_unrelated": "Static energy, force and virial baselines are NOT regenerated and do not change: no Coulomb, Lennard-Jones or bonded quantity depends on k_B.",
+      "date": "2026-08-30",
+      "explanation": "temperature_mean moves by 1.079e-07 relative and temperature_stddev by 1.912e-06. The mean tracks the thermostat target almost exactly, so it moves at roughly the size of the constant change itself; the standard deviation is a fluctuation measure over a chaotic trajectory and moves more.",
+      "fixture_sha256": {
+        "lj32.xyz": "90de3ac2691f9b204eb507781512801a8e72530b12ea095580fe338a9bc6322b",
+        "nvt.run": "470f028227e1ef96ecfd852977327666acb16c3193fc5a6e4ed15723ff7b1982"
+      },
+      "generated_at_commit": "59da2659110604ede797a562bb7867b0a3ab2885",
+      "generated_at_commit_subject": "fix: use an authoritative Boltzmann constant",
+      "generated_file": "<work>/nvt_lj_fluid/summary.json",
+      "include_gmd_core_physical_constants_hpp_sha256": "b60e56793d49e60e55e61d62dca0b211a19de0788a792e9814835e37b560a258",
+      "include_gmd_integrator_mc_barostat_hpp_sha256": "1da4dafa4f8275bf3a4dd8ea76c42a2a1fe6c501ee8cb117349f81a122435a48",
+      "include_gmd_integrator_thermostat_hpp_sha256": "5fab8769ea0d3ecb4442c3adcb78dbc5e095a42aef26ee62139908321eb7e070",
+      "metrics_new": {
+        "temperature_mean": 123.81445869154227,
+        "temperature_stddev": 15.655712200092797
+      },
+      "metrics_old": {
+        "temperature_mean": 123.81444532835826,
+        "temperature_stddev": 15.655682267215484
+      },
+      "procedure": [
+        "python3 validation/run_validation.py --case nvt_lj_fluid --gmd <build>/gmd --gmd-validate <build>/gmd_validate --work-root <work>",
+        "read the regenerated metrics from <work>/nvt_lj_fluid/summary.json"
+      ],
+      "reason": "The velocity initializer's Boltzmann constant was corrected from 8.617343e-5 to the authoritative 8.617333262145177e-5, a relative change of -1.130030e-06. Maxwell-Boltzmann sampling draws sigma = sqrt(k_B T/m) and the rescale that follows targets 2K = dof k_B T, so every initial velocity is scaled by sqrt of that ratio, -5.650e-07 relative. These runs start from randomly sampled velocities, so the whole trajectory moves.",
+      "relative_change": {
+        "temperature_mean": 1.079291189753917e-07,
+        "temperature_stddev": 1.911949718991224e-06
+      },
+      "src_system_initializer_cpp_sha256": "91a3b8027f2155d1c69663d7aad1823fee641888676c5077bff6165b3e4b768c",
+      "still_within_previous_tolerance": true,
+      "still_within_previous_tolerance_note": "Every metric stayed inside the case's existing tolerance, so this case would have passed without regeneration. It is regenerated anyway because the stored values had reproduced bit-for-bit and no longer do; leaving them would turn an exact baseline into an approximate one without saying so.",
+      "working_directory": "<repo>"
+    }
+  },
+  "source": "provisional_gmd_baseline_2026-08-30"
 }
