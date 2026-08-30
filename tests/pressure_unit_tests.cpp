@@ -767,9 +767,10 @@ void test_reporting_and_barostat_agree() {
 
     // These two constants live in different translation units with nothing
     // linking them, so this is the check that would catch one being edited
-    // alone. The bisection resolves the barostat's value to roughly 1e-12
-    // relative; the bound is loose enough for that and far tighter than any
-    // rounding difference between two independently written literals.
+    // alone. The two measurements agree to about 2e-14 relative, which is the
+    // conditioning of the barostat bisection rather than any disagreement; the
+    // bound is loose enough for that and still five orders tighter than the
+    // 4.09e-09 gap between two independently rounded literals.
     check(relative_difference(reporting, barostat) < 1.0e-9,
           "the reporting path and the MC barostat disagree about the "
           "bar-to-eV/A^3 conversion: reporting " + number(reporting) +
@@ -785,10 +786,11 @@ void test_reporting_and_barostat_agree() {
 
 void test_reporting_matches_the_authoritative_value() {
     const double measured = measure_reporting_conversion(1.0e6);
-    // The log carries the value at full double precision here -- at an internal
-    // pressure of 1e6 eV/A^3 the printed bar value has nineteen significant
-    // digits before its six fixed decimals begin -- so the only slack needed is
-    // the division that recovers the constant.
+    // The log carries the value at full double precision here: at an internal
+    // pressure of 1e6 eV/A^3 the printed bar value is 1.602176634e12, which is
+    // thirteen digits ahead of the decimal point and six behind it, so one
+    // printed unit is 6e-19 relative and nothing is lost to the format. The only
+    // slack needed is the division that recovers the constant.
     check(relative_difference(measured, kReferenceBarToEVPerA3) < 1.0e-15,
           "the reported pressure does not use the exact bar conversion: "
           "measured " + number(measured) + ", reference " +
@@ -809,9 +811,9 @@ void test_mc_barostat_matches_the_authoritative_value() {
     // Looser than the reporting bound, because this number comes from a
     // bisection on a discrete accept/reject outcome rather than from a printed
     // value. The bisection itself runs to double resolution; the limit is the
-    // conditioning of the two-run subtraction, measured at a few parts in 1e15.
-    // 1e-12 leaves room for that and is still three orders of magnitude tighter
-    // than the 4.09e-09 deviation it has to be able to see.
+    // conditioning of the two-run subtraction, measured at about 2e-14 relative.
+    // 1e-12 leaves fifty times' room for that and is still three orders of
+    // magnitude tighter than the 4.09e-09 deviation it has to be able to see.
     check(relative_difference(measured, kReferenceBarToEVPerA3) < 1.0e-12,
           "the MC barostat's pressure-work term does not use the exact bar "
           "conversion: measured " + number(measured) + ", reference " +
