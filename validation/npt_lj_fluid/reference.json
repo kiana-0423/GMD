@@ -1,55 +1,102 @@
 {
   "metrics": {
-    "pressure_mean": 45.98756481592038,
-    "pressure_stddev": 62.56968349643829,
+    "pressure_mean": 45.98756501492537,
+    "pressure_stddev": 62.569683793745405,
     "temperature_mean": 126.44395810447752,
     "temperature_stddev": 17.042315427431724
   },
   "reference_details": {
     "regenerated": {
-      "boltzmann_constant_new": 8.617333262145177e-05,
-      "boltzmann_constant_old": 8.617343e-05,
-      "boltzmann_constant_relative_change": -1.13003e-06,
       "build_type": "Release (-DCMAKE_BUILD_TYPE=Release)",
-      "coulomb_constant_unrelated": "Static energy, force and virial baselines are NOT regenerated and do not change: no Coulomb, Lennard-Jones or bonded quantity depends on k_B.",
       "date": "2026-08-30",
-      "explanation": "temperature_mean moves by 3.306e-07 and temperature_stddev by 2.192e-06, as in the NVT case. pressure_mean moves by -1.828e-05, much more than the constant change: the mean pressure of this small box is a near-cancelling sum of a large positive kinetic term and a large negative virial term, so a small shift in either is amplified in the difference. The MC barostat also accepts or rejects a slightly different sequence of volume moves once the trajectory diverges, which is a discrete change rather than a smooth one.",
       "fixture_sha256": {
         "lj32.xyz": "90de3ac2691f9b204eb507781512801a8e72530b12ea095580fe338a9bc6322b",
         "npt.run": "1e77ac4f45841ada2cda938fb7f9a6b7e52e1e986ff8a2f84e58f60be4d0fbaa"
       },
-      "generated_at_commit": "59da2659110604ede797a562bb7867b0a3ab2885",
-      "generated_at_commit_subject": "fix: use an authoritative Boltzmann constant",
+      "generated_at_commit": "e76c9ee480bd2b0286e64202ccd936e90e945e21",
+      "generated_at_commit_subject": "test: report a reversed barostat pressure-work sign directly",
       "generated_file": "<work>/npt_lj_fluid/summary.json",
-      "include_gmd_core_physical_constants_hpp_sha256": "b60e56793d49e60e55e61d62dca0b211a19de0788a792e9814835e37b560a258",
-      "include_gmd_integrator_mc_barostat_hpp_sha256": "1da4dafa4f8275bf3a4dd8ea76c42a2a1fe6c501ee8cb117349f81a122435a48",
-      "include_gmd_integrator_thermostat_hpp_sha256": "5fab8769ea0d3ecb4442c3adcb78dbc5e095a42aef26ee62139908321eb7e070",
+      "include_gmd_core_physical_constants_hpp_sha256": "3b8af6f7567e624642333c5fdeab960b332ec47acc27557f934598913c45e76e",
+      "include_gmd_integrator_mc_barostat_hpp_sha256": "9010270610f5223977e410229e8599dbdad28e82a7d0d7fc6c1329cabdaaadaf",
       "metrics_new": {
+        "pressure_mean": 45.98756501492537,
+        "pressure_stddev": 62.569683793745405,
+        "temperature_mean": 126.44395810447752,
+        "temperature_stddev": 17.042315427431724
+      },
+      "metrics_old": {
         "pressure_mean": 45.98756481592038,
         "pressure_stddev": 62.56968349643829,
         "temperature_mean": 126.44395810447752,
         "temperature_stddev": 17.042315427431724
       },
-      "metrics_old": {
-        "pressure_mean": 45.98840553731345,
-        "pressure_stddev": 62.56975693815316,
-        "temperature_mean": 126.44391630348254,
-        "temperature_stddev": 17.042278062727927
-      },
+      "pressure_conversion_new": 6.241509074460762e-07,
+      "pressure_conversion_old": 6.2415091e-07,
+      "pressure_conversion_relative_change": -4.09183696875052e-09,
+      "pressure_conversion_source": "exact SI unit identity, 1 bar = 500/801088317 eV/A^3; see include/gmd/core/physical_constants.hpp",
       "procedure": [
         "python3 validation/run_validation.py --case npt_lj_fluid --gmd <build>/gmd --gmd-validate <build>/gmd_validate --work-root <work>",
         "read the regenerated metrics from <work>/npt_lj_fluid/summary.json"
       ],
-      "reason": "The velocity initializer's Boltzmann constant was corrected from 8.617343e-5 to the authoritative 8.617333262145177e-5, a relative change of -1.130030e-06. Maxwell-Boltzmann sampling draws sigma = sqrt(k_B T/m) and the rescale that follows targets 2K = dof k_B T, so every initial velocity is scaled by sqrt of that ratio, -5.650e-07 relative. These runs start from randomly sampled velocities, so the whole trajectory moves.",
+      "reason": "The bar to eV/A^3 conversion was corrected from the duplicated, rounded 6.2415091e-7 to the exact 500/801088317 = 6.241509074460762e-07, a relative change of -4.091837e-09. The Monte Carlo barostat multiplies the target pressure by it and the trajectory writer divides the internal pressure by it, so both the pressure this run controls to and the pressure it reports moved.",
       "relative_change": {
-        "pressure_mean": -1.828115985424983e-05,
-        "pressure_stddev": -1.173757394501429e-06,
-        "temperature_mean": 3.305892146698852e-07,
-        "temperature_stddev": 2.192471197703938e-06
+        "pressure_mean": 4.327365334819915e-09,
+        "pressure_stddev": 4.751616133850124e-09,
+        "temperature_mean": 0.0,
+        "temperature_stddev": 0.0
       },
-      "src_system_initializer_cpp_sha256": "91a3b8027f2155d1c69663d7aad1823fee641888676c5077bff6165b3e4b768c",
+      "src_io_trajectory_writer_cpp_sha256": "b1d49ddc656a9704a246c0313d3deb8d97b65edf13243cafeaa7e5c21a6a005b",
       "still_within_previous_tolerance": true,
-      "still_within_previous_tolerance_note": "Every metric stayed inside the case's existing tolerance, so this case would have passed without regeneration. It is regenerated anyway because the stored values had reproduced bit-for-bit and no longer do; leaving them would turn an exact baseline into an approximate one without saying so.",
+      "still_within_previous_tolerance_note": "Both pressure metrics moved by about 2e-07 bar against a 2000 bar tolerance, so this case would have passed without regeneration. It is regenerated anyway because the stored values had reproduced bit-for-bit and no longer do; leaving them would silently turn an exact baseline into an approximate one.",
+      "superseded_regeneration": {
+        "boltzmann_constant_new": 8.617333262145177e-05,
+        "boltzmann_constant_old": 8.617343e-05,
+        "boltzmann_constant_relative_change": -1.13003e-06,
+        "build_type": "Release (-DCMAKE_BUILD_TYPE=Release)",
+        "coulomb_constant_unrelated": "Static energy, force and virial baselines are NOT regenerated and do not change: no Coulomb, Lennard-Jones or bonded quantity depends on k_B.",
+        "date": "2026-08-30",
+        "explanation": "temperature_mean moves by 3.306e-07 and temperature_stddev by 2.192e-06, as in the NVT case. pressure_mean moves by -1.828e-05, much more than the constant change: the mean pressure of this small box is a near-cancelling sum of a large positive kinetic term and a large negative virial term, so a small shift in either is amplified in the difference. The MC barostat also accepts or rejects a slightly different sequence of volume moves once the trajectory diverges, which is a discrete change rather than a smooth one.",
+        "fixture_sha256": {
+          "lj32.xyz": "90de3ac2691f9b204eb507781512801a8e72530b12ea095580fe338a9bc6322b",
+          "npt.run": "1e77ac4f45841ada2cda938fb7f9a6b7e52e1e986ff8a2f84e58f60be4d0fbaa"
+        },
+        "generated_at_commit": "59da2659110604ede797a562bb7867b0a3ab2885",
+        "generated_at_commit_subject": "fix: use an authoritative Boltzmann constant",
+        "generated_file": "<work>/npt_lj_fluid/summary.json",
+        "include_gmd_core_physical_constants_hpp_sha256": "b60e56793d49e60e55e61d62dca0b211a19de0788a792e9814835e37b560a258",
+        "include_gmd_integrator_mc_barostat_hpp_sha256": "1da4dafa4f8275bf3a4dd8ea76c42a2a1fe6c501ee8cb117349f81a122435a48",
+        "include_gmd_integrator_thermostat_hpp_sha256": "5fab8769ea0d3ecb4442c3adcb78dbc5e095a42aef26ee62139908321eb7e070",
+        "metrics_new": {
+          "pressure_mean": 45.98756481592038,
+          "pressure_stddev": 62.56968349643829,
+          "temperature_mean": 126.44395810447752,
+          "temperature_stddev": 17.042315427431724
+        },
+        "metrics_old": {
+          "pressure_mean": 45.98840553731345,
+          "pressure_stddev": 62.56975693815316,
+          "temperature_mean": 126.44391630348254,
+          "temperature_stddev": 17.042278062727927
+        },
+        "procedure": [
+          "python3 validation/run_validation.py --case npt_lj_fluid --gmd <build>/gmd --gmd-validate <build>/gmd_validate --work-root <work>",
+          "read the regenerated metrics from <work>/npt_lj_fluid/summary.json"
+        ],
+        "reason": "The velocity initializer's Boltzmann constant was corrected from 8.617343e-5 to the authoritative 8.617333262145177e-5, a relative change of -1.130030e-06. Maxwell-Boltzmann sampling draws sigma = sqrt(k_B T/m) and the rescale that follows targets 2K = dof k_B T, so every initial velocity is scaled by sqrt of that ratio, -5.650e-07 relative. These runs start from randomly sampled velocities, so the whole trajectory moves.",
+        "relative_change": {
+          "pressure_mean": -1.828115985424983e-05,
+          "pressure_stddev": -1.173757394501429e-06,
+          "temperature_mean": 3.305892146698852e-07,
+          "temperature_stddev": 2.192471197703938e-06
+        },
+        "src_system_initializer_cpp_sha256": "91a3b8027f2155d1c69663d7aad1823fee641888676c5077bff6165b3e4b768c",
+        "still_within_previous_tolerance": true,
+        "still_within_previous_tolerance_note": "Every metric stayed inside the case's existing tolerance, so this case would have passed without regeneration. It is regenerated anyway because the stored values had reproduced bit-for-bit and no longer do; leaving them would turn an exact baseline into an approximate one without saying so.",
+        "working_directory": "<repo>"
+      },
+      "trajectory_is_unchanged": "The trajectory did not move. Every other column of the run log -- step, time, PE, KE, total energy, temperature and volume -- is bit-identical to the superseded run across all 201 frames, so the barostat accepted exactly the same sequence of volume moves. temperature_mean and temperature_stddev are therefore bit-identical here too and are carried over unchanged; only the two pressure metrics move.",
+      "unchanged_baselines": "nve_lj_fluid, nvt_lj_fluid and diffusion_lj_fluid were re-run and are bit-identical (abs_error exactly 0.0 on every metric): none has a barostat, so the conversion reaches only their P[bar] log column, which none of them measures. The static energy, force and virial baselines do not involve pressure at all and were not touched.",
+      "why_the_change_is_not_the_constant_ratio": "A pure reporting conversion would scale pressure_mean by exactly 4.091837e-09 relative, to 45.98756500409402. The observed value is 45.987565014925373, 5.8 percent further. The difference is the log's own resolution, not physics: pressures here are around 46 bar printed with six decimals, so one printed unit is 1e-6 bar while the conversion moves each value by only about 1.9e-7 bar. The metric is a mean of quantized values. Frame by frame the whole effect is visible and bounded: 62 of the 201 frames changed and every one of them changed by exactly one unit in the last printed place. 51 moved up and all 51 had positive pressure; 11 moved down and all 11 had negative pressure; there are no exceptions. That is a conversion that increases magnitude, quantized. The net shift those counts predict, (51-11)*1e-6/201 = 1.9900497512e-07 bar, matches the observed shift in the mean, 1.9900497250e-07 bar, to 2.6e-15.",
       "working_directory": "<repo>"
     }
   },

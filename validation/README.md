@@ -23,6 +23,41 @@
 - `pme_external/`：**已完成的 PME 外部参考**。OpenMM 8.6.0 PME 为主参考，LAMMPS 22 Jul 2025 - Update 5 的 PPPM 与 exact Ewald 为第二引擎。Coulomb-only、非立方 18x22x26 A、12 原子、精确电中性、无对称性的 fixture。alpha / grid / cutoff / 边界条件 / 无 exclusion 全部精确对齐；B-spline order 无法与 OpenMM 对齐（其固定为 5，无 API 暴露）；LAMMPS PPPM 用的是 optimised Green's function，本身就是另一种 mesh 近似。三个代码对同一物理常数的取舍不同：GMD 用 CODATA 2022 的 14.3996454686836（`gmd::kCoulombConstant`），LAMMPS 用 14.399645（自身六位小数，低 3.255e-08），OpenMM 折算为 14.399645478（高 6.765e-10）；两个引擎的常数在生成时实测而非引用文档。由于每一项都精确携带一个 k_e 因子，按 k_e^GMD / k_e^engine 线性缩放是精确修正。**在 GMD 的常数被修正之前**该因子还要补偿 GMD 自身 3.16e-06 的截断，那个偏差会超过 grid 128 的 mesh error 并被误读为收敛下限；现在只剩引擎自身的舍入。三个引擎在 16/32/64/128 网格上单调收敛到同一个 exact Ewald 极限。reference settings（grid 64^3，GMD order 6 vs OpenMM order 5）下 energy 差 1.13e-06 eV、force 最大分量差 1.53e-06 eV/A；容差取 |GMD-exact| + |OpenMM-exact| 三角不等式界的两倍，而非把观测值向上取整。**virial 张量全部九个分量对 LAMMPS 验证**（exact Ewald 1.6e-07 eV，PPPM 8.6e-07 eV）；OpenMM 完全不暴露 virial。重新生成 reference 需要两个外部引擎，CI 比较不需要。
 - 长时间 NVE/NVT/NPT/diffusion cases：仍为 provisional workflow/regression baselines。
 
+压强单位换算修正（2026-08-30）：
+
+- bar ⇄ eV/Å³ 的换算因子曾以**两个独立字面量**存在：`src/io/trajectory_writer.cpp`
+  与 `include/gmd/integrator/mc_barostat.hpp` 各自的 `6.2415091e-7`，两者都比精确值
+  高 **4.091837e-09**。现统一为 `gmd::kEVPerAngstromCubedToBar` 与
+  `gmd::kBarToEVPerAngstromCubed`。与 k_e、k_B 不同，这不是实测量而是**纯单位恒等式**，
+  四个成分（bar = 100000 Pa、Pa = 1 J/m³、Å = 1e-10 m、eV = 1.602176634e-19 J）全部
+  按定义精确，故 1 bar = 500/801088317 eV/Å³，没有可供取整的不确定度。逆方向是**有限
+  小数**：1 eV/Å³ = 1602176.634 bar（精确），因此以该方向为字面量，正方向由其取倒数
+  导出——这样两个方向各自都是对应精确有理数的最近 double，且在 double 运算下互为精确
+  倒数（由三条 `static_assert` 保证）。
+- **Berendsen barostat 曾把 bar 与 eV/Å³ 直接相减**。它按 `(2K + tr W) / 3V` 计算瞬时
+  压强（eV/Å³），却直接减去以 bar 传入的目标压强，两侧都未换算。于是请求 1 bar 实际等于
+  请求 1 eV/Å³，即 1602176.634 bar。这不只是尺度错误：该差值决定耦合的**符号**，因此对
+  任何常规目标压强，盒子的缩放方向都与真实压强无关。`beta` 本就是 bar⁻¹（默认 4.5e-5 为
+  液态水值），故比较改在 bar 下进行，换算的是瞬时压强。算法、符号约定与 virial 处理均未改动。
+- **力、能量与 virial 完全不受影响**：压强在此只是被报告和被控制的量，从不作为力的输入。
+  所有 static baseline 按构造不变。
+- **只有 `npt_lj_fluid` 一个 baseline 变化，且轨迹本身没有变**。日志中除压强外的每一列
+  （step / time / PE / KE / E_total / T / V）在全部 201 帧上**逐位相同**，说明 MC barostat
+  接受了完全相同的体积移动序列；该 case 的 temperature 指标因此也逐位不变。压强指标的相对
+  变化（+4.33e-09 / +4.75e-09）**不等于**常数本身的 4.0918e-09 比值，原因是日志精度而非
+  物理：压强约 46 bar 而以六位小数打印，一个打印单位是 1e-6 bar，换算只移动约 1.9e-7 bar，
+  指标是被量化后取的平均。逐帧看效应完全有界：201 帧中 62 帧发生变化，每一帧都恰好变化
+  一个末位打印单位，51 帧上移（压强全为正）、11 帧下移（压强全为负），无例外；由计数预测的
+  净偏移 (51−11)×1e-6/201 = 1.9900497512e-07 bar 与实测均值偏移 1.9900497250e-07 bar
+  相符到 2.6e-15。
+- `nve` / `nvt` / `diffusion` 重新运行后**逐位不变**（每个指标 abs_error 恰为 0.0）：三者
+  都没有 barostat，换算只到达它们不测量的 P[bar] 列。
+- **restart**：checkpoint 存的是内部单位 eV/Å³，换算**不被序列化**，因此旧 checkpoint 会以
+  修正后的换算恢复；存储的数值不变，由它报告出的 bar 值移动 4.09e-09。既有日志与轨迹中的
+  `P[bar]` 列由旧因子写出，与新值在该量级以下不可比。
+- 容差未变，且是刻意如此：其推导不依赖该换算，且两个压强指标只移动约 2e-07 bar，容差为
+  2000 bar；重新生成只是因为原值本可逐位复现而现在不再如此。
+
 温度相关 baseline 与 Boltzmann 常数修正（2026-08-30）：
 
 - 生产代码曾同时存在**四个** Boltzmann 常数：`src/system/initializer.cpp` 的

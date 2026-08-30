@@ -147,6 +147,8 @@ if(BUILD_TESTING)
     target_link_libraries(gmd_electrostatic_constant_tests PRIVATE gmd_core)
     add_executable(gmd_boltzmann_constant_tests tests/boltzmann_constant_tests.cpp)
     target_link_libraries(gmd_boltzmann_constant_tests PRIVATE gmd_core)
+    add_executable(gmd_pressure_unit_tests tests/pressure_unit_tests.cpp)
+    target_link_libraries(gmd_pressure_unit_tests PRIVATE gmd_core)
     add_executable(gmd_pme_energy_force_tests tests/pme_energy_force_tests.cpp)
     target_link_libraries(gmd_pme_energy_force_tests PRIVATE gmd_core)
     add_executable(gmd_ml_virial_contract_tests tests/ml_virial_contract_tests.cpp)
@@ -293,6 +295,11 @@ if(BUILD_TESTING)
     add_test(NAME gmd_electrostatic_constant COMMAND gmd_electrostatic_constant_tests)
     set_tests_properties(gmd_electrostatic_constant
         PROPERTIES LABELS "unit;force;validation")
+    # The bar <-> eV/A^3 conversion, measured back out of every production path
+    # that uses it rather than read from a production symbol.
+    add_test(NAME gmd_pressure_units COMMAND gmd_pressure_unit_tests)
+    set_tests_properties(gmd_pressure_units
+        PROPERTIES LABELS "unit;integrator;io;validation")
     add_test(NAME gmd_pme_bspline COMMAND gmd_pme_bspline_tests)
     set_tests_properties(gmd_pme_bspline PROPERTIES LABELS "unit;force;pme")
 
@@ -467,6 +474,27 @@ if(BUILD_TESTING)
         add_executable(gmd_mpi_electrostatic_constant_tests
             tests/mpi_electrostatic_constant.cpp)
         target_link_libraries(gmd_mpi_electrostatic_constant_tests PRIVATE gmd_core)
+
+        add_executable(gmd_mpi_pressure_unit_tests tests/mpi_pressure_units.cpp)
+        target_link_libraries(gmd_mpi_pressure_unit_tests PRIVATE gmd_core)
+
+        # The bar conversion itself is a compile-time constant, but the pressure
+        # it converts is not: 2K is allreduced and the virial is separately
+        # reduced. A term summed once per rank, or a conversion applied per rank
+        # on the way into a sum, multiplies the reported pressure by the rank
+        # count and is an identity at np=1. These runs require the same bar value
+        # at 1, 2 and 4 ranks and on every rank, with one empty domain at np=4.
+        foreach(pressure_units_np 1 2 4)
+            add_test(
+                NAME gmd_mpi_pressure_units_${pressure_units_np}proc
+                COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${pressure_units_np}
+                        $<TARGET_FILE:gmd_mpi_pressure_unit_tests>
+            )
+            set_tests_properties(gmd_mpi_pressure_units_${pressure_units_np}proc
+                PROPERTIES
+                    LABELS "mpi;parallel;integrator;io;validation"
+                    PROCESSORS ${pressure_units_np})
+        endforeach()
 
         # The serial audit proves each electrostatic path carries exactly one
         # factor of k_e. Under MPI the providers allreduce their own energies,

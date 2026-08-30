@@ -4,6 +4,7 @@
 #include <limits>
 #include <stdexcept>
 
+#include "gmd/core/physical_constants.hpp"
 #include "gmd/integrator/thermostat.hpp"  // compute_twice_ke, temperature_from_twice_ke
 #include "gmd/system/system.hpp"
 
@@ -11,7 +12,12 @@ namespace gmd {
 
 namespace {
 
-constexpr double kBarToEvPerA3 = 6.2415091e-7;
+// Single definition in gmd/core/physical_constants.hpp; not a second literal.
+// The eV/A^3 -> bar direction is the one this file needs, and it is a
+// multiplication rather than a division by the forward constant: the two are
+// exact reciprocals, so the result is the same bits either way, but the
+// multiplication says which way the conversion runs.
+constexpr double kEvPerA3ToBar = kEVPerAngstromCubedToBar;
 
 double volume_from_box(const Box& box) noexcept {
     return box.lengths[0] * box.lengths[1] * box.lengths[2];
@@ -48,7 +54,7 @@ FrameThermodynamics frame_thermodynamics(const System& system,
 
     const auto& completed = system.step_thermodynamics();
     if (completed.valid) {
-        frame.pressure_bar = completed.pressure / kBarToEvPerA3;
+        frame.pressure_bar = completed.pressure * kEvPerA3ToBar;
         frame.pressure_valid = true;
         frame.volume = completed.volume;
         frame.twice_ke = completed.twice_kinetic_energy;
@@ -63,7 +69,7 @@ FrameThermodynamics frame_thermodynamics(const System& system,
         const auto& virial = system.last_virial();
         const double virial_trace = virial[0] + virial[4] + virial[8];
         frame.pressure_bar =
-            ((current_twice_ke + virial_trace) / (3.0 * frame.volume)) / kBarToEvPerA3;
+            ((current_twice_ke + virial_trace) / (3.0 * frame.volume)) * kEvPerA3ToBar;
         frame.pressure_valid = true;
         return frame;
     }
