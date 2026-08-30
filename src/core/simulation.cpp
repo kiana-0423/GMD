@@ -230,21 +230,32 @@ void Simulation::initialize(RuntimeContext& runtime) {
         throw std::runtime_error("Simulation requires a System before initialization");
     }
 
-    if (impl_->velocity_initializer != nullptr) {
-        impl_->velocity_initializer->initialize(*impl_->system,
-                                                impl_->initial_temperature,
-                                                impl_->velocity_init_mode,
-                                                impl_->remove_center_of_mass_velocity);
-    }
-
     if (impl_->force_provider != nullptr) {
         impl_->force_provider->initialize(runtime);
     }
+
+    // THE INTEGRATOR GOES FIRST, and the velocity initializer second. That is
+    // the reverse of the original order, and the reason is that everything the
+    // initializer needs to know about constraints only exists after the
+    // integrator has run:
+    //
+    //   * the positions are SHAKE-projected onto the constraint manifold, and
+    //     the rank is a property of THAT geometry rather than of the supplied
+    //     one -- a set that is independent as written can project onto a
+    //     degenerate configuration;
+    //   * require_independent() accepts or rejects the set at that geometry;
+    //   * the authoritative degrees of freedom, 3N - rank - 3, follow from it.
+    //
+    // Initializing velocities first meant rescaling to 3N-3 and then having the
+    // velocity projection remove kinetic energy afterwards, so a constrained run
+    // started at the wrong temperature -- 514 K instead of 300 K for a single
+    // rigid water. Nothing the integrator does here depends on the velocities:
+    // it projects whatever is present, which before initialization is zeros, and
+    // the initializer projects again through the same path afterwards.
+    VelocityConstraintContext constraint_context;
     if (impl_->integrator != nullptr) {
-        // The integrator owns the constraint solver and therefore computes the
-        // authoritative DOF count, but only the Simulation knows whether the COM
-        // velocity was removed. Hand that over before initialize() so the
-        // thermostat is given the correct DOF from the very first step.
+        // Only the Simulation knows whether the COM velocity was removed, and
+        // the DOF count needs it. Hand it over before initialize().
         auto velocity_verlet =
             std::dynamic_pointer_cast<VelocityVerletIntegrator>(impl_->integrator);
         if (velocity_verlet != nullptr) {
@@ -252,6 +263,28 @@ void Simulation::initialize(RuntimeContext& runtime) {
                 impl_->remove_center_of_mass_velocity);
         }
         impl_->integrator->initialize(*impl_->system, runtime);
+
+        if (velocity_verlet != nullptr) {
+            constraint_context.degrees_of_freedom =
+                velocity_verlet->degrees_of_freedom(*impl_->system);
+            if (velocity_verlet->has_constraints()) {
+                // The authoritative projection, reached through the integrator
+                // rather than reimplemented: RATTLE against the same Jacobian
+                // require_independent() has just accepted.
+                constraint_context.project_velocities =
+                    [velocity_verlet](System& system) {
+                        velocity_verlet->apply_velocity_constraints(system);
+                    };
+            }
+        }
+    }
+
+    if (impl_->velocity_initializer != nullptr) {
+        impl_->velocity_initializer->initialize(*impl_->system,
+                                                impl_->initial_temperature,
+                                                impl_->velocity_init_mode,
+                                                impl_->remove_center_of_mass_velocity,
+                                                constraint_context);
     }
 
     // Compute initial forces at t=0 so the first half-kick uses the current state.

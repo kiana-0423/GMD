@@ -23,3 +23,8 @@ barostat berendsen
 barostat_tau 1000.0
 compressibility 4.5e-5
 pressure 200.0
+
+# Written so the serial/MPI comparison can check the final per-atom state,
+# keyed by tag, and not only the six-decimal log.
+checkpoint_file expand_final.chk
+write_checkpoint_every 0

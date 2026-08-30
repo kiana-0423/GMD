@@ -23,6 +23,42 @@
 - `pme_external/`：**已完成的 PME 外部参考**。OpenMM 8.6.0 PME 为主参考，LAMMPS 22 Jul 2025 - Update 5 的 PPPM 与 exact Ewald 为第二引擎。Coulomb-only、非立方 18x22x26 A、12 原子、精确电中性、无对称性的 fixture。alpha / grid / cutoff / 边界条件 / 无 exclusion 全部精确对齐；B-spline order 无法与 OpenMM 对齐（其固定为 5，无 API 暴露）；LAMMPS PPPM 用的是 optimised Green's function，本身就是另一种 mesh 近似。三个代码对同一物理常数的取舍不同：GMD 用 CODATA 2022 的 14.3996454686836（`gmd::kCoulombConstant`），LAMMPS 用 14.399645（自身六位小数，低 3.255e-08），OpenMM 折算为 14.399645478（高 6.765e-10）；两个引擎的常数在生成时实测而非引用文档。由于每一项都精确携带一个 k_e 因子，按 k_e^GMD / k_e^engine 线性缩放是精确修正。**在 GMD 的常数被修正之前**该因子还要补偿 GMD 自身 3.16e-06 的截断，那个偏差会超过 grid 128 的 mesh error 并被误读为收敛下限；现在只剩引擎自身的舍入。三个引擎在 16/32/64/128 网格上单调收敛到同一个 exact Ewald 极限。reference settings（grid 64^3，GMD order 6 vs OpenMM order 5）下 energy 差 1.13e-06 eV、force 最大分量差 1.53e-06 eV/A；容差取 |GMD-exact| + |OpenMM-exact| 三角不等式界的两倍，而非把观测值向上取整。**virial 张量全部九个分量对 LAMMPS 验证**（exact Ewald 1.6e-07 eV，PPPM 8.6e-07 eV）；OpenMM 完全不暴露 virial。重新生成 reference 需要两个外部引擎，CI 比较不需要。
 - 长时间 NVE/NVT/NPT/diffusion cases：仍为 provisional workflow/regression baselines。
 
+约束体系初速度的 DOF 修正与 Berendsen serial/MPI 强制比较（2026-08-30）：
+
+- **缺陷**：约束体系请求 300 K，实际从 **514 K** 起步（单个刚性水分子）。
+  `VelocityInitializer` 按 `2K = (3N−3)·k_B·T` 缩放，随后 integrator 才把速度投影到约束
+  切空间——把刚刚放进去的动能又拿掉一部分——而温度报告用的是权威的 `3N − rank − 3`。
+  两个自由度计数、两个阶段，彼此都不知道对方；initializer 既没有 constraint solver
+  也没有 rank，本来也无从得知。
+- 两个误差**不会相消**。投影移除的是约束模式上的能量，平均约占 `rank/(3N−3)`，与两个
+  计数之差几乎相同——于是误差的**均值近零而涨落不然**，而每次运行只抽一次样：
+  1 分子 +71.3%、3 分子 +22.9%、10 分子 +4.8%、40 分子 +1.6%。
+- **修正**：`Simulation::initialize()` 改为**先** integrator、**后** velocity initializer。
+  initializer 需要的一切只在 integrator 跑完后才存在：位置被 SHAKE 投影到约束流形上，
+  `require_independent()` 在**投影后的几何**上接受该约束集（rank 是动力学真正起步的那个
+  构型的性质，而非输入构型的），权威的 `3N − rank − 3` 随之确定。
+- **顺序**：采样 → 移除全局质心速度 → RATTLE 投影 → 用权威 DOF 缩放。**一遍即可**，
+  原因是具体的：质心移除保持切空间性质（距离约束的 Jacobian 行为 `(+r_ij, −r_ij)`，
+  故整体平移落在 `J` 的零空间中）；投影保持零动量（修正量为 `+λr_ij/m_i` 与
+  `−λr_ij/m_j`，动量变化相消）；标量缩放两者都保持。同一个零空间事实也说明平动模式与
+  约束模式不重叠，因此同时减去 3 和 rank **不会重复扣除**。
+  实现仍写成有上限的循环，**验证**两个全局标量性质并在不满足时明确报错，而不是默默接受
+  一个不自洽的速度场。投影本身调用 integrator 自己的 `apply_velocity_constraints()`，
+  约束数学仍留在 constraint solver 内。
+- **保证**：切空间残差 `|r·v| < 1e-11`；质心动量为归约舍入量级；`2K = dof·k_B·T` 达到
+  3.3e-16；DOF 与温度报告/thermostat/压强所用的是同一个；np=1/2/4、跨 rank 约束、
+  空 rank 下按 tag 一致；存储顺序置换后按 tag 差异 8.3e-17。
+- **baseline 不变**，且是验证过的：validation 中没有任何 case 使用约束，十个 case 全部
+  逐位复现（abs_error 恰为 0）。约束体系本身的轨迹确实改变——那正是目的。
+- **restart 不受影响**：restart 根本不安装 velocity initializer。
+
+- **Berendsen serial/MPI 比较由"仅报告"改为强制断言**。原先只报告不断言，是因为写它时
+  `velocity_init random` 确实依赖 rank。抽样改为按全局 tag 之后该理由已不存在：
+  np=1/2/4 的能量日志**逐列逐帧完全相同**；最终每原子状态在 np=1 逐位相同，
+  np=2 / np=4 分别为 1.7e-14 / 2.1e-14（容差 1e-12，约五十倍）。
+  结构性检查（帧数、有限性）先于任何差异度量执行，因此 NaN 或缺帧会被如实报出而不是
+  混进误差里；诊断信息给出日志差异的列名与步数、状态差异的 atom tag 与分量。
+
 随机初速度的 rank 无关性修正（2026-08-30）：
 
 - **缺陷**：`velocity_init random` 依赖 rank。`VelocityInitializer` 用单个

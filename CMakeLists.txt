@@ -155,6 +155,9 @@ if(BUILD_TESTING)
     target_link_libraries(gmd_keyed_random_tests PRIVATE gmd_core)
     add_executable(gmd_velocity_init_tests tests/velocity_init_tests.cpp)
     target_link_libraries(gmd_velocity_init_tests PRIVATE gmd_core)
+    add_executable(gmd_constrained_velocity_init_tests
+        tests/constrained_velocity_init_tests.cpp)
+    target_link_libraries(gmd_constrained_velocity_init_tests PRIVATE gmd_core)
     add_executable(gmd_pme_energy_force_tests tests/pme_energy_force_tests.cpp)
     target_link_libraries(gmd_pme_energy_force_tests PRIVATE gmd_core)
     add_executable(gmd_ml_virial_contract_tests tests/ml_virial_contract_tests.cpp)
@@ -335,6 +338,13 @@ if(BUILD_TESTING)
     add_test(NAME gmd_velocity_init COMMAND gmd_velocity_init_tests)
     set_tests_properties(gmd_velocity_init
         PROPERTIES LABELS "unit;system;validation")
+    # Constrained initialization drives the real Simulation::initialize() path,
+    # because the defect lives in the order the initializer and the integrator
+    # run in rather than inside either one.
+    add_test(NAME gmd_constrained_velocity_init
+        COMMAND gmd_constrained_velocity_init_tests)
+    set_tests_properties(gmd_constrained_velocity_init
+        PROPERTIES LABELS "unit;system;integrator;validation")
     # The femtosecond-to-picosecond conversion inside the validation analyzers.
     # The diffusion case compares one fitted number against a stored one, so a
     # conversion wrong by 1000 in both would agree with itself forever; this
@@ -548,6 +558,84 @@ if(BUILD_TESTING)
 
         add_executable(gmd_mpi_velocity_init_tag_tests tests/mpi_velocity_init_tags.cpp)
         target_link_libraries(gmd_mpi_velocity_init_tag_tests PRIVATE gmd_core)
+
+        add_executable(gmd_mpi_constrained_velocity_init_tests
+            tests/mpi_constrained_velocity_init.cpp)
+        target_link_libraries(gmd_mpi_constrained_velocity_init_tests PRIVATE gmd_core)
+
+        # Constrained initialization at 1, 2 and 4 ranks. The fixture strides
+        # tags by one, so every molecule is split and every constraint spans
+        # ranks; at np=4 the last rank owns nothing. Each run asserts that all
+        # ranks agree on the authoritative DOF and that the field is tangent,
+        # momentum-free and at exactly the target temperature; the driver then
+        # compares the fields across rank counts by atom tag.
+        foreach(constrained_np 1 2 4)
+            add_test(
+                NAME gmd_mpi_constrained_velocity_init_${constrained_np}proc
+                COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${constrained_np}
+                        $<TARGET_FILE:gmd_mpi_constrained_velocity_init_tests>
+            )
+            set_tests_properties(gmd_mpi_constrained_velocity_init_${constrained_np}proc
+                PROPERTIES
+                    LABELS "mpi;parallel;system;integrator;validation"
+                    PROCESSORS ${constrained_np}
+                    TIMEOUT 120)
+        endforeach()
+
+        # A dependent constraint set must be rejected on EVERY rank. The timeout
+        # matters: a rank that threw while the others waited in the constraint
+        # gather would hang rather than fail.
+        foreach(constrained_reject_np 1 2 4)
+            add_test(
+                NAME gmd_mpi_constrained_velocity_reject_${constrained_reject_np}proc
+                COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${constrained_reject_np}
+                        $<TARGET_FILE:gmd_mpi_constrained_velocity_init_tests>
+                        --redundant-only
+            )
+            set_tests_properties(gmd_mpi_constrained_velocity_reject_${constrained_reject_np}proc
+                PROPERTIES
+                    LABELS "mpi;parallel;system;integrator"
+                    PROCESSORS ${constrained_reject_np}
+                    TIMEOUT 120)
+        endforeach()
+
+        # The Berendsen trajectory compared across rank counts. The serial case
+        # runs through run_validation.py without MPI; this one calls the
+        # analyzer directly so it can pass --mpiexec, which turns the
+        # serial/MPI comparison on. It was report-only until the velocity
+        # initializer became rank independent; now the logs agree bit for bit.
+        add_test(
+            NAME gmd_mpi_berendsen_npt_equivalence
+            COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/validation/berendsen_npt_lj/analyze.py
+                    --gmd $<TARGET_FILE:gmd>
+                    --work-dir ${CMAKE_CURRENT_BINARY_DIR}/tests/berendsen_npt_mpi
+                    --mpiexec ${MPIEXEC_EXECUTABLE}
+        )
+        set_tests_properties(gmd_mpi_berendsen_npt_equivalence
+            PROPERTIES
+                LABELS "mpi;parallel;integration;integrator;validation"
+                PROCESSORS 4
+                TIMEOUT 300)
+
+        # The same by-tag field comparison the unconstrained case gets, driven
+        # against the constrained emitter.
+        add_test(
+            NAME gmd_mpi_constrained_velocity_equivalence
+            COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/tests/velocity_init_equivalence.py
+                    --executable $<TARGET_FILE:gmd_mpi_constrained_velocity_init_tests>
+                    --work-dir ${CMAKE_CURRENT_BINARY_DIR}/tests/constrained_velocity_equivalence
+                    --mpiexec ${MPIEXEC_EXECUTABLE}
+                    --mpiexec-np-flag=${MPIEXEC_NUMPROC_FLAG}
+                    --require-match
+                    --tolerance 1e-11
+        )
+        set_tests_properties(gmd_mpi_constrained_velocity_equivalence
+            PROPERTIES
+                LABELS "mpi;parallel;system;integrator;validation"
+                PROCESSORS 4
+                TIMEOUT 300)
 
         # The tag is the random draw's identity, so it is validated
         # collectively. A duplicate can span ranks -- each rank's own tags

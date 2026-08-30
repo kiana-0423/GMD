@@ -40,6 +40,7 @@ These change simulation results for the configurations they affect.
 | **PME reciprocal forces were identically zero** — `bspline_deriv(u, p)` evaluates `M_(p-1)`, but `bspline()` implemented only orders 4 and 6 and returned `0.0` for anything else. Every derivative weight was therefore zero and **`coulomb pme` applied no reciprocal electrostatic force at all**, at any order. Orders 2, 3 and 5 are now implemented — every supported order needs its predecessor, all the way down. Energies were unaffected, which is why the existing PME regression baseline never noticed | `src/force/pme_force_provider.cpp` |
 | **PME force interpolation was missing the mesh-point-count factor** — the energy uses an unnormalised forward transform while `fft3d(..., true)` divides by `K1·K2·K3`, so `dE/dQ(j) = N·IFFT[G·Q̂](j)`. The factor `N` was absent, leaving every PME reciprocal force `N` times too small. Masked by the defect above, which zeroed the term outright | `src/force/pme_force_provider.cpp` |
 | **PME B-spline order 6 was wrong on three of its six intervals** — the hard-coded quintic polynomials on `[2,3)`, `[3,4)` and `[4,5)` did not match `M_6`; the spline went negative, summed to 0.9 instead of 1 under partition of unity, and broke the symmetry `M(u) = M(6-u)`. `pme_order 6` produced nonsense energies (13401 eV where the correct value is -3.05 eV) | `src/force/pme_force_provider.cpp` |
+| **Constrained runs started at the wrong temperature** — the initializer rescaled to `3N−3` degrees of freedom and the integrator then projected the velocities, removing the kinetic energy it had just set, while reporting against `3N − rank − 3`. A single rigid water asked for 300 K started at 514 K. Initialization now runs after the constraint analysis, with the authoritative DOF and the authoritative projection | `src/core/simulation.cpp` `src/system/initializer.cpp` `include/gmd/system/initializer.hpp` |
 | **`velocity_init random` was rank-dependent** — one `std::mt19937` advanced in local storage order, so an atom's draw was decided by its array position and an MPI run never reproduced the serial trajectory for the same seed. The global temperature rescale hid it. Draws are now keyed on `(seed, stream, global atom tag, component)` | `include/gmd/core/keyed_random.hpp` `src/system/initializer.cpp` `include/gmd/system/initializer.hpp` |
 | **Nosé–Hoover and Berendsen relaxation times were consumed in internal time units while being written, printed and defaulted in femtoseconds** — `tau = 100 fs` relaxed on 1018.05 fs and `tau_P = 2000 fs` coupled on 20361 fs, both exactly `T` too long. Neither was visible from inside its own file: every quantity was self-consistent | `src/io/config_loader.cpp` `include/gmd/io/config_loader.hpp` `app/gmd_main.cpp` |
 | **The internal time constant was rounded to seven figures and inversely named** — `kInternalTimeUnitsPerFs = 1.018051e+1` was 4.206204e-07 above `Å·√(amu/eV)`, ~2700× the CODATA uncertainty, and was *divided into* a femtosecond timestep despite its name | `include/gmd/core/physical_constants.hpp` `src/io/config_loader.cpp` |
@@ -126,6 +127,109 @@ strain-derivative reference, and not a general rotation.
 Tests: `tests/virial_source_inventory_tests.cpp`,
 `tests/pme_reciprocal_virial_tests.cpp`, `tests/mpi_virial_sources.cpp`, with
 the shared references in `tests/virial_reference.hpp`.
+
+### Constraint-aware velocity initialization
+
+A constrained run asked for 300 K started at **514 K**.
+
+**Root cause.** `VelocityInitializer` rescaled to `2K = (3N−3)·k_B·T`. The
+integrator then projected the velocities into the constraint tangent space,
+removing the kinetic energy the rescale had just put there, and reported
+temperature against the authoritative `3N − rank − 3`. Two degree-of-freedom
+counts, two stages, neither aware of the other — the initializer held no
+constraint solver and no rank.
+
+The two errors do not cancel. Projection removes the energy in the constrained
+modes, on average `rank/(3N−3)` of the total, which is very nearly what the
+difference between the counts would account for — so the error has a mean near
+zero and a **fluctuation that does not**, and every run draws once.
+
+| molecules | atoms | dof (auth) | dof (3N−3) | T before | T after |
+|---|---|---|---|---|---|
+| 1 | 3 | 3 | 6 | 514.00 K | **300.0000 K** |
+| 3 | 9 | 15 | 24 | 368.62 K | **300.0000 K** |
+| 10 | 30 | 57 | 87 | 314.45 K | **300.0000 K** |
+| 40 | 120 | 237 | 357 | 304.85 K | **300.0000 K** |
+
+Relative error is now 2.2e-16 to 3.3e-16.
+
+#### The startup sequence
+
+`Simulation::initialize()` now runs the integrator **first** and the velocity
+initializer **second**. Everything the initializer needs only exists afterwards:
+
+1. force provider initialized
+2. **integrator**: SHAKE-projects the positions onto the constraint manifold;
+   `require_independent()` accepts the set *at that projected geometry* — the
+   rank is a property of the configuration the dynamics start from, not the one
+   supplied; the authoritative `3N − rank − 3` follows; the thermostat receives it
+3. **velocity initializer**, given that DOF and the integrator's own projection
+4. initial force evaluation
+
+Within step 3: sample tag-keyed Gaussians → remove the global centre-of-mass
+velocity → RATTLE-project → rescale to `2K = dof·k_B·T`.
+
+**One pass suffices**, and the reasons are specific rather than hopeful:
+
+| Step | Preserves | Why |
+|---|---|---|
+| COM removal | tangency | a distance constraint's Jacobian row is `(+r_ij, −r_ij)`, so a uniform shift contributes `r_ij·c − r_ij·c = 0` — rigid translation lies in the null space of `J` |
+| Projection | zero momentum | RATTLE's correction is `+λr_ij/m_i` and `−λr_ij/m_j`, whose momentum change cancels |
+| Rescaling | both | `J(αv) = αJv = 0`, and `α·0 = 0` |
+
+That same null-space fact is why the three translational modes and the
+constrained modes are disjoint, so subtracting both 3 and the rank does **not**
+double-count.
+
+It is still written as a bounded loop that **verifies** the two global scalar
+properties and reports a clear failure rather than accepting an inconsistent
+field — because the projection converges to a tolerance rather than exactly, and
+because a future constraint type might not have the null-space property. The
+projection itself is the integrator's own `apply_velocity_constraints()`,
+reached through a callback: the constraint mathematics stays in the constraint
+solver.
+
+#### Guarantees
+
+| Property | Guarantee |
+|---|---|
+| Constraint tangency `Jv = 0` | `|r·v| < 1e-11` |
+| Global momentum, COM removal on | zero to reduction round-off |
+| Target kinetic energy | `2K = dof·k_B·T` to 3.3e-16 |
+| DOF | the same `3N − rank − 3` reporting, thermostats and pressure use |
+| np=1/2/4, cross-rank constraints, empty rank | identical by tag |
+| Storage permutation | 8.3e-17 by tag |
+
+**Coverage:** one distance constraint, coupled water triangles, disconnected
+components, constraints combined with COM removal, a thin-but-independent
+triangle, dependent sets rejected, 0 K exactly at rest. Under MPI the fixture
+strides tags by **one**, so every molecule is split and every constraint spans
+ranks; at np=4 a rank owns nothing; a dependent set is rejected on *every* rank,
+with a timeout so a hang fails rather than stalls.
+
+**Baselines do not move.** No validation case uses constraints, so all ten
+reproduce bit-for-bit. Constrained runs themselves do change — that is the
+point.
+
+**Restart** is unaffected: a restart does not install the velocity initializer
+at all.
+
+### Berendsen serial/MPI equivalence, enforced
+
+`validation/berendsen_npt_lj` reported its serial/MPI difference without
+asserting on it — written when `velocity_init random` was rank dependent. With
+draws keyed on the global atom tag that reason is gone:
+
+| Comparison | Result |
+|---|---|
+| Energy log, every column of every frame, np=1/2/4 | **bit-identical** |
+| Final per-atom state, np=1 | **bitwise** |
+| Final per-atom state, np=2 / np=4 | 1.7e-14 / 2.1e-14 (bound 1e-12) |
+
+Structural checks run **before** any difference metric, so a NaN or a missing
+frame is reported as itself. Diagnostics name the column and step for a log
+difference, the atom tag and component for a state difference. The expansion
+direction is re-asserted at every rank count.
 
 ### Reproducible random velocity initialization
 
@@ -1939,8 +2043,8 @@ ForceProvider (interface)                                      │  MpiCommunica
 - A Nose-Hoover checkpoint can only be restarted into a run with the same degrees of freedom. Changing the constraint set, the centre-of-mass removal setting or the atom count is rejected, as is a checkpoint predating constraint-aware DOF accounting (the old `3N-3` rule) whenever the two disagree. There is no migration path: the thermostat mass `Q` and friction variable `xi` belong to the DOF they were generated under. Restart from the input instead
 - **The initial velocity field is reproducible across rank counts to reduction round-off, not bitwise.** The draws are bitwise identical by tag, but the centre-of-mass and kinetic-energy sums are accumulated in storage order within a rank and combined by `MPI_Allreduce` across ranks, and neither order is the same at every rank count. That reaches every atom through one shared shift and one shared factor: 2.8e-17 on the initial field, amplifying to 8.9e-16 (~28 ulp) over 50 steps. Making it bitwise would need a fixed-order global reduction — an O(N) gather on every initialization — for a difference far below anything physical
 - **The keyed generator's normal transform is not bit-portable across standard libraries.** Key derivation, the SplitMix64 mixer and the uniform mapping are exact integer arithmetic and identical everywhere; `sqrt`, `log` and `cos` are not guaranteed bit-identical across libm implementations, so cross-platform agreement is to a few ulp
-- **The velocity initializer's degrees-of-freedom convention is its own.** It rescales against 3N−3 (or 3N) directly, while thermostats and temperature reporting use the constraint-aware `compute_degrees_of_freedom()`. For an unconstrained system the two agree exactly; for a constrained one a system initialized to T will not report exactly T. Pre-existing and not addressed here
-- **`validation/berendsen_npt_lj` still reports rather than asserts its serial/MPI difference.** With the initializer corrected the two now agree to reduction round-off, but the case's comparison was written when they did not and has not been tightened; the rank-independence asserted about the barostat itself lives in `tests/mpi_berendsen_barostat.cpp`
+- **Constrained initialization depends on the constraint solver converging.** A set that is independent but badly conditioned can exhaust SHAKE's or RATTLE's iteration budget before reaching the configured tolerance — a triangle whose perimeter closes to within 0.3% does at `tolerance = 1e-13`. That is the solver's limit rather than the rank policy's, it predates this change, and it is reported as a convergence failure rather than silently accepted
+- **The initialization convergence loop absorbs an ordering mistake rather than reporting one.** Rescaling before projecting instead of after is corrected by the next pass, so that particular mistake is invisible from the outside. That is the loop working as intended — it verifies rather than assumes — but the ordering is not itself pinned by a test; capping the loop at one pass is what exposes it
 - The internal time unit is now audited, but the **Monte Carlo barostat's `mc_frequency` is a step count, not a time**, so it does not scale with the timestep: halving `time_step` halves the physical interval between volume-move attempts. That is the documented behaviour rather than a defect, but it is the one scheduling parameter in the code that is not expressed in femtoseconds
 - No GPU execution (CUDA option present but CPU-only)
 - Checkpoint/restart uses a readable replicated text file; large-scale binary/parallel checkpoint I/O is not implemented

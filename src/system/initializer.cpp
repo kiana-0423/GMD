@@ -245,7 +245,8 @@ void VelocityInitializer::remove_center_of_mass_velocity(System& system) const {
 
 void VelocityInitializer::rescale_temperature(System& system,
                                               double target_temperature,
-                                              bool center_of_mass_removed) const {
+                                              bool center_of_mass_removed,
+                                              std::size_t override_dof) const {
     if (target_temperature == 0.0) {
         auto velocities = system.mutable_velocities();
         for (std::size_t atom_index = 0; atom_index < system.num_local_atoms(); ++atom_index) {
@@ -274,7 +275,14 @@ void VelocityInitializer::rescale_temperature(System& system,
         throw std::runtime_error("Velocity initialization produced zero kinetic energy");
     }
 
-    const auto dof = center_of_mass_removed ? 3.0 * atom_count - 3.0 : 3.0 * atom_count;
+    // The authoritative count when one was supplied. It is 3N - rank - 3, the
+    // same number temperature reporting, the thermostats and the pressure use;
+    // computing 3N-3 here instead is what made a constrained run start at the
+    // wrong temperature. The fallback is only for callers with no constraints.
+    const auto dof = override_dof != 0
+                         ? static_cast<double>(override_dof)
+                         : (center_of_mass_removed ? 3.0 * atom_count - 3.0
+                                                   : 3.0 * atom_count);
     if (dof <= 0.0) {
         throw std::runtime_error("Not enough degrees of freedom to define a temperature");
     }
@@ -291,10 +299,105 @@ void VelocityInitializer::rescale_temperature(System& system,
     }
 }
 
+
+double VelocityInitializer::global_twice_kinetic_energy(const System& system) const {
+    double local = 2.0 * kinetic_energy(system);
+#ifdef GMD_ENABLE_MPI
+    if (mpi_is_available()) {
+        double global = 0.0;
+        MPI_Allreduce(&local, &global, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+        return global;
+    }
+#endif
+    return local;
+}
+
+namespace {
+
+double global_total_mass(const System& system) {
+    const auto masses = system.masses();
+    double total = 0.0;
+    for (std::size_t atom_index = 0; atom_index < system.num_local_atoms(); ++atom_index) {
+        total += masses[atom_index];
+    }
+#ifdef GMD_ENABLE_MPI
+    if (mpi_is_available()) {
+        double global = 0.0;
+        MPI_Allreduce(&total, &global, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+        return global;
+    }
+#endif
+    return total;
+}
+
+}  // namespace
+
+double VelocityInitializer::global_momentum_magnitude(const System& system) const {
+    const auto masses = system.masses();
+    const auto velocities = system.velocities();
+    double momentum[3] = {0.0, 0.0, 0.0};
+    for (std::size_t atom_index = 0; atom_index < system.num_local_atoms(); ++atom_index) {
+        for (std::size_t dim = 0; dim < 3; ++dim) {
+            momentum[dim] += masses[atom_index] * velocities[atom_index][dim];
+        }
+    }
+#ifdef GMD_ENABLE_MPI
+    if (mpi_is_available()) {
+        double global[3] = {0.0, 0.0, 0.0};
+        MPI_Allreduce(momentum, global, 3, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+        momentum[0] = global[0];
+        momentum[1] = global[1];
+        momentum[2] = global[2];
+    }
+#endif
+    return std::sqrt(momentum[0] * momentum[0] + momentum[1] * momentum[1] +
+                     momentum[2] * momentum[2]);
+}
+
 void VelocityInitializer::initialize(System& system,
                                      double target_temperature,
                                      VelocityInitMode mode,
                                      bool remove_center_of_mass_velocity_flag) const {
+    initialize(system, target_temperature, mode, remove_center_of_mass_velocity_flag,
+               VelocityConstraintContext{});
+}
+
+// THE SEQUENCE, and why it is this one.
+//
+// Sampling, centre-of-mass removal, constraint projection and rescaling all
+// touch the same velocities, so the order matters and not every order works.
+// This one does, and it does so in a single pass:
+//
+//   1  sample tag-keyed Gaussians
+//   2  remove the global centre-of-mass velocity, if requested
+//   3  project into the constraint tangent space  (RATTLE)
+//   4  rescale so that 2K = dof * k_B * T, with the AUTHORITATIVE dof
+//
+// The reason no iteration is needed is that each step preserves what the
+// previous ones established:
+//
+//   * Centre-of-mass removal preserves tangency. A distance constraint's
+//     Jacobian row is (+r_ij, -r_ij), so a uniform velocity shift contributes
+//     r_ij.c - r_ij.c = 0: rigid translation lies in the null space of J.
+//
+//   * Projection preserves zero momentum. RATTLE's correction is
+//     dv_i = +lambda r_ij / m_i, dv_j = -lambda r_ij / m_j, whose momentum
+//     change is lambda r_ij - lambda r_ij = 0.
+//
+//   * Rescaling by a scalar preserves both: J(alpha v) = alpha J v = 0, and
+//     alpha * 0 = 0.
+//
+// So after step 4 all three properties hold simultaneously and exactly, which
+// is why the loop below normally runs once. It is still a loop because the
+// projection is iterative and converges to a tolerance rather than exactly, and
+// because a future constraint type might not have the null-space property that
+// makes step 2 harmless. It verifies rather than assumes, and it reports a
+// failure instead of accepting an inconsistent field.
+void VelocityInitializer::initialize(System& system,
+                                     double target_temperature,
+                                     VelocityInitMode mode,
+                                     bool remove_center_of_mass_velocity_flag,
+                                     const VelocityConstraintContext& constraints) const {
     if (target_temperature < 0.0) {
         throw std::runtime_error("Target temperature must be non-negative");
     }
@@ -319,11 +422,77 @@ void VelocityInitializer::initialize(System& system,
         sample_random_velocities(system, target_temperature);
     }
 
-    if (remove_center_of_mass_velocity_flag) {
-        remove_center_of_mass_velocity(system);
+    // Nothing below can make a field at rest anything other than at rest, and
+    // the residual checks would divide by a zero target.
+    if (target_temperature == 0.0) {
+        rescale_temperature(system, target_temperature,
+                            remove_center_of_mass_velocity_flag,
+                            constraints.degrees_of_freedom);
+        return;
     }
 
-    rescale_temperature(system, target_temperature, remove_center_of_mass_velocity_flag);
+    // Relative tolerances on the three properties the field must satisfy at
+    // once. The kinetic-energy target is set exactly by the final rescale, so
+    // its bound only has to absorb the reduction round-off in a global sum; the
+    // momentum bound is scaled by the momentum the field would have had before
+    // removal, so it is dimensionless in the same way.
+    constexpr double kKineticTolerance = 1.0e-12;
+    constexpr double kMomentumTolerance = 1.0e-10;
+    constexpr int kMaxPasses = 8;
+
+    // The momentum residual is measured against the system's natural momentum
+    // scale, sqrt(2K * M), and NOT against the net momentum the field happened
+    // to start with. That distinction matters: velocities read from an input
+    // file are often already very nearly momentum-free, so the starting net
+    // momentum can be nine orders below the per-atom scale, and dividing a
+    // round-off residual by it would report an enormous relative error for a
+    // field that is in fact perfectly balanced.
+    const double momentum_scale =
+        remove_center_of_mass_velocity_flag
+            ? std::sqrt(global_twice_kinetic_energy(system) * global_total_mass(system))
+            : 0.0;
+
+    int pass = 0;
+    for (; pass < kMaxPasses; ++pass) {
+        if (remove_center_of_mass_velocity_flag) {
+            remove_center_of_mass_velocity(system);
+        }
+        if (constraints.has_constraints()) {
+            constraints.project_velocities(system);
+        }
+        rescale_temperature(system, target_temperature,
+                            remove_center_of_mass_velocity_flag,
+                            constraints.degrees_of_freedom);
+
+        // Verify rather than assume. Tangency is not re-measured here -- that
+        // would mean reimplementing the constraint Jacobian, which is the
+        // solver's job and is asserted by the tests instead; what is checked is
+        // that the two GLOBAL scalar properties survived the projection.
+        const double twice_ke = global_twice_kinetic_energy(system);
+        const std::size_t dof = constraints.degrees_of_freedom;
+        double kinetic_error = 0.0;
+        if (dof != 0) {
+            const double target =
+                static_cast<double>(dof) * kBoltzmannConstant * target_temperature;
+            kinetic_error = std::abs(twice_ke - target) / target;
+        }
+        double momentum_error = 0.0;
+        if (remove_center_of_mass_velocity_flag && momentum_scale > 0.0) {
+            momentum_error = global_momentum_magnitude(system) / momentum_scale;
+        }
+        if (kinetic_error <= kKineticTolerance && momentum_error <= kMomentumTolerance) {
+            return;
+        }
+    }
+
+    throw std::runtime_error(
+        "Velocity initialization did not converge in " + std::to_string(kMaxPasses) +
+        " passes: the centre-of-mass removal, the constraint projection and the "
+        "temperature rescale could not be satisfied simultaneously. Rigid "
+        "translation lies in the null space of a distance-constraint Jacobian and "
+        "the projection conserves momentum, so one pass normally suffices; a "
+        "failure here means a constraint type that breaks one of those "
+        "properties, or a projection that is not converging");
 }
 
 }  // namespace gmd
