@@ -6,6 +6,69 @@ All notable user-facing changes in GMD are documented here.
 
 ### ⚠️ Simulation-results-changing corrections
 
+- **`velocity_init random` was rank-dependent: an MPI run did not reproduce the
+  serial trajectory for the same seed.** `VelocityInitializer` advanced one
+  `std::mt19937` in a loop over local storage, so the draw a physical atom
+  received was decided by its position in the array. Under decomposition every
+  rank started from the same seeded state and handed it to its own first local
+  atom — a different physical atom on every rank and at every rank count. The
+  global temperature rescale then hid it: total kinetic energy is forced to the
+  target either way, so the reported temperature matched while the field did
+  not.
+
+  **The draw is now a pure function of identity:**
+
+  ```
+  value = f(seed, stream, global atom tag, component)
+  ```
+
+  implemented in `include/gmd/core/keyed_random.hpp` with SplitMix64 (Steele,
+  Lea and Flood, OOPSLA 2014 — the finalizer behind
+  `java.util.SplittableRandom`): two multiply-xorshift rounds over documented
+  constants, exact integer arithmetic, no state carried between atoms.
+
+  | Detail | Choice |
+  |---|---|
+  | Uniform | `((bits >> 12) + 0.5) / 2^52`, strictly inside `(0,1)`. **Twelve** bits, not eleven — with 53 the top of the range is not representable, rounds half-to-even to `2^53`, and the quotient is exactly `1.0`, putting `log(u)` at `0`. A test asserts the 53-bit variant *does* round to 1.0. |
+  | Bias | a bit shift and a power-of-two division; no modulus anywhere |
+  | Components | x, y and z each draw their own pair of uniforms from their own key — never `cos`/`sin` of a shared pair, which would make two outputs exactly dependent |
+  | Streams | `RandomStream` separates draws, so a future random feature cannot shift these |
+
+  **Tags are validated collectively.** Negative tags and duplicates are
+  rejected; a duplicate can span ranks, so only a global check sees it. Every
+  rank throws the same diagnostic — a rank that noticed nothing would wait alone
+  in the next collective and a bad input would present as a hang. There is no
+  silent fallback to the array index; that fallback was the defect.
+
+  **What is guaranteed:** identical by tag at np=1/2/4 and under a reversed
+  local storage order, to **2.8e-17** — reduction round-off in the shared
+  centre-of-mass shift and scale factor, since those sums are accumulated in
+  storage order within a rank and combined by `MPI_Allreduce` across ranks. The
+  draws themselves are **bitwise** identical. Before the fix all 24 atoms of the
+  equivalence fixture differed, worst component 4.7e-01: **sixteen orders of
+  magnitude**. End to end, a 50-step trajectory now produces *identical* logs at
+  serial/np=1/2/4, with final states bitwise identical at np=1 and within
+  8.9e-16 (~28 ulp) beyond.
+
+  **Serial results change, and the old serial stream is deliberately not
+  preserved** — keeping it would mean keeping traversal order as the random
+  identity, which is the defect. The distribution does not change: target
+  temperature, the `sqrt(k_B T/m)` width, centre-of-mass removal and the 3N−3
+  rescale are untouched, and the whole field is verified against an independent
+  reimplementation of the specification.
+
+  **Restart is unaffected.** A restart does not install the velocity
+  initializer at all, so checkpoint velocities are resumed rather than
+  resampled and no RNG state is serialized. A serial run split across a
+  checkpoint is bitwise identical to the continuous one.
+
+  **Baselines:** all five dynamics references regenerated.
+  `diffusion_lj_fluid` is the only metric put outside its tolerance,
+  1.796 → 3.273 Å²/ps — that tolerance is a *fixed-seed reproducibility* bound,
+  and the unchanged fixture under five seeds gives 3.273, 2.664, 2.260, 2.224
+  and 2.205, a 48% spread. Static energy, force and virial references are
+  untouched: none of them assigns velocities.
+
 - **Thermostat and barostat relaxation times were consumed in the wrong unit,
   and the internal time constant was rounded.** Three findings from one audit.
 
@@ -836,23 +899,28 @@ instead.
   that. The sensitivity is measured rather than assumed — restoring the previous
   `8.617333262e-5` moves it by 1.684e-11 and the tolerance is seventeen times
   below that — but it remains a pinned number rather than a predicted one.
-- **An MPI run started from `velocity_init random` does not reproduce the
-  serial trajectory for the same seed.** `VelocityInitializer` draws from one
-  generator sequentially by *local* atom index, so each rank gives its own first
-  atom the generator's first three draws — under decomposition a different
-  physical atom than in a serial run. The rescale to the target temperature then
-  hides it: step 0 reports an identical temperature and potential energy while
-  the velocity field differs. Found while adding the Berendsen trajectory case,
-  and demonstrably not a barostat issue — the same fixture run as plain NVE
-  diverges identically, and with `velocity 0.0` stays bit-identical for 50
-  steps. Fixing it means drawing per global atom tag, which changes every
-  random-velocity trajectory; it is recorded here rather than bundled into a
-  unit audit.
-- **The Berendsen validation case cannot compare rank counts** for the reason
-  above, so it reports the serial/MPI difference without asserting on it. What
-  is asserted about the barostat under MPI is in
-  `tests/mpi_berendsen_barostat.cpp`, which builds the same velocity field on
-  every rank from the global tag.
+- **The initial velocity field is reproducible across rank counts to reduction
+  round-off, not bitwise.** The draws are bitwise identical by tag, but the
+  centre-of-mass and kinetic-energy sums are accumulated in storage order within
+  a rank and combined by `MPI_Allreduce` across ranks, and neither order is the
+  same at every rank count. That reaches every atom through one shared shift and
+  one shared factor: 2.8e-17 on the initial field, amplifying to 8.9e-16 (~28
+  ulp) over 50 steps of chaotic dynamics. Making it bitwise would need a
+  fixed-order global reduction — an O(N) gather on every initialization — which
+  is not worth the cost for a difference far below anything physical.
+- **The keyed generator's normal transform is not bit-portable across standard
+  libraries.** Key derivation, the SplitMix64 mixer and the uniform mapping are
+  exact integer arithmetic and identical everywhere; `sqrt`, `log` and `cos` are
+  not guaranteed bit-identical across libm implementations, so cross-platform
+  agreement is to a few ulp rather than exact. `tests/keyed_random_tests.cpp`
+  pins the integer path against vectors derived independently in
+  `tests/keyed_random_reference.py`.
+- **The velocity initializer's degrees-of-freedom convention is its own.** It
+  rescales against 3N−3 (or 3N) directly, while thermostats and temperature
+  reporting use the constraint-aware `compute_degrees_of_freedom()`. For an
+  unconstrained system the two agree exactly; for a constrained one a system
+  initialized to T will not report exactly T. Pre-existing, unrelated to the
+  keying change, and not addressed here.
 - **The MC barostat's critical-temperature pin now tracks two constants.** It
   sits on a Metropolis exponent containing both `k_B` and the bar conversion, so
   it moves when either changes — it moved by −4.091837e-09 for this correction,
