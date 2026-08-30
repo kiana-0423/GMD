@@ -539,11 +539,25 @@ void test_checkpoints_carry_the_constant_indirectly() {
 // so it depends on P_ext and T only through the ratio P_ext / T. Running the
 // same seeded barostat at (T, P) and at (cT, cP) must therefore produce a
 // bit-identical trajectory of accepted volumes, while (T, P) and (T, 2P) must
-// not. That is precisely the statement that beta = 1/(k_B T) multiplies the
-// P_ext dV work term, with the right sign and scaling. It would catch a
-// missing, doubled or inverted k_B; it is not sensitive enough to see the
-// 1.13e-06 split, which for the barostat rests on it sharing one definition
-// with the thermostats.
+// not. That is the sign-and-scaling check.
+//
+// It is not, on its own, sensitive to a small change in the constant: the
+// outcome is a discrete accept or reject, and a 1e-11 shift in the exponent
+// flips nothing. So there is a second test. For a fixed seed the first trial
+// move draws a fixed dV and a fixed uniform u, and the decision flips at the
+// temperature where
+//
+//     ln u = -P_ext dV / (k_B T*) + N ln(V'/V)
+//
+// Everything on the right except k_B T* is fixed by the seed and the geometry,
+// so T* is EXACTLY inversely proportional to the barostat's Boltzmann constant
+// and to nothing else. Bisecting for T* therefore measures that constant, to
+// whatever precision the bisection reaches. Restoring the previous
+// 8.617333262e-5 moves T* from 553693.28283268539 to 553693.28284201352, a
+// relative shift of 1.684e-11 -- exactly the constants' own difference, which
+// is the proof that T* tracks it. The tolerance below catches that with
+// seventeen times' margin, and the value is identical between -O0 and -O2
+// builds.
 
 class ConstantEnergyProvider final : public gmd::ForceProvider {
 public:
@@ -581,6 +595,65 @@ std::vector<double> run_barostat(double temperature, double pressure_bar,
         volumes.push_back(lengths[0] * lengths[1] * lengths[2]);
     }
     return volumes;
+}
+
+// Bisects for the temperature at which the first trial move's accept/reject
+// decision flips. See the block comment above: T* is exactly inversely
+// proportional to the barostat's Boltzmann constant.
+bool first_move_changes_volume(double temperature, double pressure_bar) {
+    gmd::System system = make_system(kAtomCount);
+    gmd::VelocityInitializer initializer(20260830u);
+    initializer.initialize(system, 300.0, gmd::VelocityInitMode::Random, true);
+    system.set_potential_energy(0.0);
+    const auto& before = system.box().lengths;
+    const double volume_before = before[0] * before[1] * before[2];
+
+    ConstantEnergyProvider provider;
+    gmd::RuntimeContext runtime;
+    gmd::MCBarostat barostat(1, 0.02, 1000000, 777u);
+    barostat.apply(system, provider, runtime, 0, 1.0, temperature, pressure_bar, 0.0);
+    const auto& after = system.box().lengths;
+    return after[0] * after[1] * after[2] != volume_before;
+}
+
+double bisect_critical_temperature(double pressure_bar) {
+    double low = 1.0, high = 1.0e7;
+    const bool high_state = first_move_changes_volume(high, pressure_bar);
+    if (first_move_changes_volume(low, pressure_bar) == high_state) return 0.0;
+    for (int i = 0; i < 200; ++i) {
+        const double middle = 0.5 * (low + high);
+        if (first_move_changes_volume(middle, pressure_bar) == high_state) {
+            high = middle;
+        } else {
+            low = middle;
+        }
+    }
+    return 0.5 * (low + high);
+}
+
+void test_mc_barostat_constant_matches() {
+    // A regression pin, and deliberately so: T* cannot be predicted without the
+    // uniform draw the barostat never exposes. What makes it a measurement of
+    // the constant rather than an arbitrary number is that T* is exactly
+    // inversely proportional to it, so any relative change in the barostat's
+    // k_B appears as the same relative change here.
+    constexpr double kCriticalTemperature = 553693.28283268539;
+    constexpr double kTolerance = 1.0e-12;   // 17x below the 1.684e-11 signal
+
+    const double measured = bisect_critical_temperature(1.0e6);
+    std::cout << "\n  MC barostat accept/reject flips at T* = "
+              << number(measured) << " K\n";
+    check(measured > 0.0,
+          "no accept/reject flip was found in [1, 1e7] K, so this fixture no "
+          "longer measures the barostat's constant at all");
+    check(std::fabs(measured / kCriticalTemperature - 1.0) <= kTolerance,
+          "the MC barostat's accept/reject boundary is at T* = " +
+              number(measured) + " K, not " + number(kCriticalTemperature) +
+              " K (relative " + number(measured / kCriticalTemperature - 1.0, 4) +
+              "). T* is exactly inversely proportional to the barostat's "
+              "Boltzmann constant, so this says the barostat is no longer using "
+              "the same constant as everything else. Restoring the previous "
+              "8.617333262e-5 puts T* at 553693.28284201352.");
 }
 
 void test_mc_barostat_beta_structure() {
@@ -638,6 +711,7 @@ int main() {
     test_no_missing_inverted_or_doubled_factor();
     test_checkpoints_carry_the_constant_indirectly();
     test_mc_barostat_beta_structure();
+    test_mc_barostat_constant_matches();
 
     if (failures != 0) {
         std::cerr << "\nBoltzmann constant audit failed: " << failures << '\n';
