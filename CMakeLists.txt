@@ -155,6 +155,9 @@ if(BUILD_TESTING)
     target_link_libraries(gmd_keyed_random_tests PRIVATE gmd_core)
     add_executable(gmd_velocity_init_tests tests/velocity_init_tests.cpp)
     target_link_libraries(gmd_velocity_init_tests PRIVATE gmd_core)
+    add_executable(gmd_constrained_velocity_init_tests
+        tests/constrained_velocity_init_tests.cpp)
+    target_link_libraries(gmd_constrained_velocity_init_tests PRIVATE gmd_core)
     add_executable(gmd_pme_energy_force_tests tests/pme_energy_force_tests.cpp)
     target_link_libraries(gmd_pme_energy_force_tests PRIVATE gmd_core)
     add_executable(gmd_ml_virial_contract_tests tests/ml_virial_contract_tests.cpp)
@@ -335,6 +338,13 @@ if(BUILD_TESTING)
     add_test(NAME gmd_velocity_init COMMAND gmd_velocity_init_tests)
     set_tests_properties(gmd_velocity_init
         PROPERTIES LABELS "unit;system;validation")
+    # Constrained initialization drives the real Simulation::initialize() path,
+    # because the defect lives in the order the initializer and the integrator
+    # run in rather than inside either one.
+    add_test(NAME gmd_constrained_velocity_init
+        COMMAND gmd_constrained_velocity_init_tests)
+    set_tests_properties(gmd_constrained_velocity_init
+        PROPERTIES LABELS "unit;system;integrator;validation")
     # The femtosecond-to-picosecond conversion inside the validation analyzers.
     # The diffusion case compares one fitted number against a stored one, so a
     # conversion wrong by 1000 in both would agree with itself forever; this
