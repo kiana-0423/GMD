@@ -6,6 +6,62 @@ All notable user-facing changes in GMD are documented here.
 
 ### ⚠️ Simulation-results-changing corrections
 
+- **Constrained runs started at the wrong temperature.** A single rigid water
+  asked for 300 K started at **514 K**.
+
+  `VelocityInitializer` rescaled to `2K = (3N−3)·k_B·T`, and the integrator
+  then projected the velocities into the constraint tangent space — removing
+  the kinetic energy the rescale had just put there — and reported temperature
+  against the authoritative `3N − rank − 3`. Two degree-of-freedom counts, two
+  stages, neither aware of the other. The initializer held no constraint solver
+  and no rank, so it could not have known.
+
+  The two errors do not cancel. Projection removes the energy in the
+  constrained modes, on average `rank/(3N−3)` of the total, which is very
+  nearly what the difference between the two counts would account for — so the
+  error has a mean near zero and a **fluctuation that does not**. Every run
+  draws once:
+
+  | molecules | dof (auth) | dof (3N−3) | T before | T after |
+  |---|---|---|---|---|
+  | 1 | 3 | 6 | 514.00 K | **300.0000 K** |
+  | 3 | 15 | 24 | 368.62 K | **300.0000 K** |
+  | 10 | 57 | 87 | 314.45 K | **300.0000 K** |
+  | 40 | 237 | 357 | 304.85 K | **300.0000 K** |
+
+  **The order is now reversed.** `Simulation::initialize()` runs the integrator
+  first and the velocity initializer second, because everything the initializer
+  needs only exists afterwards: positions SHAKE-projected onto the manifold,
+  `require_independent()` accepting the set *at that geometry* — the rank is a
+  property of the projected configuration, not the supplied one — and the
+  authoritative `3N − rank − 3` following from it.
+
+  **The sequence** is sample → remove global COM → RATTLE-project → rescale
+  with the authoritative DOF. One pass suffices, for specific reasons:
+  centre-of-mass removal preserves tangency (a distance constraint's Jacobian
+  row is `(+r_ij, −r_ij)`, so rigid translation lies in its null space);
+  projection preserves zero momentum (its correction is `+λr_ij/m_i` and
+  `−λr_ij/m_j`, which cancel); and rescaling by a scalar preserves both. That
+  same null-space fact is why subtracting both 3 and the rank does not
+  double-count. It is still written as a bounded loop that **verifies** the two
+  global scalar properties and reports a clear failure rather than accepting an
+  inconsistent field.
+
+  The projection is the integrator's own `apply_velocity_constraints()`,
+  reached through a callback — the constraint mathematics stays in the
+  constraint solver.
+
+  **Results-changing for constrained randomly initialized trajectories.** No
+  checked-in reference moves: no validation case uses constraints, and all ten
+  reproduce bit-for-bit.
+
+- **The Berendsen serial/MPI trajectory comparison is now enforced.** It was
+  report-only, written when `velocity_init random` was rank dependent. With
+  draws keyed on the global atom tag the logs agree **bit for bit** at np=1, 2
+  and 4, so the comparison is exact on every column of every frame; the final
+  per-atom state is bitwise identical at np=1 and within 1e-12 beyond
+  (measured 1.7e-14 at np=2, 2.1e-14 at np=4).
+
 - **`velocity_init random` was rank-dependent: an MPI run did not reproduce the
   serial trajectory for the same seed.** `VelocityInitializer` advanced one
   `std::mt19937` in a loop over local storage, so the draw a physical atom
@@ -915,12 +971,18 @@ instead.
   agreement is to a few ulp rather than exact. `tests/keyed_random_tests.cpp`
   pins the integer path against vectors derived independently in
   `tests/keyed_random_reference.py`.
-- **The velocity initializer's degrees-of-freedom convention is its own.** It
-  rescales against 3N−3 (or 3N) directly, while thermostats and temperature
-  reporting use the constraint-aware `compute_degrees_of_freedom()`. For an
-  unconstrained system the two agree exactly; for a constrained one a system
-  initialized to T will not report exactly T. Pre-existing, unrelated to the
-  keying change, and not addressed here.
+- **Constrained initialization depends on the constraint solver converging.** A
+  set that is independent but badly conditioned can exhaust SHAKE's or RATTLE's
+  iteration budget before reaching the configured tolerance — a triangle whose
+  perimeter closes to within 0.3% does at `tolerance = 1e-13`. That is the
+  solver's limit rather than the rank policy's, it predates this change, and it
+  is reported as a convergence failure rather than silently accepted.
+- **The initialization convergence loop absorbs an ordering mistake rather than
+  reporting one.** Rescaling before projecting instead of after is corrected by
+  the next pass, so that particular mistake is invisible from the outside. That
+  is the loop working as intended — it verifies rather than assumes — but the
+  ordering is not itself pinned by a test; capping the loop at one pass is what
+  exposes it.
 - **The MC barostat's critical-temperature pin now tracks two constants.** It
   sits on a Metropolis exponent containing both `k_B` and the bar conversion, so
   it moves when either changes — it moved by −4.091837e-09 for this correction,
