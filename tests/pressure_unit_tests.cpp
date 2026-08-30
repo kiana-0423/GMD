@@ -118,11 +118,21 @@ double relative_difference(double measured, double expected) {
 constexpr double kReferenceBarToEVPerA3 = 500.0 / 801088317.0;
 constexpr double kReferenceEVPerA3ToBar = 801088317.0 / 500.0;
 
+// The value this correction supersedes: the forward conversion rounded to eight
+// significant figures, 4.091837e-09 relative high.
+constexpr double kSupersededValue = 6.2415091e-7;
+
 // The same numbers by the naive route through the SI literals. This is not the
 // definition -- it rounds three times rather than once, and lands one ulp high
 // on the forward direction -- but it is an independent path to the same value
 // and it is what catches a transcription error in the integers above.
 constexpr double kElementaryChargeCoulombs = 1.602176634e-19;  // exact, SI
+constexpr double kBoltzmannJoulesPerKelvin = 1.380649e-23;     // exact, SI
+// Derived here rather than imported for the same reason as the pressure
+// reference: tests/boltzmann_constant_tests.cpp audits the production k_B, and
+// this file must not depend on that audit having passed.
+constexpr double kReferenceBoltzmannEVPerKelvin =
+    kBoltzmannJoulesPerKelvin / kElementaryChargeCoulombs;
 constexpr double kBarInPascals             = 1.0e5;            // exact
 constexpr double kCubicAngstromInCubicM    = 1.0e-30;          // exact
 
@@ -442,12 +452,8 @@ void test_mc_barostat_pressure_work_uses_one_conversion() {
           "the MC barostat conversion measurement did not converge: " +
               number(ratio));
 
-    // Independent k_B, derived here from the two exact SI constants rather than
-    // imported, so that this file depends on no production constant at all.
-    constexpr double kBoltzmannJoulesPerKelvin = 1.380649e-23;  // exact, SI
-    const double boltzmann_ev_per_kelvin =
-        kBoltzmannJoulesPerKelvin / kElementaryChargeCoulombs;
-    const double measured = ratio * boltzmann_ev_per_kelvin * kBarostatTemperature;
+    const double measured =
+        ratio * kReferenceBoltzmannEVPerKelvin * kBarostatTemperature;
 
     std::cout << "  MC barostat conversion    " << number(measured) << '\n';
 
@@ -482,10 +488,8 @@ void test_mc_barostat_pressure_work_has_the_right_sign() {
 void test_reporting_and_barostat_agree() {
     const double reporting = measure_reporting_conversion(1.0e6);
     const double ratio = measure_mc_barostat_conversion_over_kT();
-    constexpr double kBoltzmannJoulesPerKelvin = 1.380649e-23;
-    const double barostat = ratio *
-        (kBoltzmannJoulesPerKelvin / kElementaryChargeCoulombs) *
-        kBarostatTemperature;
+    const double barostat =
+        ratio * kReferenceBoltzmannEVPerKelvin * kBarostatTemperature;
 
     // These two constants live in different translation units with nothing
     // linking them, so this is the check that would catch one being edited
@@ -498,12 +502,52 @@ void test_reporting_and_barostat_agree() {
               " vs barostat " + number(barostat));
 }
 
-// --- what the production value currently is -------------------------------
+// --- the production value must be the authoritative one --------------------
 //
-// Reported, not asserted. The audit commit establishes the measurement; the
-// commit that corrects the constant is the one that pins it to the reference,
-// so that no commit in this series is red.
-void report_deviation_from_reference() {
+// The structural checks above hold for any self-consistent conversion, correct
+// or not: they all passed against the superseded 6.2415091e-7, which is exactly
+// what they did in the commit that introduced them. These are the assertions
+// that require the right number, and they are what the correction is for.
+
+void test_reporting_matches_the_authoritative_value() {
+    const double measured = measure_reporting_conversion(1.0e6);
+    // The log carries the value at full double precision here -- at an internal
+    // pressure of 1e6 eV/A^3 the printed bar value has nineteen significant
+    // digits before its six fixed decimals begin -- so the only slack needed is
+    // the division that recovers the constant.
+    check(relative_difference(measured, kReferenceBarToEVPerA3) < 1.0e-15,
+          "the reported pressure does not use the exact bar conversion: "
+          "measured " + number(measured) + ", reference " +
+              number(kReferenceBarToEVPerA3));
+
+    // The superseded value, named, so that a revert is reported as a revert
+    // rather than as an anonymous tolerance failure.
+    check(relative_difference(measured, kSupersededValue) > 1.0e-9,
+          "the reported pressure still uses the superseded 6.2415091e-7, which "
+          "is 4.091837e-09 relative above the exact value");
+}
+
+void test_mc_barostat_matches_the_authoritative_value() {
+    const double ratio = measure_mc_barostat_conversion_over_kT();
+    const double measured = ratio * kReferenceBoltzmannEVPerKelvin *
+                            kBarostatTemperature;
+
+    // Looser than the reporting bound, because this number comes from a
+    // bisection on a discrete accept/reject outcome rather than from a printed
+    // value. The bisection itself runs to double resolution; the limit is the
+    // conditioning of the two-run subtraction, measured at a few parts in 1e15.
+    // 1e-12 leaves room for that and is still three orders of magnitude tighter
+    // than the 4.09e-09 deviation it has to be able to see.
+    check(relative_difference(measured, kReferenceBarToEVPerA3) < 1.0e-12,
+          "the MC barostat's pressure-work term does not use the exact bar "
+          "conversion: measured " + number(measured) + ", reference " +
+              number(kReferenceBarToEVPerA3));
+
+    check(relative_difference(measured, kSupersededValue) > 1.0e-9,
+          "the MC barostat still uses the superseded 6.2415091e-7");
+}
+
+void report_measured_values() {
     const double measured = measure_reporting_conversion(1.0e6);
     const double relative = (measured - kReferenceBarToEVPerA3) /
                             kReferenceBarToEVPerA3;
@@ -524,7 +568,9 @@ int main() {
     test_mc_barostat_pressure_work_uses_one_conversion();
     test_mc_barostat_pressure_work_has_the_right_sign();
     test_reporting_and_barostat_agree();
-    report_deviation_from_reference();
+    test_reporting_matches_the_authoritative_value();
+    test_mc_barostat_matches_the_authoritative_value();
+    report_measured_values();
 
     if (failures == 0) {
         std::cout << "[pressure units] audit passed\n";

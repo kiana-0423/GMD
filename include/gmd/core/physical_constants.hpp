@@ -90,4 +90,62 @@ inline constexpr double kCoulombConstant = 14.3996454686836;
 // 8.617333262e-5 was 1.7e-11 low and 8.617343e-5 was 1.13e-06 low.
 inline constexpr double kBoltzmannConstantEVPerKelvin = 8.617333262145177e-5;
 
+// Pressure conversion between bar and GMD's internal unit.
+//
+// GMD computes pressure as P = (2K + tr W) / 3V. With energies in eV and
+// lengths in Angstrom that is an energy density in eV/A^3, and it is the unit
+// every internal pressure is stored in: System::StepThermodynamics::pressure,
+// the checkpoint's step_pressure, and the value each barostat compares against.
+// bar is an interface unit only -- it is what a run input asks for and what the
+// P[bar] log column reports -- so exactly one conversion stands between them.
+//
+// DERIVATION. Unlike k_e and k_B this is not a measured quantity at all. It is a
+// pure unit identity, and all four of its ingredients are exact by definition:
+//
+//     1 bar = 100000 Pa            (definition of the bar)
+//     1 Pa  = 1 J/m^3              (definition of the pascal)
+//     1 A   = 1e-10 m              (definition of the angstrom)
+//     1 eV  = 1.602176634e-19 J    (exact since the 2019 SI redefinition;
+//                                   https://physics.nist.gov/cgi-bin/cuu/Value?e
+//                                   and https://physics.nist.gov/cgi-bin/cuu/Value?evj)
+//
+// so
+//
+//     1 bar = 1e5 J/m^3
+//           = 1e5 * 1e-30 J/A^3
+//           = 1e-25 / 1.602176634e-19  eV/A^3
+//           = 1e-6 / 1.602176634       eV/A^3
+//           = 1000 / 1602176634  =  500 / 801088317  eV/A^3
+//           = 6.24150907446076260777624098...e-7 eV/A^3
+//
+// WHICH DIRECTION IS PRIMARY. The reverse conversion is the reciprocal,
+// 801088317 / 500, and unlike the forward one it TERMINATES:
+//
+//     1 eV/A^3 = 1602176.634 bar, exactly.
+//
+// So that direction is written as the literal and the forward one is derived
+// from it. This is not cosmetic. Writing the forward direction as a literal and
+// the reverse as its reciprocal, or computing either through the SI constants,
+// rounds more than once and lands one ulp off; taken from the terminating
+// decimal instead, each direction is the nearest double to its exact rational
+// AND the two are exact reciprocals of each other in double arithmetic. The
+// static_asserts below hold the pair to both properties, so a conversion applied
+// forwards and then backwards returns the original bits.
+//
+// PRECISION. The old value, 6.2415091e-7, was a rounding of the forward
+// direction to eight significant figures and sat 4.091837e-09 relative above the
+// exact value. Since nothing here is uncertain there is no measurement precision
+// to round to, and the only defensible cut-off is the double itself.
+inline constexpr double kEVPerAngstromCubedToBar = 1602176.634;
+inline constexpr double kBarToEVPerAngstromCubed = 1.0 / kEVPerAngstromCubedToBar;
+
+static_assert(kEVPerAngstromCubedToBar * kBarToEVPerAngstromCubed == 1.0,
+              "the two pressure conversion directions must be exact reciprocals");
+static_assert(kBarToEVPerAngstromCubed == 500.0 / 801088317.0,
+              "bar -> eV/A^3 must be the nearest double to the exact rational "
+              "500/801088317");
+static_assert(kEVPerAngstromCubedToBar == 801088317.0 / 500.0,
+              "eV/A^3 -> bar must be the nearest double to the exact rational "
+              "801088317/500");
+
 }  // namespace gmd

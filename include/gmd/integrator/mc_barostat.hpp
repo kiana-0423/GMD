@@ -79,7 +79,7 @@ private:
     // Physical constants (internal unit system: eV, Å, amu, fs).
     // Single definition in gmd/core/physical_constants.hpp; not a second literal.
     static constexpr double kB_eV           = kBoltzmannConstantEVPerKelvin;
-    static constexpr double bar_to_eV_per_A3 = 6.2415091e-7;   // 1 bar → eV/Å³
+    static constexpr double bar_to_eV_per_A3 = kBarToEVPerAngstromCubed;
 
     // Adaptive step-size bounds [dimensionless ln-volume displacement].
     static constexpr double min_delta_ = 1.0e-5;

@@ -550,14 +550,23 @@ void test_checkpoints_carry_the_constant_indirectly() {
 //     ln u = -P_ext dV / (k_B T*) + N ln(V'/V)
 //
 // Everything on the right except k_B T* is fixed by the seed and the geometry,
-// so T* is EXACTLY inversely proportional to the barostat's Boltzmann constant
-// and to nothing else. Bisecting for T* therefore measures that constant, to
-// whatever precision the bisection reaches. Restoring the previous
-// 8.617333262e-5 moves T* from 553693.28283268539 to 553693.28284201352, a
-// relative shift of 1.684e-11 -- exactly the constants' own difference, which
-// is the proof that T* tracks it. The tolerance below catches that with
-// seventeen times' margin, and the value is identical between -O0 and -O2
-// builds.
+// so T* is EXACTLY inversely proportional to the barostat's Boltzmann constant.
+// Bisecting for T* therefore measures that constant, to whatever precision the
+// bisection reaches. Restoring the previous 8.617333262e-5 moves T* from
+// 553693.28056706255 to 553693.28057639068, a relative shift of 1.684e-11 --
+// exactly the constants' own difference, which is the proof that T* tracks it.
+// The tolerance below catches that with seventeen times' margin, and the value
+// is identical between -O0 and -O2 builds.
+//
+// T* IS NOT A FUNCTION OF k_B ALONE. P_ext is the target pressure converted from
+// bar, so the exponent carries the bar -> eV/A^3 conversion too, and T* is
+// proportional to it in exactly the same way it is inversely proportional to
+// k_B. This pin therefore moves whenever EITHER constant does. It did: the
+// correction of that conversion from 6.2415091e-7 to 500/801088317 shifted T*
+// by -4.091837e-09 relative, which measured out as the conversion's own
+// relative change to within 3.5e-16. A future change to either constant must
+// update this value and show the same agreement rather than simply re-pinning
+// whatever the bisection now returns.
 
 class ConstantEnergyProvider final : public gmd::ForceProvider {
 public:
@@ -637,7 +646,9 @@ void test_mc_barostat_constant_matches() {
     // the constant rather than an arbitrary number is that T* is exactly
     // inversely proportional to it, so any relative change in the barostat's
     // k_B appears as the same relative change here.
-    constexpr double kCriticalTemperature = 553693.28283268539;
+    // Moved from 553693.28283268539 when the bar -> eV/A^3 conversion was
+    // corrected; see the note above on why this pin tracks that constant too.
+    constexpr double kCriticalTemperature = 553693.28056706255;
     constexpr double kTolerance = 1.0e-12;   // 17x below the 1.684e-11 signal
 
     const double measured = bisect_critical_temperature(1.0e6);
@@ -652,8 +663,10 @@ void test_mc_barostat_constant_matches() {
               " K (relative " + number(measured / kCriticalTemperature - 1.0, 4) +
               "). T* is exactly inversely proportional to the barostat's "
               "Boltzmann constant, so this says the barostat is no longer using "
-              "the same constant as everything else. Restoring the previous "
-              "8.617333262e-5 puts T* at 553693.28284201352.");
+              "the same constant as everything else -- or that the bar to "
+              "eV/A^3 conversion in its pressure-work term changed, which moves "
+              "T* the same way. Restoring the previous 8.617333262e-5 puts T* "
+              "at 553693.28057639068.");
 }
 
 void test_mc_barostat_beta_structure() {
