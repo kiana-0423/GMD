@@ -546,6 +546,28 @@ if(BUILD_TESTING)
         add_executable(gmd_mpi_velocity_init_tests tests/mpi_velocity_init.cpp)
         target_link_libraries(gmd_mpi_velocity_init_tests PRIVATE gmd_core)
 
+        add_executable(gmd_mpi_velocity_init_tag_tests tests/mpi_velocity_init_tags.cpp)
+        target_link_libraries(gmd_mpi_velocity_init_tag_tests PRIVATE gmd_core)
+
+        # The tag is the random draw's identity, so it is validated
+        # collectively. A duplicate can span ranks -- each rank's own tags
+        # unique, two ranks sharing one -- and only a global check sees that.
+        # Every rank must also THROW, or the ones that did not would wait alone
+        # in the next collective and a bad input would present as a hang.
+        foreach(velocity_tag_np 1 2 4)
+            add_test(
+                NAME gmd_mpi_velocity_init_tags_${velocity_tag_np}proc
+                COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${velocity_tag_np}
+                        $<TARGET_FILE:gmd_mpi_velocity_init_tag_tests>
+            )
+            set_tests_properties(gmd_mpi_velocity_init_tags_${velocity_tag_np}proc
+                PROPERTIES
+                    LABELS "mpi;parallel;system;validation"
+                    PROCESSORS ${velocity_tag_np}
+                    TIMEOUT 120)
+        endforeach()
+
+
         # Emits the velocity field keyed by atom tag; the driver runs it at
         # np=1, 2 and 4 and again at np=2 with each rank's local storage
         # reversed, then compares every field against the np=1 one. The

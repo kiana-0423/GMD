@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -95,17 +96,37 @@ void VelocityInitializer::validate_atom_tags(const System& system) const {
     // physical atoms the same velocity and a negative one has no defined
     // mapping. Both are rejected loudly rather than silently falling back to
     // an array index, which is the behaviour this replaced.
+    // Negative tags are found first and reported COLLECTIVELY. Throwing here
+    // the moment one is seen would leave the other ranks waiting in the gather
+    // below, turning a bad input into a hang; every rank has to learn the
+    // verdict and every rank has to throw.
+    constexpr long long kNoNegative = std::numeric_limits<long long>::max();
+    long long negative_tag = kNoNegative;
     std::vector<long long> local_tags;
     local_tags.reserve(system.num_local_atoms());
     for (std::size_t atom_index = 0; atom_index < system.num_local_atoms(); ++atom_index) {
         const int tag = system.atom_tag(atom_index);
         if (tag < 0) {
-            throw std::runtime_error(
-                "Atom tag " + std::to_string(tag) + " is negative. Random velocity "
-                "initialization keys each atom's draw on its global tag, which must "
-                "be a non-negative identifier");
+            negative_tag = std::min(negative_tag, static_cast<long long>(tag));
+            continue;
         }
         local_tags.push_back(static_cast<long long>(tag));
+    }
+
+#ifdef GMD_ENABLE_MPI
+    if (mpi_is_available()) {
+        long long global_negative = kNoNegative;
+        MPI_Allreduce(&negative_tag, &global_negative, 1, MPI_LONG_LONG,
+                      MPI_MIN, MPI_COMM_WORLD);
+        negative_tag = global_negative;
+    }
+#endif
+
+    if (negative_tag != kNoNegative) {
+        throw std::runtime_error(
+            "Atom tag " + std::to_string(negative_tag) + " is negative. Random velocity "
+            "initialization keys each atom's draw on its global tag, which must "
+            "be a non-negative identifier");
     }
 
     long long duplicate = -1;
