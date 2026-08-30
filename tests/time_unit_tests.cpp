@@ -73,6 +73,7 @@
 #include <fstream>
 #include <vector>
 
+#include "gmd/core/physical_constants.hpp"
 #include "gmd/core/runtime_context.hpp"
 #include "gmd/force/force_provider.hpp"
 #include "gmd/integrator/berendsen_barostat.hpp"
@@ -630,8 +631,54 @@ void report_relaxation_time_scales() {
               << number(berendsen / 2000.0) << ")\n";
 }
 
+// --- the production conversion must be the authoritative one ---------------
+//
+// The checks above drive the integrator with this file's own reference, so they
+// hold whatever production uses. This one asks what production actually does
+// with a femtosecond timestep, by running the same free-flight measurement
+// through the real config-loader conversion.
+
+void test_production_conversion_matches_the_reference() {
+    // config_loader computes time_step = time_step_fs * kInternalTimePerFemtosecond.
+    // Reproducing that here and re-measuring the velocity unit says whether a
+    // run driven by a real input file sees the right time base.
+    const double dt_fs = 1.0;
+    const int steps = 100;
+    const double production_dt = dt_fs * gmd::kInternalTimePerFemtosecond;
+
+    gmd::System system = one_atom(1.0, {64.0, 80.0, 96.0}, {1.0, 0.0, 0.0});
+    ZeroForceProvider provider;
+    run(system, provider, production_dt, steps);
+    const double measured =
+        (system.coordinates()[0][0] - 64.0) / (dt_fs * steps);
+
+    check(relative_difference(measured, kReferenceVelocityUnitAPerFs) < 1.0e-12,
+          "a run using the production femtosecond conversion measures a velocity "
+          "unit of " + number(measured) + " A/fs, not " +
+              number(kReferenceVelocityUnitAPerFs));
+
+    // The superseded value, named, so a revert reads as a revert rather than as
+    // an anonymous tolerance failure.
+    const double superseded_unit = 1.0 / kSupersededValue;
+    check(relative_difference(measured, superseded_unit) > 1.0e-7,
+          "the production conversion still uses the superseded 1.018051e+1, "
+          "which is 4.206204e-07 relative high");
+
+    // And the two directions production exposes must be exact reciprocals, as
+    // this file's own pair is.
+    check(gmd::kFemtosecondsPerInternalTime * gmd::kInternalTimePerFemtosecond == 1.0,
+          "the production time conversions are not exact reciprocals");
+    check(relative_difference(gmd::kFemtosecondsPerInternalTime,
+                              kReferenceInternalTimeUnitFs) < 1.0e-15,
+          "the production internal time unit is " +
+              number(gmd::kFemtosecondsPerInternalTime) + " fs, not " +
+              number(kReferenceInternalTimeUnitFs));
+}
+
 void report_production_constant() {
     std::cout << "  reference T   " << number(kReferenceInternalTimeUnitFs)
+              << " fs\n"
+              << "  production    " << number(gmd::kFemtosecondsPerInternalTime)
               << " fs\n"
               << "  superseded    " << number(kSupersededValue) << " fs  (relative "
               << std::scientific << std::setprecision(6)
@@ -650,6 +697,7 @@ int main() {
     test_harmonic_period_measures_the_time_unit();
     test_harmonic_convergence_is_second_order();
     test_trajectory_time_column_is_passed_through_in_femtoseconds();
+    test_production_conversion_matches_the_reference();
     report_relaxation_time_scales();
     report_production_constant();
 

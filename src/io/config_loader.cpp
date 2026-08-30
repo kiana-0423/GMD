@@ -13,6 +13,7 @@
 #include <utility>
 #include <vector>
 
+#include "gmd/core/physical_constants.hpp"
 #include "gmd/system/topology.hpp"
 
 #include "gmd/system/system.hpp"
@@ -21,10 +22,6 @@ namespace gmd {
 
 namespace {
 
-// The integrator uses a reduced internal time unit derived from the code's
-// eV / Angstrom / amu convention. Keep the conversion explicit so input/output
-// can continue to use femtoseconds.
-constexpr double kInternalTimeUnitsPerFs = 1.018051e+1;
 
 // Standard atomic masses [amu] for common elements.
 // Used when xyz input provides element symbols instead of explicit masses.
@@ -484,7 +481,7 @@ RunConfig ConfigLoader::load_run(const std::filesystem::path& run_path) const {
 
         if (tokens[0] == "time_step") {
             config.time_step_fs = parse_double(tokens[1], "time_step");
-            config.time_step = config.time_step_fs / kInternalTimeUnitsPerFs;
+            config.time_step = config.time_step_fs * kInternalTimePerFemtosecond;
             if (config.time_step_fs < 0.0) {
                 throw std::runtime_error("time_step must be non-negative");
             }
