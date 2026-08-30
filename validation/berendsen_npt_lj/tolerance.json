@@ -1,0 +1,6 @@
+{
+  "volume_ratio_abs": 0.02,
+  "temperature_mean_abs": 100.0,
+  "pressure_mean_abs": 1400.0,
+  "min_volume_response": 0.03
+}

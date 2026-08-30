@@ -148,4 +148,56 @@ static_assert(kEVPerAngstromCubedToBar == 801088317.0 / 500.0,
               "eV/A^3 -> bar must be the nearest double to the exact rational "
               "801088317/500");
 
+// Internal time unit, in femtoseconds.
+//
+// GMD integrates v += (F/m)*dt and r += v*dt with F in eV/A and m in amu.
+// Neither line mentions seconds, so the time unit is not a free choice: it is
+// whatever makes F/m an acceleration in this unit system. F/m carries units of
+// eV/(A*amu), and requiring that to equal A/T^2 gives
+//
+//     T = A * sqrt(amu / eV)
+//
+// One internal velocity unit is correspondingly sqrt(eV/amu), which is
+// 0.0982269474... A/fs -- the number a free particle actually travels per
+// femtosecond, and how tests/time_unit_tests.cpp measures this back out of the
+// integrator.
+//
+// DERIVATION. Two of the ingredients are exact and one is not:
+//
+//     e   = 1.602176634e-19 J per eV     exact, SI 2019
+//           https://physics.nist.gov/cgi-bin/cuu/Value?evj
+//     m_u = 1.66053906892(52)e-27 kg     CODATA 2022, relative 3.1e-10
+//           https://physics.nist.gov/cgi-bin/cuu/Value?ukg
+//     1 A  = 1e-10 m                     exact, by definition
+//     1 fs = 1e-15 s                     exact, by definition
+//
+// so
+//
+//     T [fs] = 1e-10 * sqrt(m_u / e) / 1e-15 = sqrt(m_u / e) * 1e5
+//            = 10.1805057178711931077510010336...
+//
+// The square root halves the mass constant's uncertainty, so T carries 1.57e-10
+// relative -- the only constant in this header that has a real uncertainty at
+// all.
+//
+// ROUNDING POLICY. Enough digits to reproduce the derivation as a double. That
+// is well below the 1.57e-10 physical uncertainty and is not a claim of
+// physical precision; it is so that the literal does not ADD error to a
+// quantity that already has some. The superseded value, 1.018051e+1, was this
+// rounded to seven significant figures and sat 4.206204e-07 relative high --
+// about 2700 times the CODATA uncertainty, so it was not a defensible
+// truncation of it.
+//
+// NAMING. The superseded constant was called kInternalTimeUnitsPerFs but was
+// used as a divisor of a femtosecond timestep, which makes it femtoseconds per
+// internal time unit -- the reciprocal of what its name said. Both directions
+// are given here so that neither call site has to divide by a constant whose
+// name reads the wrong way round.
+inline constexpr double kFemtosecondsPerInternalTime = 10.180505717871194;
+inline constexpr double kInternalTimePerFemtosecond = 1.0 / kFemtosecondsPerInternalTime;
+
+static_assert(kFemtosecondsPerInternalTime * kInternalTimePerFemtosecond == 1.0,
+              "the two internal-time conversion directions must be exact "
+              "reciprocals");
+
 }  // namespace gmd

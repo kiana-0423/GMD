@@ -6,6 +6,60 @@ All notable user-facing changes in GMD are documented here.
 
 ### ⚠️ Simulation-results-changing corrections
 
+- **Thermostat and barostat relaxation times were consumed in the wrong unit,
+  and the internal time constant was rounded.** Three findings from one audit.
+
+  **The internal time unit is not a free choice.** GMD integrates
+  `v += (F/m)·dt` and `r += v·dt` with `F` in eV/Å and `m` in amu, so requiring
+  `F/m` to be an acceleration in this unit system fixes it:
+
+  ```
+  T = Å·√(amu/eV) = √(m_u/e)·1e5 fs = 10.1805057178711931... fs
+  ```
+
+  from `e = 1.602176634e-19` J (exact, SI 2019) and
+  `m_u = 1.66053906892(52)e-27` kg (CODATA 2022). Unlike `k_B` and the pressure
+  conversion this one **is** uncertain: `m_u` carries 3.1e-10 relative, halved
+  to 1.57e-10 by the square root.
+
+  **(1) The constant.** `kInternalTimeUnitsPerFs = 1.018051e+1` in
+  `src/io/config_loader.cpp` was that rounded to seven significant figures,
+  **4.206204e-07 relative high** — about 2700× the CODATA uncertainty it could
+  have hidden behind. Its *name* was also the reciprocal of its use: it was
+  divided into a femtosecond timestep, making it femtoseconds per internal
+  unit. Both directions now live in `physical_constants.hpp` as
+  `gmd::kFemtosecondsPerInternalTime` and `gmd::kInternalTimePerFemtosecond`,
+  held to being exact reciprocals by `static_assert`.
+
+  **(2) Nosé–Hoover `tau` was never converted.** `Q = dof·k_B·T·tau²` was built
+  from the raw femtosecond number while `ξ` was integrated against an internal
+  `dt`. **A thermostat asked for `tau = 100 fs` relaxed on 1018.05 fs** —
+  exactly `T` too long — and `Q` was `T² = 103.6427` times too large.
+
+  **(3) Berendsen `tau_P` had the same defect** in
+  `mu³ = 1 − beta·(dt/tau)·ΔP`. **A barostat asked for 2000 fs coupled on
+  20361 fs.**
+
+  Neither was visible from inside its own file: every quantity was
+  self-consistent, and both objects are built straight from `RunConfig`.
+  `RunConfig` now carries `thermostat_tau_fs`/`thermostat_tau` and
+  `barostat_tau_fs`/`barostat_tau`, exactly as it already carried
+  `time_step_fs`/`time_step`. No thermostat or barostat equation changed.
+
+  **Affected paths:** the integration timestep; the Nosé–Hoover mass and
+  friction; the Berendsen coupling. **Not affected:** forces, energies, the
+  virial, and every static baseline — none involves time. The trajectory
+  `time[fs]` column and the checkpoint's `time_fs` were already correct, as is
+  the femtosecond-to-picosecond conversion behind the reported diffusion
+  coefficient in Å²/ps.
+
+  **Results-changing for every dynamics run, and substantially so for
+  thermostatted ones:** the thermostat is now about ten times more strongly
+  coupled. `nvt_lj_fluid` temperature stddev moves 15.66 → 22.00 K — the only
+  metric in the repository that this puts outside its existing tolerance.
+  `nve_lj_fluid` is bit-identical (no thermostat, and its drift metric does not
+  resolve 4.2e-07). Nothing is bitwise compatible with a previous release.
+
 - **The bar ⇄ eV/Å³ pressure conversion was duplicated and rounded, and the
   Berendsen barostat was not applying it at all.** Two separate corrections,
   both affecting pressure.
@@ -782,9 +836,23 @@ instead.
   that. The sensitivity is measured rather than assumed — restoring the previous
   `8.617333262e-5` moves it by 1.684e-11 and the tolerance is seventeen times
   below that — but it remains a pinned number rather than a predicted one.
-- **The time unit constant has still not been audited.** The electrostatic,
-  Boltzmann and pressure constants have now each been traced to primary sources;
-  `kInternalTimeUnitsPerFs` in `src/io/config_loader.cpp` has not been.
+- **An MPI run started from `velocity_init random` does not reproduce the
+  serial trajectory for the same seed.** `VelocityInitializer` draws from one
+  generator sequentially by *local* atom index, so each rank gives its own first
+  atom the generator's first three draws — under decomposition a different
+  physical atom than in a serial run. The rescale to the target temperature then
+  hides it: step 0 reports an identical temperature and potential energy while
+  the velocity field differs. Found while adding the Berendsen trajectory case,
+  and demonstrably not a barostat issue — the same fixture run as plain NVE
+  diverges identically, and with `velocity 0.0` stays bit-identical for 50
+  steps. Fixing it means drawing per global atom tag, which changes every
+  random-velocity trajectory; it is recorded here rather than bundled into a
+  unit audit.
+- **The Berendsen validation case cannot compare rank counts** for the reason
+  above, so it reports the serial/MPI difference without asserting on it. What
+  is asserted about the barostat under MPI is in
+  `tests/mpi_berendsen_barostat.cpp`, which builds the same velocity field on
+  every rank from the global tag.
 - **The MC barostat's critical-temperature pin now tracks two constants.** It
   sits on a Metropolis exponent containing both `k_B` and the bar conversion, so
   it moves when either changes — it moved by −4.091837e-09 for this correction,

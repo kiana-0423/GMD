@@ -13,6 +13,7 @@
 #include <utility>
 #include <vector>
 
+#include "gmd/core/physical_constants.hpp"
 #include "gmd/system/topology.hpp"
 
 #include "gmd/system/system.hpp"
@@ -21,10 +22,6 @@ namespace gmd {
 
 namespace {
 
-// The integrator uses a reduced internal time unit derived from the code's
-// eV / Angstrom / amu convention. Keep the conversion explicit so input/output
-// can continue to use femtoseconds.
-constexpr double kInternalTimeUnitsPerFs = 1.018051e+1;
 
 // Standard atomic masses [amu] for common elements.
 // Used when xyz input provides element symbols instead of explicit masses.
@@ -484,7 +481,7 @@ RunConfig ConfigLoader::load_run(const std::filesystem::path& run_path) const {
 
         if (tokens[0] == "time_step") {
             config.time_step_fs = parse_double(tokens[1], "time_step");
-            config.time_step = config.time_step_fs / kInternalTimeUnitsPerFs;
+            config.time_step = config.time_step_fs * kInternalTimePerFemtosecond;
             if (config.time_step_fs < 0.0) {
                 throw std::runtime_error("time_step must be non-negative");
             }
@@ -675,9 +672,11 @@ RunConfig ConfigLoader::load_run(const std::filesystem::path& run_path) const {
             }
             config.thermostat_type = tokens[1];
         } else if (tokens[0] == "thermostat_tau") {
-            config.thermostat_tau = parse_double(tokens[1], "thermostat_tau");
-            if (config.thermostat_tau <= 0.0)
+            config.thermostat_tau_fs = parse_double(tokens[1], "thermostat_tau");
+            if (config.thermostat_tau_fs <= 0.0)
                 throw std::runtime_error("thermostat_tau must be positive");
+            config.thermostat_tau =
+                config.thermostat_tau_fs * kInternalTimePerFemtosecond;
         // ---- Barostat directives ----
         } else if (tokens[0] == "barostat") {
             if (tokens[1] != "berendsen" && tokens[1] != "monte_carlo") {
@@ -687,9 +686,11 @@ RunConfig ConfigLoader::load_run(const std::filesystem::path& run_path) const {
         } else if (tokens[0] == "pressure") {
             config.target_pressure = parse_double(tokens[1], "pressure");
         } else if (tokens[0] == "barostat_tau") {
-            config.barostat_tau = parse_double(tokens[1], "barostat_tau");
-            if (config.barostat_tau <= 0.0)
+            config.barostat_tau_fs = parse_double(tokens[1], "barostat_tau");
+            if (config.barostat_tau_fs <= 0.0)
                 throw std::runtime_error("barostat_tau must be positive");
+            config.barostat_tau =
+                config.barostat_tau_fs * kInternalTimePerFemtosecond;
         } else if (tokens[0] == "compressibility") {
             config.compressibility = parse_double(tokens[1], "compressibility");
             if (config.compressibility <= 0.0)

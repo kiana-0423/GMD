@@ -23,6 +23,57 @@
 - `pme_external/`：**已完成的 PME 外部参考**。OpenMM 8.6.0 PME 为主参考，LAMMPS 22 Jul 2025 - Update 5 的 PPPM 与 exact Ewald 为第二引擎。Coulomb-only、非立方 18x22x26 A、12 原子、精确电中性、无对称性的 fixture。alpha / grid / cutoff / 边界条件 / 无 exclusion 全部精确对齐；B-spline order 无法与 OpenMM 对齐（其固定为 5，无 API 暴露）；LAMMPS PPPM 用的是 optimised Green's function，本身就是另一种 mesh 近似。三个代码对同一物理常数的取舍不同：GMD 用 CODATA 2022 的 14.3996454686836（`gmd::kCoulombConstant`），LAMMPS 用 14.399645（自身六位小数，低 3.255e-08），OpenMM 折算为 14.399645478（高 6.765e-10）；两个引擎的常数在生成时实测而非引用文档。由于每一项都精确携带一个 k_e 因子，按 k_e^GMD / k_e^engine 线性缩放是精确修正。**在 GMD 的常数被修正之前**该因子还要补偿 GMD 自身 3.16e-06 的截断，那个偏差会超过 grid 128 的 mesh error 并被误读为收敛下限；现在只剩引擎自身的舍入。三个引擎在 16/32/64/128 网格上单调收敛到同一个 exact Ewald 极限。reference settings（grid 64^3，GMD order 6 vs OpenMM order 5）下 energy 差 1.13e-06 eV、force 最大分量差 1.53e-06 eV/A；容差取 |GMD-exact| + |OpenMM-exact| 三角不等式界的两倍，而非把观测值向上取整。**virial 张量全部九个分量对 LAMMPS 验证**（exact Ewald 1.6e-07 eV，PPPM 8.6e-07 eV）；OpenMM 完全不暴露 virial。重新生成 reference 需要两个外部引擎，CI 比较不需要。
 - 长时间 NVE/NVT/NPT/diffusion cases：仍为 provisional workflow/regression baselines。
 
+内部时间单位审计与 Berendsen 轨迹验证（2026-08-30）：
+
+- **内部时间单位不是自由选择**。GMD 以 `v += (F/m)·dt`、`r += v·dt` 积分，`F` 为 eV/Å、
+  `m` 为 amu，要求 `F/m` 是本单位制下的加速度即唯一确定
+  `T = Å·√(amu/eV) = √(m_u/e)·1e5 fs = 10.1805057178711931...` fs。
+  与 `k_B`、压强换算不同，**这个常数带真实不确定度**：`m_u` 的 3.1e-10 相对不确定度经开方
+  减半为 1.57e-10。速度单位为其倒数 `√(eV/amu) = 0.0982269474...` Å/fs。
+- **三个缺陷**：
+  1. `kInternalTimeUnitsPerFs = 1.018051e+1` 为七位有效数字取整，比精确值高
+     **4.206204e-07**，约为 CODATA 不确定度的 2700 倍；且其**名称与用法互为倒数**
+     （它被用作 fs 时间步的除数）。现为 `gmd::kFemtosecondsPerInternalTime` 与
+     `gmd::kInternalTimePerFemtosecond`，由 `static_assert` 保证互为精确倒数。
+  2. **Nosé–Hoover 的 `tau` 从未换算**：`Q = dof·k_B·T·tau²` 用的是 fs 数值，而 `ξ`
+     以内部单位的 `dt` 积分。**请求 tau = 100 fs 实际弛豫时间为 1018.05 fs**（恰好差 `T`），
+     `Q` 大了 `T² = 103.6427` 倍。
+  3. **Berendsen 的 `tau_P` 同样未换算**（`mu³ = 1 − beta·(dt/tau)·ΔP`）：
+     **请求 2000 fs 实际耦合为 20361 fs**。
+- 两处 tau 缺陷在各自文件内**不可见**：每个量都自洽，且两个对象都直接由 `RunConfig` 构造。
+  `RunConfig` 现按 `time_step_fs`/`time_step` 的既有模式，新增
+  `thermostat_tau_fs`/`thermostat_tau` 与 `barostat_tau_fs`/`barostat_tau`。
+  **未改动任何 thermostat/barostat 方程。**
+- **原本就正确的部分**：日志 `time[fs]` 列（由调用方按 `step × time_step_fs` 计算）、
+  checkpoint 的 `time_fs`、以及扩散系数 Å²/ps 背后的 fs→ps 换算。
+  `Simulation` 传给 force provider 的 `force_time` 用的是内部单位，那是另一个量，
+  不进入任何日志或 checkpoint。
+- **baseline 影响**：`nvt`（T mean 123.81→120.41 K、stddev 15.66→**22.00** K，
+  stddev 是全仓库唯一被此修正推出原容差的指标）、`npt`（T mean 126.44→119.92 K、
+  stddev 17.04→21.17 K、pressure mean 45.99→35.56 bar，均在容差内）、
+  `diffusion`（1.79598→1.79603 Å²/ps，仅 2.8e-05，因该 run 未配置 thermostat）已重新生成；
+  `nve` **逐位不变**（无 thermostat/barostat，且其 drift 指标分辨不出 4.2e-07）。
+  **所有 static energy / force / virial baseline 与时间无关，未重新生成也未变化。**
+  耦合变强使温度涨落上升、同时均值更贴近目标，是该修正的预期特征而非漂移。
+
+- **新增 `berendsen_npt_lj`**：仓库中唯一在轨迹层面覆盖 Berendsen barostat 的 case
+  （`npt_lj_fluid` 用的是 MC barostat）。**属 dynamics regression，不是外部科学参考**。
+  它是符号敏感的成对运行，且两个已修正的缺陷都由构造捕获，阈值由**实测缺陷代码**确定：
+  恢复 bar/eV/Å³ 混比会让两个 run 都压缩（1.0129 之外的方向断言直接失败）；
+  恢复未换算的 tau 会把响应从最小 0.0490 压到最大 0.0129，`min_volume_response = 0.03`
+  正落在两者之间。另含体积/能量/温度/压强有限性、体积不越界、以及 checkpoint 前后
+  最终体积**逐位相同**的连续性检查。该 case 已注册为 CTest 测试。
+
+- **已知限制**：`velocity_init random` 的 MPI 运行**无法复现同种子的串行轨迹**。
+  `VelocityInitializer` 用单个 generator 按**本地**原子下标顺序抽样，因此每个 rank 都把
+  generator 的前三个抽样给了自己的第一个原子——在区域分解下那是与串行不同的物理原子；
+  随后对目标温度的 rescale 又把差异掩盖（step 0 的温度与势能完全相同）。
+  这不是 barostat 或受力的问题：同一 fixture 以纯 NVE 运行同样发散，而以
+  `velocity 0.0` 运行则 50 步**逐位相同**。修复需改为按全局 tag 抽样，会改变所有随机初速度
+  轨迹，故此处仅记录。因此 `berendsen_npt_lj` 只报告而不断言 serial/MPI 差异；
+  可断言的 rank 无关性在 `tests/mpi_berendsen_barostat.cpp` 中，
+  它在每个 rank 上按全局 tag 构造相同的速度场后再比较耦合因子（np=1/2/4，np=4 含空 rank）。
+
 压强单位换算修正（2026-08-30）：
 
 - bar ⇄ eV/Å³ 的换算因子曾以**两个独立字面量**存在：`src/io/trajectory_writer.cpp`

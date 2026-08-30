@@ -77,6 +77,8 @@
 #include <string_view>
 #include <vector>
 
+#include "scoped_temp_dir.hpp"
+
 #include "gmd/core/runtime_context.hpp"
 #include "gmd/force/force_provider.hpp"
 #include "gmd/integrator/berendsen_barostat.hpp"
@@ -160,9 +162,59 @@ void test_reference_derivation_is_self_consistent() {
               number(kReferenceEVPerA3ToBar));
 }
 
+// --- the scratch directory itself -----------------------------------------
+//
+// This file used to write a fixed name into the system temp directory. The
+// deterministic half of the fix is testable directly; the racing half is
+// covered by running this binary several times at once (see the
+// gmd_pressure_units_concurrent CTest test).
+
+void test_scratch_directories_are_private_and_unique() {
+    std::filesystem::path first_path;
+    {
+        const gmd_test::ScopedTempDir first("gmd_scoped_probe");
+        const gmd_test::ScopedTempDir second("gmd_scoped_probe");
+        first_path = first.path();
+
+        check(first.path() != second.path(),
+              "two scratch directories created with the same prefix got the same "
+              "path: " + first.path().string());
+        check(std::filesystem::is_directory(first.path()),
+              "the scratch directory was not created: " + first.path().string());
+
+        // Owner-only, because mkdtemp makes it 0700. A world-writable scratch
+        // path is how a predictable temporary name becomes a security problem
+        // rather than merely a flaky test.
+        const auto permissions = std::filesystem::status(first.path()).permissions();
+        const auto forbidden = std::filesystem::perms::group_all |
+                               std::filesystem::perms::others_all;
+        check((permissions & forbidden) == std::filesystem::perms::none,
+              "the scratch directory is accessible beyond its owner");
+
+        // A file written inside it lands inside it, and not in the shared
+        // temp directory.
+        const std::filesystem::path probe = first.file("probe.txt");
+        std::ofstream(probe) << "x";
+        check(std::filesystem::exists(probe),
+              "could not write inside the scratch directory");
+        check(probe.parent_path() == first.path(),
+              "file() returned a path outside the scratch directory");
+    }
+    // Both are gone, including the file that was left in one of them.
+    check(!std::filesystem::exists(first_path),
+          "the scratch directory outlived its guard: " + first_path.string());
+}
+
 // --- path 1: pressure reporting -------------------------------------------
 
-const char* kLogStem = "gmd_pressure_unit_probe";
+// One private directory for the whole run, created by mkdtemp and removed when
+// the process ends. Previously this was a fixed name in the system temp
+// directory, which two concurrently running copies of this binary -- the
+// Release and the MPI-enabled build, say -- would fight over.
+const gmd_test::ScopedTempDir& scratch() {
+    static const gmd_test::ScopedTempDir directory("gmd_pressure_unit_probe");
+    return directory;
+}
 
 // Reads the P[bar] column out of the single frame written by write_probe_frame.
 double read_pressure_bar(const std::filesystem::path& log_path) {
@@ -206,8 +258,7 @@ double reported_bar_for_internal_pressure(double internal_pressure) {
     completed.potential_energy = 0.0;
     system.set_step_thermodynamics(completed);
 
-    const std::filesystem::path stem =
-        std::filesystem::temp_directory_path() / kLogStem;
+    const std::filesystem::path stem = scratch().file("frame");
     gmd::TrajectoryWriter writer;
     writer.open(stem);
     writer.write_frame(system, 0, 0.0, 0.0, 3);
@@ -705,8 +756,7 @@ void test_checkpoint_stores_internal_units_and_round_trips() {
     checkpoint.metadata.step_pressure_twice_ke = 0.25;
     checkpoint.metadata.step_pressure_potential_energy = -1.5;
 
-    const std::filesystem::path path =
-        std::filesystem::temp_directory_path() / "gmd_pressure_unit_probe.chk";
+    const std::filesystem::path path = scratch().file("state.chk");
     gmd::write_checkpoint(path, checkpoint);
 
     gmd::System restored;
@@ -741,8 +791,7 @@ void test_checkpoint_stores_internal_units_and_round_trips() {
     restored.set_step_thermodynamics(completed);
 
     const double before = reported_bar_for_internal_pressure(internal_pressure);
-    const std::filesystem::path stem =
-        std::filesystem::temp_directory_path() / kLogStem;
+    const std::filesystem::path stem = scratch().file("restored");
     gmd::TrajectoryWriter writer;
     writer.open(stem);
     writer.write_frame(restored, 17, 34.0, completed.twice_kinetic_energy, 3);
@@ -838,6 +887,7 @@ void report_measured_values() {
 int main() {
     std::cout << "[pressure units] auditing the bar <-> eV/A^3 conversion\n";
     test_reference_derivation_is_self_consistent();
+    test_scratch_directories_are_private_and_unique();
     test_reporting_carries_exactly_one_conversion();
     test_reporting_sign_and_special_values();
     test_round_trip_through_the_reference();

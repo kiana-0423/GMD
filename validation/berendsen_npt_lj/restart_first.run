@@ -1,0 +1,22 @@
+# First half of the restart-continuity pair: 250 steps, then a checkpoint.
+velocity 300.0
+run 250
+velocity_init random
+velocity_seed 20260830
+remove_com_velocity true
+time_step 2.0
+output_interval 10
+
+force_field lj
+cutoff 6.0
+type 1 Ar epsilon 0.01032 sigma 3.405 charge 0.0
+
+thermostat nose_hoover
+thermostat_tau 100.0
+
+barostat berendsen
+barostat_tau 1000.0
+compressibility 4.5e-5
+pressure 200.0
+checkpoint_file half.chk
+write_checkpoint_every 0

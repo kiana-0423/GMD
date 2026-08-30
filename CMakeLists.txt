@@ -149,6 +149,8 @@ if(BUILD_TESTING)
     target_link_libraries(gmd_boltzmann_constant_tests PRIVATE gmd_core)
     add_executable(gmd_pressure_unit_tests tests/pressure_unit_tests.cpp)
     target_link_libraries(gmd_pressure_unit_tests PRIVATE gmd_core)
+    add_executable(gmd_time_unit_tests tests/time_unit_tests.cpp)
+    target_link_libraries(gmd_time_unit_tests PRIVATE gmd_core)
     add_executable(gmd_pme_energy_force_tests tests/pme_energy_force_tests.cpp)
     target_link_libraries(gmd_pme_energy_force_tests PRIVATE gmd_core)
     add_executable(gmd_ml_virial_contract_tests tests/ml_virial_contract_tests.cpp)
@@ -300,6 +302,36 @@ if(BUILD_TESTING)
     add_test(NAME gmd_pressure_units COMMAND gmd_pressure_unit_tests)
     set_tests_properties(gmd_pressure_units
         PROPERTIES LABELS "unit;integrator;io;validation")
+    # The same binary exists in every configured build tree, so "run alone" is
+    # not something the harness can promise. This runs four copies at once; it
+    # would have failed intermittently while the test wrote a fixed filename
+    # into the shared system temporary directory.
+    add_test(
+        NAME gmd_pressure_units_concurrent
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/concurrent_execution.py
+                --executable $<TARGET_FILE:gmd_pressure_unit_tests>
+                --copies 4
+    )
+    set_tests_properties(gmd_pressure_units_concurrent
+        PROPERTIES LABELS "unit;io" PROCESSORS 4)
+    # The internal time unit T = A*sqrt(amu/eV), measured back out of the
+    # integrator from free flight and from a harmonic oscillator's period.
+    add_test(NAME gmd_time_units COMMAND gmd_time_unit_tests)
+    set_tests_properties(gmd_time_units
+        PROPERTIES LABELS "unit;integrator;io;validation")
+    # The femtosecond-to-picosecond conversion inside the validation analyzers.
+    # The diffusion case compares one fitted number against a stored one, so a
+    # conversion wrong by 1000 in both would agree with itself forever; this
+    # drives it with a synthetic series of analytically known slope instead.
+    add_test(
+        NAME gmd_validation_unit_conversions
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/validation_unit_conversions.py
+                --validation-dir ${CMAKE_CURRENT_SOURCE_DIR}/validation
+    )
+    set_tests_properties(gmd_validation_unit_conversions
+        PROPERTIES LABELS "unit;validation")
     add_test(NAME gmd_pme_bspline COMMAND gmd_pme_bspline_tests)
     set_tests_properties(gmd_pme_bspline PROPERTIES LABELS "unit;force;pme")
 
@@ -391,6 +423,20 @@ if(BUILD_TESTING)
     # Compares GMD PME against a checked-in OpenMM PME result, cross-checked
     # against LAMMPS PPPM and LAMMPS Ewald. Regenerating the reference needs
     # OpenMM and LAMMPS; this comparison needs neither, so it runs in normal CI.
+    # The only trajectory-level coverage of the Berendsen barostat. Fast enough
+    # to gate on: four 500-step runs of 32 atoms take well under a second.
+    add_test(
+        NAME gmd_validation_berendsen_npt
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/validation/run_validation.py
+                --case berendsen_npt_lj
+                --gmd $<TARGET_FILE:gmd>
+                --gmd-validate $<TARGET_FILE:gmd_validate>
+                --work-root ${CMAKE_CURRENT_BINARY_DIR}/validation
+    )
+    set_tests_properties(gmd_validation_berendsen_npt
+        PROPERTIES LABELS "validation;integration;integrator")
+
     add_test(
         NAME gmd_validation_pme_external
         COMMAND ${Python3_EXECUTABLE}
@@ -477,6 +523,29 @@ if(BUILD_TESTING)
 
         add_executable(gmd_mpi_pressure_unit_tests tests/mpi_pressure_units.cpp)
         target_link_libraries(gmd_mpi_pressure_unit_tests PRIVATE gmd_core)
+
+        add_executable(gmd_mpi_berendsen_barostat_tests
+            tests/mpi_berendsen_barostat.cpp)
+        target_link_libraries(gmd_mpi_berendsen_barostat_tests PRIVATE gmd_core)
+
+        # validation/berendsen_npt_lj exercises the barostat over a trajectory
+        # but cannot compare rank counts: a run started from velocity_init
+        # random does not reproduce across them, because the initializer draws
+        # by local atom index. This removes the initializer from the question --
+        # every rank builds the same velocity field from the global tag -- and
+        # compares the barostat's own coupling factor at 1, 2 and 4 ranks, with
+        # one empty domain at np=4.
+        foreach(berendsen_np 1 2 4)
+            add_test(
+                NAME gmd_mpi_berendsen_barostat_${berendsen_np}proc
+                COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${berendsen_np}
+                        $<TARGET_FILE:gmd_mpi_berendsen_barostat_tests>
+            )
+            set_tests_properties(gmd_mpi_berendsen_barostat_${berendsen_np}proc
+                PROPERTIES
+                    LABELS "mpi;parallel;integrator;validation"
+                    PROCESSORS ${berendsen_np})
+        endforeach()
 
         # The bar conversion itself is a compile-time constant, but the pressure
         # it converts is not: 2K is allreduced and the virial is separately
