@@ -23,6 +23,24 @@
 - `pme_external/`：**已完成的 PME 外部参考**。OpenMM 8.6.0 PME 为主参考，LAMMPS 22 Jul 2025 - Update 5 的 PPPM 与 exact Ewald 为第二引擎。Coulomb-only、非立方 18x22x26 A、12 原子、精确电中性、无对称性的 fixture。alpha / grid / cutoff / 边界条件 / 无 exclusion 全部精确对齐；B-spline order 无法与 OpenMM 对齐（其固定为 5，无 API 暴露）；LAMMPS PPPM 用的是 optimised Green's function，本身就是另一种 mesh 近似。三个代码对同一物理常数的取舍不同：GMD 用 CODATA 2022 的 14.3996454686836（`gmd::kCoulombConstant`），LAMMPS 用 14.399645（自身六位小数，低 3.255e-08），OpenMM 折算为 14.399645478（高 6.765e-10）；两个引擎的常数在生成时实测而非引用文档。由于每一项都精确携带一个 k_e 因子，按 k_e^GMD / k_e^engine 线性缩放是精确修正。**在 GMD 的常数被修正之前**该因子还要补偿 GMD 自身 3.16e-06 的截断，那个偏差会超过 grid 128 的 mesh error 并被误读为收敛下限；现在只剩引擎自身的舍入。三个引擎在 16/32/64/128 网格上单调收敛到同一个 exact Ewald 极限。reference settings（grid 64^3，GMD order 6 vs OpenMM order 5）下 energy 差 1.13e-06 eV、force 最大分量差 1.53e-06 eV/A；容差取 |GMD-exact| + |OpenMM-exact| 三角不等式界的两倍，而非把观测值向上取整。**virial 张量全部九个分量对 LAMMPS 验证**（exact Ewald 1.6e-07 eV，PPPM 8.6e-07 eV）；OpenMM 完全不暴露 virial。重新生成 reference 需要两个外部引擎，CI 比较不需要。
 - 长时间 NVE/NVT/NPT/diffusion cases：仍为 provisional workflow/regression baselines。
 
+温度相关 baseline 与 Boltzmann 常数修正（2026-08-30）：
+
+- 生产代码曾同时存在**四个** Boltzmann 常数：`src/system/initializer.cpp` 的
+  `8.617343e-5`、`thermostat.hpp` 与 `mc_barostat.hpp` 的 `8.617333262e-5`、
+  以及 `examples/ethane_demo` 的 `8.617333e-5`。现统一为
+  `gmd::kBoltzmannConstantEVPerKelvin = 8.617333262145177e-5`（由 2019 SI 精确定义
+  推导：k_B = 1.380649e-23 J/K 与 e = 1.602176634e-19 C 均为精确值，故
+  k_B[eV/K] = 1380649/16021766340 是**精确有理数**，NIST 记作
+  "8.617 333 262... x 10^-5 eV/K, exact"）。
+- **可观测的缺陷**：速度初始化与温度报告用了不同常数，初始化到 300 K 的体系
+  报告 300.000339014 K；修正后为 300 K（2.2e-16）。
+- **仅影响随机初速度的动力学 case**。`nvt` / `npt` / `diffusion` 三个 baseline
+  已重新生成（相对变化 1.1e-07 ~ 2.6e-04，全部仍在原容差内）；`nve` 的
+  energy drift **逐位不变**并已在文件中给出证明——该指标是两个 `%.6f` 打印能量之差，
+  而修正只移动约 3e-08 eV，低于最后一位打印精度两个数量级。
+- **所有 static case（LJ / Coulomb / special pairs / bonded / pme_external）完全不受影响**：
+  没有任何 Coulomb、LJ 或 bonded 量依赖 k_B。
+
 当前 release-facing 状态：
 
 - LJ：已通过解析 reference 验证。
