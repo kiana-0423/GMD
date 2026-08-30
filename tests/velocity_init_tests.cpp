@@ -531,6 +531,85 @@ void test_tag_sensitivity() {
           "retagging an atom changed its velocity by only " + number(difference));
 }
 
+// --- ghost atoms -----------------------------------------------------------
+//
+// A ghost is a copy of an atom another rank owns, borrowed for force
+// evaluation. It carries the owner's tag and gets its velocity through the
+// normal communication path, so the initializer must leave it alone: not
+// because the VALUE would be wrong -- keyed on the tag, a ghost would draw its
+// owner's velocity, which is right -- but because counting it would add that
+// atom's momentum and kinetic energy to the reductions a second time and
+// mis-scale the whole field.
+//
+// No current code path hands the initializer a system with ghosts attached:
+// Simulation::initialize() runs it before the first force evaluation builds
+// any. This test exists because a negative control proved that without it the
+// owned-only iteration could be reverted with nothing noticing.
+
+void test_ghost_atoms_are_not_initialized() {
+    const auto order = identity_order(kAtomCount);
+    const auto without_ghosts = initialize(order, kSeed, kTargetTemperature);
+
+    gmd::System system = system_with_order(order);
+    // Four ghosts duplicating real atoms, exactly as a halo exchange would
+    // produce them: the owner's tag, the owner's mass, a shifted position.
+    for (std::size_t i = 0; i < 4; ++i) {
+        const auto tag = static_cast<int>(i);
+        system.add_ghost_atom(mass_for(i), 0.0,
+                              {position_for(i)[0] + 60.0, position_for(i)[1],
+                               position_for(i)[2]},
+                              tag, 1);
+    }
+    check(system.atom_count() == kAtomCount + 4,
+          "the fixture did not attach four ghosts");
+    check(system.num_local_atoms() == kAtomCount,
+          "attaching ghosts changed the owned atom count");
+
+    gmd::VelocityInitializer initializer(kSeed);
+    // Duplicate tags among ghosts must NOT be rejected: only owned atoms are
+    // the draw's identities, and a halo legitimately repeats them.
+    bool threw = false;
+    try {
+        initializer.initialize(system, kTargetTemperature,
+                               gmd::VelocityInitMode::Random, true);
+    } catch (const std::exception& error) {
+        threw = true;
+        check(false, std::string("a system with ghosts was rejected: ") + error.what());
+    }
+    check(!threw, "ghost tags must not be mistaken for duplicate owned tags");
+
+    // The owned field must be exactly what it was without the ghosts. If the
+    // ghosts had entered the kinetic-energy sum, the rescale factor would have
+    // been wrong and every owned velocity would have moved.
+    const auto with_ghosts = velocities_by_tag(system);
+    const double worst = worst_difference(without_ghosts, with_ghosts);
+    check(worst == 0.0,
+          "attaching ghosts changed the owned velocities by " + number(worst) +
+              ", so they were counted in the reductions");
+
+    // And the ghosts themselves are untouched, still at the zero velocity
+    // add_ghost_atom gave them.
+    for (std::size_t i = kAtomCount; i < system.atom_count(); ++i) {
+        const auto v = system.velocities()[i];
+        check(v[0] == 0.0 && v[1] == 0.0 && v[2] == 0.0,
+              "ghost at slot " + std::to_string(i) +
+                  " was given a velocity by the initializer instead of receiving "
+                  "one from its owner");
+    }
+
+    // The reported temperature is still the target, computed over owned atoms.
+    double twice_ke = 0.0;
+    for (std::size_t i = 0; i < system.num_local_atoms(); ++i) {
+        const auto v = system.velocities()[i];
+        twice_ke += system.masses()[i] * (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+    }
+    const double dof = 3.0 * static_cast<double>(kAtomCount) - 3.0;
+    const double temperature = twice_ke / (dof * kReferenceBoltzmannEVPerKelvin);
+    check(std::abs(temperature / kTargetTemperature - 1.0) < 1.0e-12,
+          "with ghosts attached the owned field carries " + number(temperature) +
+              " K, not " + number(kTargetTemperature));
+}
+
 void test_duplicate_and_negative_tags_are_rejected() {
     auto expect_throw = [&](const char* what, auto&& mutate) {
         gmd::System system = system_with_order(identity_order(kAtomCount));
@@ -584,6 +663,7 @@ int main() {
     test_field_matches_the_specification();
     test_gaussian_width_is_exact_per_atom();
     test_tag_sensitivity();
+    test_ghost_atoms_are_not_initialized();
     test_duplicate_and_negative_tags_are_rejected();
 
     if (failures == 0) {
