@@ -145,6 +145,8 @@ if(BUILD_TESTING)
     target_link_libraries(gmd_pme_bspline_tests PRIVATE gmd_core)
     add_executable(gmd_electrostatic_constant_tests tests/electrostatic_constant_tests.cpp)
     target_link_libraries(gmd_electrostatic_constant_tests PRIVATE gmd_core)
+    add_executable(gmd_boltzmann_constant_tests tests/boltzmann_constant_tests.cpp)
+    target_link_libraries(gmd_boltzmann_constant_tests PRIVATE gmd_core)
     add_executable(gmd_pme_energy_force_tests tests/pme_energy_force_tests.cpp)
     target_link_libraries(gmd_pme_energy_force_tests PRIVATE gmd_core)
     add_executable(gmd_ml_virial_contract_tests tests/ml_virial_contract_tests.cpp)
@@ -285,6 +287,9 @@ if(BUILD_TESTING)
     # as an ordinary single-process unit test in both the serial and the
     # MPI-enabled build: it exercises no MPI and its result must not depend on
     # whether MPI support was compiled in.
+    add_test(NAME gmd_boltzmann_constant COMMAND gmd_boltzmann_constant_tests)
+    set_tests_properties(gmd_boltzmann_constant
+        PROPERTIES LABELS "unit;integrator;validation")
     add_test(NAME gmd_electrostatic_constant COMMAND gmd_electrostatic_constant_tests)
     set_tests_properties(gmd_electrostatic_constant
         PROPERTIES LABELS "unit;force;validation")
@@ -438,6 +443,27 @@ if(BUILD_TESTING)
         target_link_libraries(gmd_mpi_constraint_independence_tests PRIVATE gmd_core)
         add_executable(gmd_mpi_virial_sources_tests tests/mpi_virial_sources.cpp)
         target_link_libraries(gmd_mpi_virial_sources_tests PRIVATE gmd_core)
+        add_executable(gmd_mpi_boltzmann_constant_tests
+            tests/mpi_boltzmann_constant.cpp)
+        target_link_libraries(gmd_mpi_boltzmann_constant_tests PRIVATE gmd_core)
+
+        # Both halves of a temperature are reduced: compute_twice_ke() allreduces
+        # the kinetic energy and the degrees of freedom come from a reduced global
+        # atom count. A per-rank energy sum and a local DOF count cancel exactly at
+        # np=1, so the constant is measured at 1, 2 and 4 ranks. At np=4 one rank
+        # deliberately owns no atoms and must still enter every collective.
+        foreach(kb_np 1 2 4)
+            add_test(
+                NAME gmd_mpi_boltzmann_constant_${kb_np}proc
+                COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${kb_np}
+                        $<TARGET_FILE:gmd_mpi_boltzmann_constant_tests>
+            )
+            set_tests_properties(gmd_mpi_boltzmann_constant_${kb_np}proc
+                PROPERTIES
+                    LABELS "mpi;parallel;integrator;validation"
+                    PROCESSORS ${kb_np})
+        endforeach()
+
         add_executable(gmd_mpi_electrostatic_constant_tests
             tests/mpi_electrostatic_constant.cpp)
         target_link_libraries(gmd_mpi_electrostatic_constant_tests PRIVATE gmd_core)
