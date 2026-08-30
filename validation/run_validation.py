@@ -18,6 +18,7 @@ LONG_CASES = [
     "nve_lj_fluid",
     "nvt_lj_fluid",
     "npt_lj_fluid",
+    "berendsen_npt_lj",
     "diffusion_lj_fluid",
 ]
 

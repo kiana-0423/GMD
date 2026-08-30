@@ -1,0 +1,57 @@
+{
+  "metrics": {
+    "compress_volume_ratio": 0.9509674146050386,
+    "expand_pressure_mean": 2335.6564766800007,
+    "expand_temperature_mean": 291.0279171799999,
+    "expand_volume_ratio": 1.1102180535072042
+  },
+  "reference_details": {
+    "build_type": "Release (-DCMAKE_BUILD_TYPE=Release)",
+    "date": "2026-08-30",
+    "description": "Berendsen NPT dynamics regression. A sign-sensitive pair of runs on a compressed 32-atom Lennard-Jones fixture, differing only in target pressure.",
+    "fixture_sha256": {
+      "compress.run": "719284996f10e77545652b22a8a1b40c96067bee60afbea408d0c17dfda9543f",
+      "expand.run": "4e55f0359fde34225b1466d39983f77ebfe6f6fdadb2ef2db527f63cc8992c19",
+      "lj32_compressed.xyz": "2aa21765d85ffec86ffe94120beb527ea89c645c3d20dab13dde16f6f01ae8ea",
+      "restart_first.run": "c0b222d6acd3125a6c16dbb1e9df35502b7a7454cbaa5254d3f55b0f14ddb64d",
+      "restart_second.run": "b951ec70356db53948f5ece68d8a1727a98990ba6ea5cce93cc1f8bf882c1879"
+    },
+    "generated_file": "<work>/berendsen_npt_lj/summary.json",
+    "means_exclude_frame_zero": "Frame 0 is the untouched input lattice before any dynamics and its pressure is about 22600 bar against a run mean near 2300. It is excluded from both means.",
+    "measured_discrimination": {
+      "correct_code": {
+        "compress_volume_ratio": 0.9509674146050386,
+        "expand_volume_ratio": 1.1102180535072042,
+        "smallest_response": 0.0490325853949614
+      },
+      "pre_fix_berendsen_bar_units": {
+        "compress_volume_ratio": 0.8355440308115111,
+        "expand_volume_ratio": 0.9910582271697609,
+        "note": "Both runs compress: a bar target compared against an eV/A^3 pressure reads 200 bar as 200 eV/A^3, or 3.2e8 bar, which is above every instantaneous pressure. expand_direction and directions_differ both fail."
+      },
+      "pre_fix_unconverted_barostat_tau": {
+        "compress_volume_ratio": 0.9962417901256232,
+        "expand_volume_ratio": 1.012852270235498,
+        "largest_response": 0.012852270235498,
+        "note": "The directions stay correct but the coupling is about ten times too weak. This is what min_volume_response separates: 0.03 sits between the 0.0129 the defective code produces and the 0.0490 the correct code produces at its smallest."
+      }
+    },
+    "not_an_external_reference": "WARNING: every number here is produced by GMD itself. No external engine was run for this case and no value is derived from theory. It is a dynamics regression baseline and must not be cited as cross-code validation of the Berendsen barostat. The independent unit-level checks of the barostat's pressure and time units are in tests/pressure_unit_tests.cpp and tests/time_unit_tests.cpp.",
+    "procedure": [
+      "python3 validation/run_validation.py --case berendsen_npt_lj --gmd <build>/gmd --gmd-validate <build>/gmd_validate --work-root <work>",
+      "read the metrics from <work>/berendsen_npt_lj/summary.json"
+    ],
+    "restart_continuity": "restart_first.run runs 250 steps and checkpoints; restart_second.run resumes and runs the remaining 250. The final volume must be bit-identical to the continuous 500-step expand run, and is.",
+    "structural_assertions": "The sign and magnitude checks in analyze.py are not regression values and do not depend on the numbers below. expand.run targets 200 bar, beneath the fixture's mean pressure, so the cell must grow; compress.run targets 4000 bar and it must shrink.",
+    "tolerance_basis": {
+      "min_volume_response": "0.03, measured; see measured_discrimination above.",
+      "pressure_mean_abs": "1400 bar, three standard errors on the same basis: mean 2335.7 bar, per-frame standard deviation 3298.1 bar over 50 frames, standard error 466.4 bar.",
+      "temperature_mean_abs": "100 K, three standard errors of the mean. The run mean is 291.0 K with a per-frame standard deviation of 236.5 K over 50 frames, so the standard error is 33.4 K. A 32-atom system fluctuates this hard; the bound admits a trajectory that diverged on another platform while still rejecting a change in the physics.",
+      "volume_ratio_abs": "0.02, about a fifth of the 0.097 gap between the correct expand ratio and the one an unconverted relaxation time produces, so the two remain distinguishable."
+    },
+    "units": "volumes in A^3, temperatures in K, pressures in bar",
+    "why_this_case_exists": "Nothing else in the repository ran the Berendsen barostat over a trajectory: npt_lj_fluid uses the Monte Carlo barostat, so the Berendsen path had only direct unit tests behind it. Two production defects corrected in this branch and its predecessor are caught here by construction rather than by tolerance.",
+    "working_directory": "<repo>"
+  },
+  "source": "provisional_gmd_baseline_2026-08-30"
+}

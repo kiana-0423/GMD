@@ -1,0 +1,25 @@
+# Target pressure BELOW the fixture's instantaneous pressure, so the cell must
+# grow. This is the sign-sensitive half of the pair: the fixture sits at roughly
+# +1000 bar, and 200 bar is below that in bar but far ABOVE it when the same
+# number is mistaken for eV/A^3 (1000 bar is 6.2e-4 eV/A^3). A barostat
+# comparing a bar target against an eV/A^3 pressure therefore compresses here
+# instead of expanding, which is the failure this case exists to catch.
+velocity 300.0
+run 500
+velocity_init random
+velocity_seed 20260830
+remove_com_velocity true
+time_step 2.0
+output_interval 10
+
+force_field lj
+cutoff 6.0
+type 1 Ar epsilon 0.01032 sigma 3.405 charge 0.0
+
+thermostat nose_hoover
+thermostat_tau 100.0
+
+barostat berendsen
+barostat_tau 1000.0
+compressibility 4.5e-5
+pressure 200.0

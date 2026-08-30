@@ -1,0 +1,22 @@
+# Target pressure ABOVE the fixture's instantaneous pressure, so the cell must
+# shrink. Identical to expand.run apart from the target, so the two differ only
+# in the sign of (P_target - P_current).
+velocity 300.0
+run 500
+velocity_init random
+velocity_seed 20260830
+remove_com_velocity true
+time_step 2.0
+output_interval 10
+
+force_field lj
+cutoff 6.0
+type 1 Ar epsilon 0.01032 sigma 3.405 charge 0.0
+
+thermostat nose_hoover
+thermostat_tau 100.0
+
+barostat berendsen
+barostat_tau 1000.0
+compressibility 4.5e-5
+pressure 4000.0
