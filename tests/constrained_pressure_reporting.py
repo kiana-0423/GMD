@@ -367,6 +367,7 @@ def main() -> int:
                 continue
 
             worst = {name: 0.0 for name in LOG_COLUMNS}
+            scale = {name: 0.0 for name in LOG_COLUMNS}
             for serial_row, mpi_row in zip(serial_rows, mpi_rows):
                 for name in LOG_COLUMNS:
                     a, b = serial_row[name], mpi_row[name]
@@ -390,6 +391,11 @@ def main() -> int:
                             f"disagreement or a quantity that was never reported")
                         continue
                     worst[name] = max(worst[name], abs(a - b))
+                    # Track the magnitude too: the bound below is expressed in
+                    # units of the last printed decimal, and converting those
+                    # decimals back to binary is only exact up to a few ULP of
+                    # the value itself.
+                    scale[name] = max(scale[name], abs(a), abs(b))
             reported = "  ".join(
                 f"{name}={worst[name]:.1e}"
                 for name in ("pe", "ke", "etot", "temperature", "pressure", "volume",
@@ -399,13 +405,28 @@ def main() -> int:
             for name, value in worst.items():
                 if name in INT_COLUMNS:
                     continue
-                if value > args.log_print_resolution:
+                # The bound is "at most one unit in the last printed place",
+                # which is a statement about %.6f and not about the numbers. Two
+                # decimals one unit apart do not parse back to a difference of
+                # exactly 1e-6: neither is representable in binary, so the
+                # parsed gap can land a few ULP either side of it. Comparing
+                # against the bare resolution therefore rejects the very case
+                # the bound is meant to permit -- as it did for a pressure pair
+                # printed -1.794485 and -1.794484, whose parsed difference is
+                # 1.000000000139778e-06, over by 35% of a single ULP. The slack
+                # is scaled by the column's own magnitude, so it stays a
+                # statement about decimal conversion rather than a tolerance
+                # that grows to hide real disagreement.
+                allowed = args.log_print_resolution + 8.0 * sys.float_info.epsilon * scale[name]
+                if value > allowed:
                     problems.append(
                         f"{label}: {name} differs by {value} between serial and np={args.np}, "
-                        f"more than the log's own print resolution "
-                        f"({args.log_print_resolution}). The MPI output path writes a "
-                        f"separate System holding only gathered coordinates; a field that "
-                        f"was not carried across from the distributed System shows up here")
+                        f"more than one unit in the last printed place "
+                        f"({args.log_print_resolution}, allowing {allowed - args.log_print_resolution:.1e} "
+                        f"for decimal-to-binary conversion at magnitude {scale[name]:.3g}). "
+                        f"The MPI output path writes a separate System holding only gathered "
+                        f"coordinates; a field that was not carried across from the "
+                        f"distributed System shows up here")
 
     if problems:
         raise RuntimeError("constrained pressure reporting failed:\n  - " +

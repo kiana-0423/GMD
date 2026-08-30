@@ -6,6 +6,50 @@ All notable user-facing changes in GMD are documented here.
 
 ### ⚠️ Simulation-results-changing corrections
 
+- **Four different Boltzmann constants became one, and velocity initialization
+  was using the wrong one.** `k_B` is now
+  `gmd::kBoltzmannConstantEVPerKelvin = 8.617333262145177e-5` eV/K everywhere.
+  **Velocity initialization changes by −1.130030e-06 relative, which changes
+  every trajectory that starts from randomly sampled velocities. Nothing is
+  bitwise compatible with a previous release.**
+
+  | Where | Was | Relative to correct |
+  |---|---|---|
+  | `src/system/initializer.cpp` | `8.617343e-5` | **+1.130031e-06** |
+  | `include/gmd/integrator/thermostat.hpp` | `8.617333262e-5` | −1.685e-11 |
+  | `include/gmd/integrator/mc_barostat.hpp` | `8.617333262e-5` | −1.685e-11 |
+  | `examples/ethane_demo/ethane_demo.cpp` | `8.617333e-5` | −3.042e-08 |
+
+  **The observable bug:** velocity initialization and temperature reporting used
+  different constants, so the engine did not agree with itself. A system
+  initialised to 300 K reported **300.000339014 K**. It now reports 300 K to
+  2.2e-16. The Nosé–Hoover thermostat mass and the MC barostat's Metropolis
+  exponent were already on the reporting side; the initializer was the outlier.
+
+  **Derivation.** `k_B` in eV/K is *exact* and has no uncertainty — both
+  ingredients have been exact by definition since the 2019 SI redefinition.
+  `k_B = 1.380649e-23` J/K, `e = 1.602176634e-19` C, one electronvolt is `e`
+  joules exactly, so `k_B [eV/K] = 1380649/16021766340 =
+  8.6173332621451774336636...e-5`. That denominator has factors other than 2 and
+  5, so the exact rational is non-terminating and every literal truncates it;
+  NIST tabulates it as "8.617 333 262... × 10⁻⁵ eV K⁻¹, exact". The literal is
+  the shortest decimal parsing to the nearest `double`, 1.1e-18 away.
+
+  **Affected paths:** Maxwell–Boltzmann sampling, the rescale that follows it,
+  temperature reporting, the Nosé–Hoover mass and friction force, the
+  velocity-rescaling target, and the MC barostat's β.
+
+  **Not affected:** static energy, force and virial results. No Coulomb,
+  Lennard-Jones or bonded quantity depends on `k_B`, so every static baseline is
+  unchanged by construction.
+
+  **Restart implication.** The constant is not serialized by name, but the
+  Nosé–Hoover thermostat mass is, and `Q = dof·k_B·T·τ²` carries it. `Q` is
+  restored verbatim so continued runs stay deterministic, which means a
+  checkpoint written before this change keeps the old constant's `Q` after a
+  resume while every other path uses the new one. Restart from the input instead
+  if that matters.
+
 - **The electrostatic conversion constant was wrong in its sixth significant
   figure, and is corrected.** `k_e` was `14.3996` eV·Å/e²; it is now
   `14.3996454686836`. **Every Coulomb, Ewald and PME energy, force and virial
@@ -382,6 +426,26 @@ instead.
 
 ### Added
 
+- **Boltzmann constant audit** `tests/boltzmann_constant_tests.cpp` and
+  `tests/mpi_boltzmann_constant.cpp`. Neither reads a production constant: the
+  initializer's is file-local and the barostat's is private. Each path is driven
+  with known inputs and the constant recovered from its output —
+  `k_B = 2K/(dof·T)` after initialization, the inverse for reporting,
+  `Q/(dof·T·τ²)` for Nosé–Hoover, and for the MC barostat a bisection for the
+  accept/reject boundary temperature, which is exactly inversely proportional to
+  its constant.
+
+  Initialization is asserted to agree with reporting *directly*, so two paths
+  drifting together could not pass. Omitting the constant (measures 1), applying
+  it twice (`k_B²`) and inverting the conversion (`1/k_B`) are named failures.
+  Also covered: exact temperature from hand-computed velocities, 0 K behaviour,
+  centre-of-mass removal, degrees of freedom, `Q` scaling independently with `T`,
+  `τ²` and dof, the barostat's β sign and P/T scaling, and the fact that
+  Nosé–Hoover checkpoints carry the constant indirectly through `Q`. Under MPI
+  the measurement repeats at 1, 2 and 4 ranks — both halves of a temperature are
+  reduced, and a per-rank energy sum with a local dof count cancel exactly at
+  np=1 — with one rank deliberately owning no atoms at np=4.
+
 - **Electrostatic constant audit** `tests/electrostatic_constant_tests.cpp` and
   `tests/mpi_electrostatic_constant.cpp`. Neither reads the production constant,
   which has internal linkage: each electrostatic sum is recomputed with `k_e = 1`
@@ -655,13 +719,22 @@ instead.
   conversion in `validation/pme_external` is 3.3e-08 against LAMMPS and 6.8e-10
   against OpenMM. It is exact, since the dependence is exactly linear, but that
   case cannot test cross-code agreement below those levels without applying it.
-- **Other unit constants in the tree were not audited.** This work covered the
-  electrostatic constant only. `kBoltzmannConstant` in `src/system/initializer.cpp`
-  is `8.617343e-5` while `kBoltzmann` in `include/gmd/integrator/thermostat.hpp`
-  and `kB_eV` in `include/gmd/integrator/mc_barostat.hpp` are both
-  `8.617333262e-5` — a 1.1e-06 relative disagreement between two live
-  definitions of the same constant. It is noted here rather than fixed, because
-  it changes velocity initialisation and is outside this correction's scope.
+- **The MC barostat's constant is pinned by a regression value, not a
+  derivation.** Its Metropolis exponent depends on an unobservable uniform draw,
+  so `k_B` cannot be recovered from it in closed form. The audit bisects for the
+  temperature at which the first trial move's accept/reject decision flips,
+  which is exactly inversely proportional to the barostat's constant, and pins
+  that. The sensitivity is measured rather than assumed — restoring the previous
+  `8.617333262e-5` moves it by 1.684e-11 and the tolerance is seventeen times
+  below that — but it remains a pinned number rather than a predicted one.
+- **Time and pressure unit constants have still not been audited.** The
+  electrostatic and Boltzmann constants have now each been traced to primary
+  sources; `kInternalTimeUnitsPerFs` in `src/io/config_loader.cpp` and the
+  bar-to-eV/Å³ factor `6.2415091e-7`, which appears in both
+  `src/io/trajectory_writer.cpp` and `include/gmd/integrator/mc_barostat.hpp`,
+  have not been. The latter is a second pair of duplicate literals for one
+  conversion, and `6.2415091e-7` is 4.09e-09 relative above the value
+  implied by the exact elementary charge (6.241509074461e-07).
 - TorchScript `edge_shift` is directly covered (see *Added*), but only in a build configured with `GMD_ENABLE_TORCH=ON`. A build without LibTorch does not register the test and reports that at configure time; in such a build the contract is unverified.
 
 ## [v2.4] - 2026-05-24

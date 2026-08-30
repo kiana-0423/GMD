@@ -19,6 +19,7 @@
 #include <stdexcept>
 #include <string>
 
+#include "gmd/core/physical_constants.hpp"
 #include "gmd/core/simulation.hpp"
 #include "gmd/force/bonded_force_provider.hpp"
 #include "gmd/integrator/nose_hoover_thermostat.hpp"
@@ -227,7 +228,7 @@ int main(int argc, char** argv)
             const double ke   = vel_init->kinetic_energy(system);
             const double etot = pe + ke;
             const double temp = dof > 0
-                ? ke * 2.0 / (static_cast<double>(dof) * 8.617333e-5) : 0.0;
+                ? ke * 2.0 / (static_cast<double>(dof) * gmd::kBoltzmannConstantEVPerKelvin) : 0.0;
 
             std::cout << std::fixed << std::setprecision(3)
                       << std::left

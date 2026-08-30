@@ -122,6 +122,116 @@ Tests: `tests/virial_source_inventory_tests.cpp`,
 `tests/pme_reciprocal_virial_tests.cpp`, `tests/mpi_virial_sources.cpp`, with
 the shared references in `tests/virial_reference.hpp`.
 
+### The Boltzmann constant
+
+GMD carried **four** different values for one constant. They are now one:
+
+```
+gmd::kBoltzmannConstantEVPerKelvin = 8.617333262145177e-5   // eV/K
+```
+
+| Where | Was | Relative to the correct value |
+|---|---|---|
+| `src/system/initializer.cpp` | `8.617343e-5` | **+1.130031e-06** |
+| `include/gmd/integrator/thermostat.hpp` | `8.617333262e-5` | −1.685e-11 |
+| `include/gmd/integrator/mc_barostat.hpp` | `8.617333262e-5` | −1.685e-11 |
+| `examples/ethane_demo/ethane_demo.cpp` | `8.617333e-5` | −3.042e-08 |
+
+**This is a results-changing correction.** Velocity initialization moves by
+−1.130030e-06, which changes every trajectory that starts from randomly sampled
+velocities.
+
+**The observable bug.** Velocity initialization and temperature reporting used
+different constants, so the engine did not agree with itself: a system
+initialised to 300 K reported **300.000339014 K**. It now reports 300 K to
+2.2e-16. The Nosé–Hoover thermostat mass and the MC barostat's Metropolis
+exponent were on the reporting side of the split; the initializer was the odd
+one out.
+
+**Derivation.** Unusually, `k_B` in eV/K is **exact** and carries no
+uncertainty, because both ingredients have been exact by definition since the
+2019 SI redefinition:
+
+| | | |
+|---|---|---|
+| `k_B` | 1.380649e-23 J/K, exact | [physics.nist.gov/cgi-bin/cuu/Value?k](https://physics.nist.gov/cgi-bin/cuu/Value?k) |
+| `e` | 1.602176634e-19 C, exact | [physics.nist.gov/cgi-bin/cuu/Value?e](https://physics.nist.gov/cgi-bin/cuu/Value?e) |
+
+One electronvolt is `e` joules exactly, so
+
+```
+k_B [eV/K] = 1.380649e-23 / 1.602176634e-19
+           = 1380649 / 16021766340
+           = 8.6173332621451774336636593340806392...e-5
+```
+
+The denominator has factors other than 2 and 5, so this exact rational has a
+**non-terminating** decimal expansion — every literal is a truncation of it.
+NIST tabulates it as *"8.617 333 262… × 10⁻⁵ eV K⁻¹, exact"*
+([CODATA 2022](https://physics.nist.gov/cgi-bin/cuu/Value?kev)); the ellipsis is
+their notation for precisely that.
+
+**Rounding policy.** With no physical uncertainty to hide behind, the only
+defensible cut-off is double precision. The literal is the shortest decimal that
+parses to the nearest `double` to the exact rational, 1.1e-18 away — below one
+ulp. Fewer digits would be an arbitrary truncation.
+
+**Affected production paths.** Maxwell–Boltzmann velocity sampling
+(`σ = √(k_B T/m)`), the rescale-to-target that follows it, instantaneous
+temperature reporting, the Nosé–Hoover thermostat mass `Q = dof·k_B·T·τ²` and
+its friction force, the velocity-rescaling thermostat's target, and the MC
+barostat's `β = 1/(k_B T)`.
+
+**What is *not* affected.** Static energy, force and virial results are
+untouched: no Coulomb, Lennard-Jones or bonded quantity depends on `k_B`. The
+`static_lj_cluster`, `static_coulomb`, `static_special_pairs`,
+`static_bonded_reference` and `pme_external` baselines are unchanged by
+construction.
+
+**Baseline impact.** Three of the four long dynamics baselines moved and were
+regenerated; one provably did not.
+
+| Case | Metric | Relative change | Tolerance |
+|---|---|---|---|
+| `nvt_lj_fluid` | temperature mean / stddev | +1.079e-07 / +1.912e-06 | 5.0 K |
+| `npt_lj_fluid` | temperature mean / stddev | +3.306e-07 / +2.192e-06 | 10.0 K |
+| `npt_lj_fluid` | pressure mean / stddev | −1.828e-05 / −1.174e-06 | 2000 bar |
+| `diffusion_lj_fluid` | diffusion coefficient | +2.593e-04 | 0.05 |
+| `nve_lj_fluid` | energy drift | **0** — bit-identical | 1e-06 |
+
+Every one stayed inside its existing tolerance, so all would have passed without
+regeneration; they were regenerated because they had been reproducing bit-for-bit
+and no longer did. The diffusion coefficient moves three orders more than the
+5.65e-07 velocity perturbation — Lyapunov amplification over the run, not an
+error. The NVE metric is a difference of two energies printed at six decimals,
+and the correction shifts the total energy by ~3e-08 eV on ~0.29 eV, two orders
+below the last printed digit, so neither printed value moves.
+
+**Restart implications.** The constant is not serialized by name anywhere. But
+the Nosé–Hoover thermostat mass **is**, and `Q = dof·k_B·T·τ²` carries the
+constant inside it. `load_checkpoint_state()` restores `Q` verbatim by design, so
+that a continued run is deterministic — which means **a checkpoint written before
+this change keeps the old constant's thermostat mass after a resume**, while
+every other path uses the new one. The discrepancy is 1.7e-11 for a checkpoint
+from a Nosé–Hoover run (the thermostat was already on the correct side of the
+split). Restart from the input rather than the checkpoint if that matters.
+
+**No bitwise backward compatibility.** Any run that samples initial velocities
+diverges from a pre-correction run of the same input and seed.
+
+**What is asserted.** `tests/boltzmann_constant_tests.cpp` and
+`tests/mpi_boltzmann_constant.cpp` do not read a production constant — the
+initializer's is file-local and the barostat's is private. Each path is driven
+with known inputs and the constant recovered from its output: `k_B = 2K/(dof·T)`
+after initialization, the inverse relation for reporting, `Q/(dof·T·τ²)` for
+Nosé–Hoover, and for the MC barostat a bisection for the temperature at which
+the first trial move's accept/reject decision flips, which is exactly inversely
+proportional to its constant. Initialization is asserted to agree with reporting
+directly, so two paths drifting together could not pass. Omitting the constant
+(measures 1), applying it twice (`k_B²`) and inverting the conversion (`1/k_B`)
+are each named failures. Under MPI the measurement is repeated at 1, 2 and 4
+ranks, where one rank deliberately owns no atoms.
+
 ### The electrostatic constant
 
 GMD's Coulomb constant was `14.3996` eV·Å/e² through v2.4. It is now

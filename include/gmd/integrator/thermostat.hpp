@@ -4,6 +4,8 @@
 #include <string>
 #include <string_view>
 
+#include "gmd/core/physical_constants.hpp"
+
 namespace gmd {
 
 class System;
@@ -119,7 +121,10 @@ std::size_t compute_degrees_of_freedom(std::size_t global_atom_count,
 std::size_t compute_degrees_of_freedom(const System& system,
                                        const DegreesOfFreedomConfig& config) noexcept;
 
-// Boltzmann constant [eV/K].
-inline constexpr double kBoltzmann = 8.617333262e-5;
+// Boltzmann constant [eV/K]. The name is kept for the call sites that
+// already use it; the value has exactly one definition, in
+// gmd/core/physical_constants.hpp, and this must never become a second
+// literal.
+inline constexpr double kBoltzmann = kBoltzmannConstantEVPerKelvin;
 
 }  // namespace gmd

@@ -2,5 +2,13 @@
   "metrics": {
     "energy_drift_per_atom_ps": 4.687499999993846e-08
   },
+  "reference_details": {
+    "boltzmann_constant_correction": {
+      "date": "2026-08-30",
+      "reason": "This baseline is UNCHANGED, bit for bit, by the Boltzmann constant correction, and is deliberately not regenerated. The metric is (E_last - E_first) / (atoms * picoseconds), and both energies are read from the trajectory log, which prints with six decimals. The correction shifts the total energy by about 3e-08 eV on a value near 0.29 eV, which is two orders below the log's last printed digit, so neither printed energy moves and the difference between them is identical. Verified by re-running the case at the corrected commit: 4.6874999999938459e-08 before and after, equal as doubles.",
+      "regenerated": false,
+      "verification_command": "python3 validation/run_validation.py --case nve_lj_fluid --gmd <build>/gmd --gmd-validate <build>/gmd_validate --work-root <work>"
+    }
+  },
   "source": "provisional_gmd_baseline_2026-05-23"
 }
