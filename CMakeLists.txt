@@ -147,6 +147,8 @@ if(BUILD_TESTING)
     target_link_libraries(gmd_electrostatic_constant_tests PRIVATE gmd_core)
     add_executable(gmd_boltzmann_constant_tests tests/boltzmann_constant_tests.cpp)
     target_link_libraries(gmd_boltzmann_constant_tests PRIVATE gmd_core)
+    add_executable(gmd_pressure_unit_tests tests/pressure_unit_tests.cpp)
+    target_link_libraries(gmd_pressure_unit_tests PRIVATE gmd_core)
     add_executable(gmd_pme_energy_force_tests tests/pme_energy_force_tests.cpp)
     target_link_libraries(gmd_pme_energy_force_tests PRIVATE gmd_core)
     add_executable(gmd_ml_virial_contract_tests tests/ml_virial_contract_tests.cpp)
@@ -293,6 +295,11 @@ if(BUILD_TESTING)
     add_test(NAME gmd_electrostatic_constant COMMAND gmd_electrostatic_constant_tests)
     set_tests_properties(gmd_electrostatic_constant
         PROPERTIES LABELS "unit;force;validation")
+    # The bar <-> eV/A^3 conversion, measured back out of every production path
+    # that uses it rather than read from a production symbol.
+    add_test(NAME gmd_pressure_units COMMAND gmd_pressure_unit_tests)
+    set_tests_properties(gmd_pressure_units
+        PROPERTIES LABELS "unit;integrator;io;validation")
     add_test(NAME gmd_pme_bspline COMMAND gmd_pme_bspline_tests)
     set_tests_properties(gmd_pme_bspline PROPERTIES LABELS "unit;force;pme")
 
