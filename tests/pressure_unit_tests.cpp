@@ -81,6 +81,7 @@
 #include "gmd/force/force_provider.hpp"
 #include "gmd/integrator/berendsen_barostat.hpp"
 #include "gmd/integrator/mc_barostat.hpp"
+#include "gmd/io/checkpoint.hpp"
 #include "gmd/io/trajectory_writer.hpp"
 #include "gmd/system/box.hpp"
 #include "gmd/system/system.hpp"
@@ -657,6 +658,92 @@ void test_berendsen_responds_to_the_target_in_bar() {
           "unchanged; it moved to " + number(box_after(true_bar)));
 }
 
+// --- path 4: restart ------------------------------------------------------
+//
+// The checkpoint stores step_pressure in eV/A^3, GMD's internal unit, and not in
+// bar. That is the right choice -- it is the number the integrator and the
+// barostats actually hold -- and it has a consequence worth pinning: the
+// conversion is NOT serialized, so a checkpoint written before this correction
+// resumes with the corrected conversion. The stored pressure is unchanged, and
+// the first frame after the restart reports it in bar slightly differently than
+// the last frame before it did, by the constant's own 4.09e-09.
+//
+// What must hold is that the round trip through the file is exact and that the
+// units on both sides of it are the same one.
+
+void test_checkpoint_stores_internal_units_and_round_trips() {
+    const double internal_pressure = -3.7182956231e-4;   // [eV/A^3]
+
+    gmd::System system;
+    system.resize(2, 2);
+    gmd::Box box;
+    box.set_lengths({10.0, 11.0, 12.0});
+    system.set_box(box);
+    system.mutable_masses()[0] = 12.0;
+    system.mutable_masses()[1] = 15.999;
+
+    gmd::CheckpointData checkpoint;
+    checkpoint.system = &system;
+    checkpoint.metadata.step = 17;
+    checkpoint.metadata.time_fs = 34.0;
+    checkpoint.metadata.step_pressure_valid = true;
+    checkpoint.metadata.step_pressure = internal_pressure;
+    checkpoint.metadata.step_pressure_volume = 10.0 * 11.0 * 12.0;
+    checkpoint.metadata.step_pressure_twice_ke = 0.25;
+    checkpoint.metadata.step_pressure_potential_energy = -1.5;
+
+    const std::filesystem::path path =
+        std::filesystem::temp_directory_path() / "gmd_pressure_unit_probe.chk";
+    gmd::write_checkpoint(path, checkpoint);
+
+    gmd::System restored;
+    const gmd::CheckpointMetadata metadata = gmd::read_checkpoint(path, restored);
+    std::filesystem::remove(path);
+
+    check(metadata.step_pressure_valid,
+          "the restored checkpoint lost its pressure validity flag");
+
+    // Bit-exact, not approximately: the checkpoint writes enough digits to
+    // round-trip a double, and a pressure that came back merely close would mean
+    // a restarted run does not continue the trajectory it left.
+    check(metadata.step_pressure == internal_pressure,
+          "the checkpointed pressure did not round-trip exactly: wrote " +
+              number(internal_pressure) + ", read " +
+              number(metadata.step_pressure));
+
+    // The stored number is the internal one. If a conversion had been applied on
+    // the way in, the value would be the bar figure, 1.6e6 times larger.
+    check(relative_difference(metadata.step_pressure, internal_pressure) < 1.0e-15,
+          "the checkpoint appears to store pressure in bar rather than eV/A^3");
+
+    // And a frame written from the restored state reports the same bar value a
+    // frame written before the checkpoint would have, which is the actual
+    // continuity requirement.
+    gmd::System::StepThermodynamics completed;
+    completed.valid = true;
+    completed.pressure = metadata.step_pressure;
+    completed.volume = metadata.step_pressure_volume;
+    completed.twice_kinetic_energy = metadata.step_pressure_twice_ke;
+    completed.potential_energy = metadata.step_pressure_potential_energy;
+    restored.set_step_thermodynamics(completed);
+
+    const double before = reported_bar_for_internal_pressure(internal_pressure);
+    const std::filesystem::path stem =
+        std::filesystem::temp_directory_path() / kLogStem;
+    gmd::TrajectoryWriter writer;
+    writer.open(stem);
+    writer.write_frame(restored, 17, 34.0, completed.twice_kinetic_energy, 3);
+    writer.close();
+    const double after = read_pressure_bar(stem.string() + ".log");
+    std::filesystem::remove(stem.string() + ".log");
+    std::filesystem::remove(stem.string() + ".xyz");
+
+    check(before == after,
+          "the pressure reported after a restart (" + number(after) +
+              " bar) differs from the one reported before it (" +
+              number(before) + " bar)");
+}
+
 // --- the two production paths must agree ----------------------------------
 
 void test_reporting_and_barostat_agree() {
@@ -742,6 +829,7 @@ int main() {
     test_mc_barostat_pressure_work_uses_one_conversion();
     test_mc_barostat_pressure_work_has_the_right_sign();
     test_reporting_and_barostat_agree();
+    test_checkpoint_stores_internal_units_and_round_trips();
     test_berendsen_compares_in_one_unit();
     test_berendsen_and_reporting_agree();
     test_berendsen_responds_to_the_target_in_bar();

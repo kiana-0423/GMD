@@ -475,6 +475,27 @@ if(BUILD_TESTING)
             tests/mpi_electrostatic_constant.cpp)
         target_link_libraries(gmd_mpi_electrostatic_constant_tests PRIVATE gmd_core)
 
+        add_executable(gmd_mpi_pressure_unit_tests tests/mpi_pressure_units.cpp)
+        target_link_libraries(gmd_mpi_pressure_unit_tests PRIVATE gmd_core)
+
+        # The bar conversion itself is a compile-time constant, but the pressure
+        # it converts is not: 2K is allreduced and the virial is separately
+        # reduced. A term summed once per rank, or a conversion applied per rank
+        # on the way into a sum, multiplies the reported pressure by the rank
+        # count and is an identity at np=1. These runs require the same bar value
+        # at 1, 2 and 4 ranks and on every rank, with one empty domain at np=4.
+        foreach(pressure_units_np 1 2 4)
+            add_test(
+                NAME gmd_mpi_pressure_units_${pressure_units_np}proc
+                COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${pressure_units_np}
+                        $<TARGET_FILE:gmd_mpi_pressure_unit_tests>
+            )
+            set_tests_properties(gmd_mpi_pressure_units_${pressure_units_np}proc
+                PROPERTIES
+                    LABELS "mpi;parallel;integrator;io;validation"
+                    PROCESSORS ${pressure_units_np})
+        endforeach()
+
         # The serial audit proves each electrostatic path carries exactly one
         # factor of k_e. Under MPI the providers allreduce their own energies,
         # so a term applied once per rank instead of once per pair would stay
