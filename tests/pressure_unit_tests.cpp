@@ -79,6 +79,7 @@
 
 #include "gmd/core/runtime_context.hpp"
 #include "gmd/force/force_provider.hpp"
+#include "gmd/integrator/berendsen_barostat.hpp"
 #include "gmd/integrator/mc_barostat.hpp"
 #include "gmd/io/trajectory_writer.hpp"
 #include "gmd/system/box.hpp"
@@ -483,6 +484,179 @@ void test_mc_barostat_pressure_work_has_the_right_sign() {
           "doubling the target pressure should reject the expansion");
 }
 
+// --- path 3: the Berendsen barostat ---------------------------------------
+//
+// The Berendsen barostat holds no conversion constant of its own. It compares a
+// target against an instantaneous pressure, and the only question is which unit
+// that comparison happens in. The coupling factor
+//
+//     mu^3 = 1 - beta * (dt / tau) * (P_target - P_current)
+//
+// is fully observable -- mu is the ratio of the box lengths before and after --
+// so the relation inverts to the instantaneous pressure the barostat believed it
+// had:
+//
+//     P_believed = P_target - (1 - mu^3) * tau / (beta * dt)
+//
+// Comparing P_believed against the true internal pressure, expressed in bar,
+// says whether the two sides of the subtraction were in the same unit. They were
+// not: P_believed came back equal to the raw eV/A^3 number, so a run asking for
+// 1 bar was in fact asking for 1 eV/A^3, which is 1602176.634 bar.
+
+class NullForceProvider final : public gmd::ForceProvider {
+public:
+    std::string_view name() const noexcept override { return "null"; }
+    void initialize(gmd::RuntimeContext&) override {}
+    void finalize(gmd::RuntimeContext&) override {}
+    void compute(const gmd::ForceRequest& request,
+                 gmd::ForceResult& result,
+                 gmd::RuntimeContext&) override {
+        result.forces.assign(request.coordinates.size(), {0.0, 0.0, 0.0});
+        result.potential_energy = 0.0;
+        result.virial_valid = false;
+        result.success = true;
+    }
+};
+
+struct BerendsenProbe {
+    double internal_pressure;   // [eV/A^3], computed here from the same inputs
+    double believed_pressure;   // [bar or eV/A^3 -- that is what is under test]
+};
+
+BerendsenProbe probe_berendsen(double target_pressure_bar) {
+    constexpr double kBoxLength = 12.0;
+    constexpr double kTimeStep = 1.0;
+    constexpr double kTau = 10.0;
+    constexpr double kBeta = 4.5e-5;
+    constexpr std::size_t kAtoms = 4;
+
+    gmd::System system;
+    system.resize(kAtoms, kAtoms);
+    gmd::Box box;
+    box.set_lengths({kBoxLength, kBoxLength, kBoxLength});
+    system.set_box(box);
+    for (std::size_t i = 0; i < kAtoms; ++i) {
+        const double t = static_cast<double>(i);
+        system.mutable_masses()[i] = 12.0;
+        system.mutable_coordinates()[i] = {1.0 + 2.0 * t, 2.0 + 0.5 * t,
+                                           3.0 + 0.25 * t};
+        system.mutable_velocities()[i] = {0.004, -0.002, 0.003};
+    }
+    // A virial with an unequal, non-zero trace, so that the pressure is not just
+    // the kinetic term and a dropped virial would show.
+    std::array<double, 9> virial{};
+    virial[0] = 0.5;
+    virial[4] = 0.3;
+    virial[8] = 0.2;
+    system.set_last_virial(virial, true);
+
+    double twice_ke = 0.0;
+    for (std::size_t i = 0; i < kAtoms; ++i) {
+        const auto velocity = system.velocities()[i];
+        twice_ke += system.masses()[i] *
+                    (velocity[0] * velocity[0] + velocity[1] * velocity[1] +
+                     velocity[2] * velocity[2]);
+    }
+    const double volume = kBoxLength * kBoxLength * kBoxLength;
+    const double trace = virial[0] + virial[4] + virial[8];
+    const double internal = (twice_ke + trace) / (3.0 * volume);
+
+    NullForceProvider provider;
+    gmd::RuntimeContext runtime;
+    gmd::BerendsenBarostat barostat(kTau, kBeta);
+    barostat.apply(system, provider, runtime, 0, kTimeStep, 300.0,
+                   target_pressure_bar, trace);
+
+    const double mu = system.box().lengths[0] / kBoxLength;
+    const double mu_cubed = mu * mu * mu;
+    const double believed =
+        target_pressure_bar - (1.0 - mu_cubed) * kTau / (kBeta * kTimeStep);
+    return BerendsenProbe{internal, believed};
+}
+
+void test_berendsen_compares_in_one_unit() {
+    const BerendsenProbe probe = probe_berendsen(1.0);
+    const double internal_in_bar = probe.internal_pressure * kReferenceEVPerA3ToBar;
+
+    std::cout << "  Berendsen P_current       " << number(probe.believed_pressure)
+              << " bar (true " << number(internal_in_bar) << " bar)\n";
+
+    // The recovery goes through a cube root and a subtraction of two nearly
+    // equal numbers, so it is a finite-precision inversion rather than an exact
+    // one; 1e-6 is far tighter than the 1.6e6 factor it has to be able to see.
+    check(relative_difference(probe.believed_pressure, internal_in_bar) < 1.0e-6,
+          "the Berendsen barostat compared a target in bar against an "
+          "instantaneous pressure of " + number(probe.believed_pressure) +
+              ", but the true pressure in bar is " + number(internal_in_bar));
+
+    // Named explicitly: the failure mode this replaces was the raw internal
+    // number reaching the subtraction unconverted.
+    check(relative_difference(probe.believed_pressure,
+                              probe.internal_pressure) > 1.0e3,
+          "the Berendsen barostat is still comparing the target against a raw "
+          "eV/A^3 pressure (" + number(probe.internal_pressure) + ")");
+}
+
+void test_berendsen_and_reporting_agree() {
+    // Both barostats and the log must mean the same thing by "1 bar". This is
+    // the check that ties the Berendsen path, which holds no constant of its
+    // own, to the one the other two share.
+    const BerendsenProbe probe = probe_berendsen(1.0);
+    const double reporting = measure_reporting_conversion(1.0e6);
+    const double implied = probe.internal_pressure / probe.believed_pressure;
+    check(relative_difference(implied, reporting) < 1.0e-6,
+          "the Berendsen barostat's pressure unit implies a conversion of " +
+              number(implied) + ", but the log reports with " +
+              number(reporting));
+}
+
+void test_berendsen_responds_to_the_target_in_bar() {
+    // A target far above the instantaneous pressure must compress the cell, and
+    // one far below must expand it. Under the unconverted comparison a target of
+    // a few thousand bar was numerically enormous next to a pressure of ~1e-4,
+    // so every ordinary target compressed and the sign carried no information.
+    const BerendsenProbe reference = probe_berendsen(0.0);
+    const double true_bar = reference.internal_pressure * kReferenceEVPerA3ToBar;
+
+    constexpr double kBoxLength = 12.0;
+    auto box_after = [](double target) {
+        // Re-runs the same fixture and returns the resulting box length.
+        gmd::System system;
+        system.resize(4, 4);
+        gmd::Box box;
+        box.set_lengths({kBoxLength, kBoxLength, kBoxLength});
+        system.set_box(box);
+        for (std::size_t i = 0; i < 4; ++i) {
+            const double t = static_cast<double>(i);
+            system.mutable_masses()[i] = 12.0;
+            system.mutable_coordinates()[i] = {1.0 + 2.0 * t, 2.0 + 0.5 * t,
+                                               3.0 + 0.25 * t};
+            system.mutable_velocities()[i] = {0.004, -0.002, 0.003};
+        }
+        std::array<double, 9> virial{};
+        virial[0] = 0.5;
+        virial[4] = 0.3;
+        virial[8] = 0.2;
+        system.set_last_virial(virial, true);
+        NullForceProvider provider;
+        gmd::RuntimeContext runtime;
+        gmd::BerendsenBarostat barostat(10.0, 4.5e-5);
+        barostat.apply(system, provider, runtime, 0, 1.0, 300.0, target,
+                       virial[0] + virial[4] + virial[8]);
+        return system.box().lengths[0];
+    };
+
+    check(box_after(true_bar * 10.0) < kBoxLength,
+          "a target ten times the instantaneous pressure must compress the box");
+    check(box_after(true_bar * 0.1) > kBoxLength,
+          "a target a tenth of the instantaneous pressure must expand the box");
+    // And the crossing is at the instantaneous pressure itself, not somewhere
+    // 1.6e6 away from it.
+    check(std::abs(box_after(true_bar) - kBoxLength) < 1.0e-12 * kBoxLength,
+          "a target equal to the instantaneous pressure must leave the box "
+          "unchanged; it moved to " + number(box_after(true_bar)));
+}
+
 // --- the two production paths must agree ----------------------------------
 
 void test_reporting_and_barostat_agree() {
@@ -568,6 +742,9 @@ int main() {
     test_mc_barostat_pressure_work_uses_one_conversion();
     test_mc_barostat_pressure_work_has_the_right_sign();
     test_reporting_and_barostat_agree();
+    test_berendsen_compares_in_one_unit();
+    test_berendsen_and_reporting_agree();
+    test_berendsen_responds_to_the_target_in_bar();
     test_reporting_matches_the_authoritative_value();
     test_mc_barostat_matches_the_authoritative_value();
     report_measured_values();

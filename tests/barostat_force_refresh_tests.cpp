@@ -132,7 +132,11 @@ void test_berendsen_refreshes_forces() {
     // Coupling chosen so that mu^3 = 1 - beta*(dt/tau)*(P_target - P) lands a
     // little below 1: enough to rescale the cell measurably, but comfortably
     // clear of the mu^3 <= 0 guard that would make the barostat a no-op.
-    //   1 - 4.5e-5 * (0.5/10) * 4000 ~= 0.991
+    // This cluster sits under tension at about -1502 bar, so
+    //   1 - 4.5e-5 * (0.5/10) * (4000 - (-1502)) ~= 0.9876
+    // The instantaneous pressure is no longer negligible next to the target the
+    // way it appeared to be while the barostat compared bar against eV/A^3;
+    // 4000 bar was ~0.991 under that arithmetic and is ~0.988 under this one.
     auto barostat = std::make_shared<gmd::BerendsenBarostat>(10.0, 4.5e-5);
 
     gmd::VelocityVerletIntegrator integrator(0.5);
