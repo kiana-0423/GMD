@@ -338,7 +338,285 @@ void test_redundant_constraints_are_rejected() {
           "against 3 constraints and must be rejected before any dynamics start");
 }
 
-// --- characterization: the temperature the rescale actually produces -------
+// --- the temperature must now be exact ------------------------------------
+
+void test_constrained_temperature_is_exact() {
+    // The whole point. The rescale now uses the authoritative DOF and runs
+    // AFTER the projection, so the target is hit exactly rather than on
+    // average. The bound is round-off in a global sum, not a physics tolerance.
+    for (std::size_t molecules : {1u, 2u, 3u, 10u, 40u}) {
+        const Outcome outcome = initialize_waters(molecules);
+        check(std::abs(outcome.temperature / kTargetTemperature - 1.0) < 1.0e-12,
+              std::to_string(molecules) + " water(s): initialised to " +
+                  number(kTargetTemperature) + " K, the field carries " +
+                  number(outcome.temperature) + " K over " +
+                  std::to_string(outcome.authoritative_dof) +
+                  " authoritative degrees of freedom");
+        // And it is the authoritative count that was used, not 3N-3: measuring
+        // against the naive one must now be visibly wrong.
+        const double naive_temperature =
+            outcome.twice_kinetic_energy /
+            (static_cast<double>(outcome.naive_dof) * kBoltzmann);
+        check(std::abs(naive_temperature / kTargetTemperature - 1.0) > 1.0e-6,
+              std::to_string(molecules) + " water(s): the field also satisfies "
+              "the 3N-3 convention, so this fixture cannot tell the two apart");
+    }
+}
+
+void test_single_distance_constraint() {
+    // The smallest constrained system that is not degenerate: one bond, two
+    // atoms of different mass. dof = 6 - 1 - 3 = 2.
+    gmd::System probe;
+    water_fixture(probe, 1, 200.0);
+    std::vector<gmd::BondConstraint> one = {{0, 1, 0.9572}};
+    const Outcome outcome = initialize_system(1, one, true);
+    check(outcome.authoritative_dof == 3 * outcome.atom_count - 1 - 3,
+          "one constraint on " + std::to_string(outcome.atom_count) +
+              " atoms should leave 3N-1-3 degrees of freedom; got " +
+              std::to_string(outcome.authoritative_dof));
+    check(outcome.worst_tangency < 1.0e-11,
+          "a single constrained bond is not tangent: |r.v| = " +
+              number(outcome.worst_tangency));
+    check(std::abs(outcome.temperature / kTargetTemperature - 1.0) < 1.0e-12,
+          "one constraint: the field carries " + number(outcome.temperature) + " K");
+}
+
+void test_disconnected_components() {
+    // Two molecules that share no atom. The rank is the sum of the components'
+    // ranks, and neither may be dropped.
+    const Outcome outcome = initialize_waters(2);
+    check(outcome.constraint_count == 6, "expected six constraints across two waters");
+    check(outcome.authoritative_dof == 3 * outcome.atom_count - 6 - 3,
+          "two disconnected rigid waters should leave 3N-6-3 degrees of freedom; got " +
+              std::to_string(outcome.authoritative_dof));
+    check(outcome.worst_tangency < 1.0e-11,
+          "disconnected components: worst |r.v| is " + number(outcome.worst_tangency));
+    check(std::abs(outcome.temperature / kTargetTemperature - 1.0) < 1.0e-12,
+          "disconnected components: the field carries " + number(outcome.temperature) +
+              " K");
+}
+
+void test_constraints_and_com_removal_do_not_double_subtract() {
+    // Rigid translation lies in the null space of a distance-constraint
+    // Jacobian, so the three translational modes and the constrained modes are
+    // disjoint and the DOF subtractions do not overlap. If they were counted
+    // twice the DOF would be three lower and the temperature correspondingly
+    // wrong.
+    const Outcome with_com = initialize_waters(3, true);
+    const Outcome without_com = initialize_waters(3, false);
+    check(with_com.authoritative_dof + 3 == without_com.authoritative_dof,
+          "removing the centre-of-mass velocity should cost exactly three degrees "
+          "of freedom; it cost " +
+              std::to_string(without_com.authoritative_dof - with_com.authoritative_dof));
+    check(std::abs(with_com.temperature / kTargetTemperature - 1.0) < 1.0e-12,
+          "constraints + COM removal: " + number(with_com.temperature) + " K");
+    check(std::abs(without_com.temperature / kTargetTemperature - 1.0) < 1.0e-12,
+          "constraints, no COM removal: " + number(without_com.temperature) + " K");
+    const double scale = std::sqrt(with_com.twice_kinetic_energy) + 1.0;
+    check(with_com.momentum_magnitude < 1.0e-11 * scale,
+          "constraints + COM removal left momentum " +
+              number(with_com.momentum_magnitude));
+    check(without_com.momentum_magnitude > 0.0,
+          "with COM removal disabled the momentum is exactly zero");
+    // Both remain tangent: COM removal must not have broken the projection.
+    check(with_com.worst_tangency < 1.0e-11 && without_com.worst_tangency < 1.0e-11,
+          "COM removal broke constraint tangency");
+}
+
+// Runs one custom-geometry fixture through the real startup path.
+Outcome initialize_custom(const std::vector<std::array<double, 3>>& positions,
+                          const std::vector<double>& masses,
+                          const std::vector<gmd::BondConstraint>& constraints,
+                          double temperature = kTargetTemperature) {
+    gmd::System system;
+    const std::size_t n = positions.size();
+    system.resize(n, n);
+    gmd::Box box;
+    box.set_lengths({200.0, 200.0, 200.0});
+    system.set_box(box);
+    for (std::size_t i = 0; i < n; ++i) {
+        system.mutable_coordinates()[i] = positions[i];
+        system.mutable_masses()[i] = masses[i];
+        system.mutable_atom_tags()[i] = static_cast<int>(i);
+    }
+    auto integrator = std::make_shared<gmd::VelocityVerletIntegrator>(1.0);
+    if (!constraints.empty()) {
+        integrator->set_constraint_solver(
+            std::make_shared<gmd::ConstraintSolver>(constraints, tight_settings()));
+    }
+    auto initializer = std::make_shared<gmd::VelocityInitializer>(kSeed);
+    NullForceProvider provider;
+    gmd::RuntimeContext runtime;
+    gmd::Simulation simulation(&system);
+    simulation.set_velocity_initializer(initializer);
+    simulation.set_velocity_init_mode(gmd::VelocityInitMode::Random);
+    simulation.set_initial_temperature(temperature);
+    simulation.set_remove_center_of_mass_velocity(true);
+    simulation.set_force_provider(
+        std::shared_ptr<gmd::ForceProvider>(&provider, [](gmd::ForceProvider*) {}));
+    simulation.set_integrator(integrator);
+    simulation.set_time_step(1.0);
+    simulation.initialize(runtime);
+
+    Outcome outcome;
+    outcome.atom_count = system.num_local_atoms();
+    outcome.constraint_count = constraints.size();
+    outcome.authoritative_dof = integrator->degrees_of_freedom(system);
+    outcome.naive_dof = 3 * outcome.atom_count - 3;
+    std::array<double, 3> momentum = {0.0, 0.0, 0.0};
+    for (std::size_t i = 0; i < system.num_local_atoms(); ++i) {
+        const auto v = system.velocities()[i];
+        const double m = system.masses()[i];
+        outcome.twice_kinetic_energy += m * (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+        for (std::size_t d = 0; d < 3; ++d) momentum[d] += m * v[d];
+        outcome.velocities_by_tag[system.atom_tag(i)] = {v[0], v[1], v[2]};
+    }
+    outcome.momentum_magnitude = std::sqrt(momentum[0] * momentum[0] +
+                                           momentum[1] * momentum[1] +
+                                           momentum[2] * momentum[2]);
+    outcome.temperature =
+        outcome.authoritative_dof == 0
+            ? 0.0
+            : outcome.twice_kinetic_energy /
+                  (static_cast<double>(outcome.authoritative_dof) * kBoltzmann);
+    for (const auto& c : constraints) {
+        const auto ri = system.coordinates()[static_cast<std::size_t>(c.i)];
+        const auto rj = system.coordinates()[static_cast<std::size_t>(c.j)];
+        const auto vi = system.velocities()[static_cast<std::size_t>(c.i)];
+        const auto vj = system.velocities()[static_cast<std::size_t>(c.j)];
+        double dot = 0.0;
+        for (std::size_t d = 0; d < 3; ++d) dot += (ri[d] - rj[d]) * (vi[d] - vj[d]);
+        outcome.worst_tangency = std::max(outcome.worst_tangency, std::abs(dot));
+    }
+    return outcome;
+}
+
+void test_ill_conditioned_but_independent() {
+    // A thin triangle: full rank, but close enough to collinear that the
+    // Jacobian is badly conditioned. The targets are the geometry's own
+    // distances, so the projection has nothing to move and the conditioning is
+    // the only thing under test. The existing rank policy accepts such a set
+    // with a warning, so initialization must produce a finite, tangent,
+    // correctly scaled field rather than failing.
+    const std::vector<std::array<double, 3>> positions = {
+        {10.0, 10.0, 10.0}, {11.0, 10.0, 10.0}, {11.5, 10.5, 10.0}};
+    auto distance = [&](std::size_t a, std::size_t b) {
+        double sum = 0.0;
+        for (std::size_t d = 0; d < 3; ++d) {
+            const double delta = positions[a][d] - positions[b][d];
+            sum += delta * delta;
+        }
+        return std::sqrt(sum);
+    };
+    const std::vector<gmd::BondConstraint> thin = {
+        {0, 1, distance(0, 1)}, {1, 2, distance(1, 2)}, {0, 2, distance(0, 2)}};
+    // Thin, but still solvable. The triangle inequality closes to within about
+    // eight percent of the long side, which conditions the Jacobian far worse
+    // than an equilateral arrangement while staying inside what SHAKE and
+    // RATTLE can converge to at this tolerance. Squeezing it further -- 0.3
+    // percent slack, say -- makes RATTLE run out of iterations, which is the
+    // solver's own limit rather than the rank policy's and is not what this
+    // case is about.
+    const double slack = distance(0, 1) + distance(1, 2) - distance(0, 2);
+    check(slack > 0.0 && slack < 0.15 * distance(0, 2),
+          "this fixture is meant to be thin but not degenerate; slack is " +
+              number(slack) + " against a long side of " + number(distance(0, 2)));
+
+    Outcome outcome;
+    try {
+        outcome = initialize_custom(positions, {15.999, 1.008, 12.011}, thin);
+    } catch (const std::exception& error) {
+        check(false, std::string("an independent, if ill-conditioned, constraint "
+                                 "set was rejected: ") + error.what());
+        return;
+    }
+    for (const auto& [tag, v] : outcome.velocities_by_tag) {
+        for (std::size_t d = 0; d < 3; ++d) {
+            check(std::isfinite(v[d]),
+                  "atom " + std::to_string(tag) + " has a non-finite velocity under "
+                  "an ill-conditioned constraint set");
+        }
+    }
+    std::cout << "  ill-conditioned triangle     dof=" << outcome.authoritative_dof
+              << "  |r.v|=" << std::scientific << std::setprecision(3)
+              << outcome.worst_tangency << "  T=" << std::fixed
+              << std::setprecision(6) << outcome.temperature << std::defaultfloat
+              << " K\n";
+    check(outcome.authoritative_dof == 3 * outcome.atom_count - 3 - 3,
+          "a thin but independent triangle should still remove three degrees of "
+          "freedom; dof is " + std::to_string(outcome.authoritative_dof));
+    check(outcome.worst_tangency < 1.0e-9,
+          "ill-conditioned but independent: worst |r.v| is " +
+              number(outcome.worst_tangency));
+    check(std::abs(outcome.temperature / kTargetTemperature - 1.0) < 1.0e-10,
+          "ill-conditioned but independent: the field carries " +
+              number(outcome.temperature) + " K");
+}
+
+void test_storage_permutation_is_invariant() {
+    // The rank-independent RNG guarantee must survive the constraint work.
+    // Velocities are compared by TAG, and the constraint list is expressed in
+    // tags, so permuting storage changes nothing physical.
+    const Outcome ordered = initialize_waters(3);
+
+    gmd::System system;
+    const auto constraints = water_fixture(system, 3, 200.0);
+    // Reverse the storage while keeping each atom's tag, mass and position.
+    const std::size_t n = system.num_local_atoms();
+    std::vector<std::array<double, 3>> positions(n);
+    std::vector<double> masses(n);
+    std::vector<int> tags(n);
+    for (std::size_t i = 0; i < n; ++i) {
+        positions[i] = system.coordinates()[i];
+        masses[i] = system.masses()[i];
+        tags[i] = system.atom_tag(i);
+    }
+    gmd::System permuted;
+    permuted.resize(n, n);
+    permuted.set_box(system.box());
+    for (std::size_t i = 0; i < n; ++i) {
+        const std::size_t source = n - 1 - i;
+        permuted.mutable_coordinates()[i] = positions[source];
+        permuted.mutable_masses()[i] = masses[source];
+        permuted.mutable_atom_tags()[i] = tags[source];
+    }
+
+    auto integrator = std::make_shared<gmd::VelocityVerletIntegrator>(1.0);
+    integrator->set_constraint_solver(
+        std::make_shared<gmd::ConstraintSolver>(constraints, tight_settings()));
+    auto initializer = std::make_shared<gmd::VelocityInitializer>(kSeed);
+    NullForceProvider provider;
+    gmd::RuntimeContext runtime;
+    gmd::Simulation simulation(&permuted);
+    simulation.set_velocity_initializer(initializer);
+    simulation.set_velocity_init_mode(gmd::VelocityInitMode::Random);
+    simulation.set_initial_temperature(kTargetTemperature);
+    simulation.set_remove_center_of_mass_velocity(true);
+    simulation.set_force_provider(
+        std::shared_ptr<gmd::ForceProvider>(&provider, [](gmd::ForceProvider*) {}));
+    simulation.set_integrator(integrator);
+    simulation.set_time_step(1.0);
+    simulation.initialize(runtime);
+
+    double worst = 0.0;
+    for (std::size_t i = 0; i < permuted.num_local_atoms(); ++i) {
+        const auto v = permuted.velocities()[i];
+        const auto& reference = ordered.velocities_by_tag.at(permuted.atom_tag(i));
+        for (std::size_t d = 0; d < 3; ++d) {
+            worst = std::max(worst, std::abs(v[d] - reference[d]));
+        }
+    }
+    std::cout << "  storage permutation, by tag  " << std::scientific
+              << std::setprecision(3) << worst << std::defaultfloat << '\n';
+    // The projection is iterative and its per-atom corrections are accumulated
+    // in storage order, so the bound is that solver tolerance rather than the
+    // pure reduction round-off the unconstrained case achieves.
+    check(worst < 1.0e-11,
+          "permuting storage changed the constrained velocity field by " +
+              number(worst) + " when compared by atom tag");
+}
+
+// --- reported for the record ----------------------------------------------
 
 void report_constrained_temperature_error() {
     std::cout << "  molecules   atoms  constraints   dof(auth)  dof(3N-3)   "
@@ -356,9 +634,9 @@ void report_constrained_temperature_error() {
                   << std::setw(16) << std::scientific << std::setprecision(4)
                   << relative << std::defaultfloat << '\n';
     }
-    // Reported, not asserted. What IS asserted is that the fixture actually
-    // exercises the disagreement: if the two DOF counts ever coincided here the
-    // characterization would be vacuous.
+    // What is asserted is that the fixture still exercises the disagreement
+    // between the two DOF counts; the values themselves are printed so a
+    // regression is legible next to the numbers this replaced.
     const Outcome outcome = initialize_waters(3);
     check(outcome.authoritative_dof < outcome.naive_dof,
           "the constrained fixture no longer distinguishes the two DOF counts");
@@ -375,6 +653,12 @@ int main() {
     test_velocities_are_tangent_and_momentum_free();
     test_zero_temperature_is_exact();
     test_redundant_constraints_are_rejected();
+    test_constrained_temperature_is_exact();
+    test_single_distance_constraint();
+    test_disconnected_components();
+    test_constraints_and_com_removal_do_not_double_subtract();
+    test_ill_conditioned_but_independent();
+    test_storage_permutation_is_invariant();
     report_constrained_temperature_error();
 
     if (failures == 0) {
