@@ -1,5 +1,7 @@
 #pragma once
 
+#include "gmd/core/physical_constants.hpp"
+
 #include <array>
 #include <cstdint>
 #include <filesystem>
@@ -142,13 +144,23 @@ struct RunConfig {
 	// Thermostat.  Empty string means NVE (no temperature coupling).
 	// Supported values: "velocity_rescaling", "nose_hoover".
 	std::string thermostat_type = "";
-	double      thermostat_tau  = 100.0;   // Nosé-Hoover coupling time [fs]
+	// Nosé-Hoover coupling time. Two fields for one quantity, exactly as
+	// time_step / time_step_fs: the _fs value is what the user wrote and what
+	// the CLI prints, and the unsuffixed one is what the thermostat consumes.
+	// The thermostat integrates its friction variable with the run's dt, which
+	// is in internal units, so a tau in femtoseconds would not be comparable
+	// with it -- which is what used to happen.
+	double      thermostat_tau_fs = 100.0;  // Nosé-Hoover coupling time [fs]
+	double      thermostat_tau  = 100.0 * kInternalTimePerFemtosecond;  // [internal]
 
 	// Barostat.  Empty string means no pressure coupling.
 	// Supported values: "berendsen", "monte_carlo".
 	std::string   barostat_type    = "";
 	double        target_pressure  = 1.0;    // target pressure [bar]
-	double        barostat_tau     = 2000.0; // pressure bath relaxation time [fs] (Berendsen)
+	// Berendsen pressure-bath relaxation time; same two-field arrangement and
+	// the same reason -- it is divided into the run's dt.
+	double        barostat_tau_fs  = 2000.0; // [fs]
+	double        barostat_tau     = 2000.0 * kInternalTimePerFemtosecond;  // [internal]
 	double        compressibility  = 4.5e-5; // isothermal compressibility [1/bar]  (Berendsen)
 	std::uint32_t mc_frequency     = 25;     // attempt volume move every N steps   (MC)
 	double        mc_volume_step   = 0.01;   // initial max |Δ ln V| for trial moves (MC)

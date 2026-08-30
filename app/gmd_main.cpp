@@ -596,7 +596,7 @@ int main(int argc, char** argv)
             thermostat = tstat;
             integrator->set_thermostat(tstat);
             if (is_root_rank) {
-                std::cout << log_prefix << "Thermostat: Nose-Hoover  tau=" << run_config.thermostat_tau << " fs\n";
+                std::cout << log_prefix << "Thermostat: Nose-Hoover  tau=" << run_config.thermostat_tau_fs << " fs\n";
             }
         } else if (run_config.thermostat_type == "velocity_rescaling") {
             auto tstat = std::make_shared<gmd::VelocityRescalingThermostat>();
@@ -617,7 +617,7 @@ int main(int argc, char** argv)
             integrator->set_target_pressure(run_config.target_pressure);
             if (is_root_rank) {
                 std::cout << log_prefix << "Barostat: Berendsen  P=" << run_config.target_pressure
-                          << " bar  tau=" << run_config.barostat_tau << " fs\n";
+                          << " bar  tau=" << run_config.barostat_tau_fs << " fs\n";
             }
         } else if (run_config.barostat_type == "monte_carlo") {
             if (nprocs > 1) {

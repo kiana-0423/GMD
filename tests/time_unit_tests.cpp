@@ -614,21 +614,63 @@ double measure_berendsen_tau_fs(double requested_tau, double time_unit_fs) {
     return tau_used_internal * time_unit_fs;
 }
 
-void report_relaxation_time_scales() {
-    // Measured and reported here, not asserted. The audit commit establishes the
-    // measurement; the commit that converts these times is the one that pins
-    // them, so that no commit in this series is red.
-    const double requested = 100.0;
-    const double nose_hoover =
-        measure_nose_hoover_tau_fs(requested, kReferenceInternalTimeUnitFs);
-    const double berendsen =
+// A relaxation time asked for in femtoseconds must be honoured in femtoseconds.
+//
+// Both measurements take the tau a RunConfig would hand the object -- that is,
+// already converted -- and recover the tau the object actually acted on. The
+// two must agree with what the user asked for, in femtoseconds.
+
+void test_nose_hoover_relaxation_time_is_in_femtoseconds() {
+    for (double requested_fs : {10.0, 100.0, 2500.0}) {
+        // What config_loader now passes to the thermostat.
+        const double internal = requested_fs * gmd::kInternalTimePerFemtosecond;
+        const double effective =
+            measure_nose_hoover_tau_fs(internal, kReferenceInternalTimeUnitFs);
+        check(relative_difference(effective, requested_fs) < 1.0e-12,
+              "a Nose-Hoover thermostat asked for tau = " + number(requested_fs) +
+                  " fs relaxes on " + number(effective) + " fs");
+    }
+
+    // Named explicitly: the failure this replaces was tau reaching the
+    // thermostat in femtoseconds while its friction integrated against a dt in
+    // internal units, which made every requested tau T times too long.
+    const double unconverted =
+        measure_nose_hoover_tau_fs(100.0, kReferenceInternalTimeUnitFs);
+    check(relative_difference(unconverted, 100.0) > 1.0,
+          "passing tau straight through in femtoseconds still produces a "
+          "100 fs relaxation, so this fixture no longer detects the defect");
+    check(relative_difference(unconverted, 100.0 * kReferenceInternalTimeUnitFs) < 1.0e-9,
+          "an unconverted tau should behave as T times too long; it measured " +
+              number(unconverted) + " fs rather than " +
+              number(100.0 * kReferenceInternalTimeUnitFs));
+}
+
+void test_berendsen_relaxation_time_is_in_femtoseconds() {
+    for (double requested_fs : {200.0, 2000.0, 50000.0}) {
+        const double internal = requested_fs * gmd::kInternalTimePerFemtosecond;
+        const double effective =
+            measure_berendsen_tau_fs(internal, kReferenceInternalTimeUnitFs);
+        check(relative_difference(effective, requested_fs) < 1.0e-9,
+              "a Berendsen barostat asked for tau = " + number(requested_fs) +
+                  " fs couples on " + number(effective) + " fs");
+    }
+
+    const double unconverted =
         measure_berendsen_tau_fs(2000.0, kReferenceInternalTimeUnitFs);
-    std::cout << "  Nose-Hoover tau requested " << number(requested)
-              << " fs, effective " << number(nose_hoover) << " fs  (ratio "
-              << number(nose_hoover / requested) << ")\n";
-    std::cout << "  Berendsen   tau requested " << number(2000.0)
-              << " fs, effective " << number(berendsen) << " fs  (ratio "
-              << number(berendsen / 2000.0) << ")\n";
+    check(relative_difference(unconverted, 2000.0 * kReferenceInternalTimeUnitFs) < 1.0e-9,
+          "an unconverted Berendsen tau should behave as T times too long; it "
+          "measured " + number(unconverted) + " fs");
+}
+
+void report_relaxation_time_scales() {
+    const double nose_hoover = measure_nose_hoover_tau_fs(
+        100.0 * gmd::kInternalTimePerFemtosecond, kReferenceInternalTimeUnitFs);
+    const double berendsen = measure_berendsen_tau_fs(
+        2000.0 * gmd::kInternalTimePerFemtosecond, kReferenceInternalTimeUnitFs);
+    std::cout << "  Nose-Hoover tau requested 100 fs, effective "
+              << number(nose_hoover) << " fs\n";
+    std::cout << "  Berendsen   tau requested 2000 fs, effective "
+              << number(berendsen) << " fs\n";
 }
 
 // --- the production conversion must be the authoritative one ---------------
@@ -698,6 +740,8 @@ int main() {
     test_harmonic_convergence_is_second_order();
     test_trajectory_time_column_is_passed_through_in_femtoseconds();
     test_production_conversion_matches_the_reference();
+    test_nose_hoover_relaxation_time_is_in_femtoseconds();
+    test_berendsen_relaxation_time_is_in_femtoseconds();
     report_relaxation_time_scales();
     report_production_constant();
 
