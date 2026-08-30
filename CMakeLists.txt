@@ -599,6 +599,25 @@ if(BUILD_TESTING)
                     TIMEOUT 120)
         endforeach()
 
+        # The Berendsen trajectory compared across rank counts. The serial case
+        # runs through run_validation.py without MPI; this one calls the
+        # analyzer directly so it can pass --mpiexec, which turns the
+        # serial/MPI comparison on. It was report-only until the velocity
+        # initializer became rank independent; now the logs agree bit for bit.
+        add_test(
+            NAME gmd_mpi_berendsen_npt_equivalence
+            COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/validation/berendsen_npt_lj/analyze.py
+                    --gmd $<TARGET_FILE:gmd>
+                    --work-dir ${CMAKE_CURRENT_BINARY_DIR}/tests/berendsen_npt_mpi
+                    --mpiexec ${MPIEXEC_EXECUTABLE}
+        )
+        set_tests_properties(gmd_mpi_berendsen_npt_equivalence
+            PROPERTIES
+                LABELS "mpi;parallel;integration;integrator;validation"
+                PROCESSORS 4
+                TIMEOUT 300)
+
         # The same by-tag field comparison the unconstrained case gets, driven
         # against the constrained emitter.
         add_test(

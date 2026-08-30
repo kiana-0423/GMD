@@ -1,6 +1,7 @@
 {
-  "volume_ratio_abs": 0.02,
-  "temperature_mean_abs": 100.0,
+  "min_volume_response": 0.03,
   "pressure_mean_abs": 1400.0,
-  "min_volume_response": 0.03
+  "serial_mpi_state_abs": 1e-12,
+  "temperature_mean_abs": 100.0,
+  "volume_ratio_abs": 0.02
 }
