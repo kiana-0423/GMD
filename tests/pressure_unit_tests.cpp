@@ -354,6 +354,19 @@ double proposed_ln_volume_ratio(std::size_t atom_count, double box_length) {
     barostat.apply(system, provider, runtime, 0, 1.0, kBarostatTemperature,
                    -1.0e12, 0.0);
     const double after = system.box().lengths[0];
+    if (after == before) {
+        // Rejected. With dU = 0 and a target that large and negative, the only
+        // way w can be positive is for the pressure-work term to enter with the
+        // wrong sign -- which is a real finding, and one worth reporting here
+        // rather than letting it become a division by a zero volume change and
+        // a downstream NaN.
+        check(false,
+              "the MC barostat rejected a volume move at a target pressure of "
+              "-1e12 bar. With no energy change, the pressure-work term is the "
+              "only thing that can oppose it, so it is entering the Metropolis "
+              "weight with the wrong sign");
+        return 0.0;
+    }
     return 3.0 * std::log(after / before);
 }
 
