@@ -1000,7 +1000,7 @@ ConstraintSolver::ConstraintSolver(std::vector<BondConstraint> constraints,
             "): kept target distance " + std::to_string(existing) +
             ", discarded " + std::to_string(incoming.target_distance) +
             " (differ by " + std::to_string(difference) +
-            ", within constraint tolerance " + std::to_string(settings_.tolerance) + ")");
+            ", within constraint tolerance " + format_number(settings_.tolerance) + ")");
     }
 
     // Targets that no non-degenerate configuration can satisfy are rejected here,
@@ -1047,6 +1047,98 @@ ConstraintReference ConstraintSolver::capture_reference(const System& system) co
     }
     return reference;
 }
+
+namespace {
+
+// Why a converged-looking failure message is worth building carefully.
+//
+// The iteration below can stop short for two reasons that call for OPPOSITE
+// responses from the user, and the old message could not tell them apart:
+//
+//   * the residual was still coming down when the iteration limit was reached,
+//     in which case raising constraint_max_iterations fixes it. A constraint
+//     component whose geometry is close to degenerate converges linearly with a
+//     rate approaching one, so it can need thousands of sweeps while still
+//     converging perfectly well;
+//
+//   * the residual stopped improving, in which case more sweeps cannot help
+//     because the requested tolerance is below what double precision can
+//     represent for this configuration. That floor is set by the MAGNITUDE OF
+//     THE COORDINATES, not by the bond length: |r_i - r_j| is formed by
+//     subtracting two coordinates, so its absolute resolution is about
+//     eps * max|coordinate|. A fixture that converges to 1e-13 near the origin
+//     cannot reach it at all a few thousand Angstrom away.
+//
+// Neither number is used to DECIDE anything -- the convergence test is
+// unchanged and a failure is still a hard failure. They only go into the
+// message, so that the reader can tell which of the two situations they are in.
+struct ConvergenceProgress {
+    double best_error = std::numeric_limits<double>::infinity();
+    int best_iteration = 0;
+    int last_improvement_iteration = 0;
+
+    void observe(double error, int iteration) {
+        // A relative threshold, so that improvement means real progress rather
+        // than a last-digit wobble at the floor.
+        if (error < best_error * (1.0 - 1.0e-3)) {
+            last_improvement_iteration = iteration;
+        }
+        if (error < best_error) {
+            best_error = error;
+            best_iteration = iteration;
+        }
+    }
+
+    // The part of the message that says which situation this is.
+    std::string diagnosis(int max_iterations, double tolerance,
+                          const std::string& floor_note) const {
+        std::string text =
+            " Best residual " + format_number(best_error) + " at iteration " +
+            std::to_string(best_iteration) + " of " + std::to_string(max_iterations) +
+            ", against the configured tolerance " + format_number(tolerance) + ".";
+        const bool still_improving =
+            last_improvement_iteration > max_iterations - max_iterations / 4;
+        if (still_improving) {
+            text += " The residual was STILL DECREASING when the iteration limit "
+                    "was reached (last improvement at iteration " +
+                    std::to_string(last_improvement_iteration) +
+                    "), so this is an iteration-limit failure rather than a "
+                    "precision limit: raise constraint_max_iterations. Nearly "
+                    "degenerate constraint geometry -- three almost collinear "
+                    "atoms, a nearly flat ring -- is the usual reason so many "
+                    "sweeps are needed.";
+        } else {
+            text += " The residual STOPPED IMPROVING at iteration " +
+                    std::to_string(last_improvement_iteration) +
+                    ", so more iterations will not help." + floor_note;
+        }
+        return text;
+    }
+};
+
+// An order-of-magnitude estimate of the smallest distance residual that is
+// representable for these coordinates, for the message only. |r_i - r_j| is a
+// difference of coordinates, so its absolute resolution scales with their
+// magnitude rather than with the bond length.
+std::string achievable_floor_note(const std::vector<AtomRecord>& atoms) {
+    double largest = 0.0;
+    for (const auto& atom : atoms) {
+        for (std::size_t dim = 0; dim < 3; ++dim) {
+            largest = std::max(largest, std::abs(atom.coordinate[dim]));
+        }
+    }
+    if (!(largest > 0.0) || !std::isfinite(largest)) return "";
+    const double floor_estimate =
+        largest * std::numeric_limits<double>::epsilon();
+    return " The coordinates reach " + format_number(largest) +
+           " A, and a distance formed by subtracting coordinates of that size "
+           "resolves to about " + format_number(floor_estimate) +
+           " A in double precision, so a tolerance near or below that cannot be "
+           "reached however many iterations are allowed. Either loosen "
+           "constraint_tolerance or keep the coordinates closer to the origin.";
+}
+
+}  // namespace
 
 ConstraintProjectionStats ConstraintSolver::apply_shake(System& system) const {
     return shake_impl(system, nullptr, 0.0);
@@ -1106,6 +1198,7 @@ ConstraintProjectionStats ConstraintSolver::shake_impl(
     auto index = make_tag_index(atoms);
     const Box& box = system.box();
 
+    ConvergenceProgress progress;
     for (int iteration = 1; iteration <= settings_.max_iterations; ++iteration) {
         stats.iterations = iteration;
         stats.max_error = 0.0;
@@ -1173,6 +1266,8 @@ ConstraintProjectionStats ConstraintSolver::shake_impl(
             }
         }
 
+        progress.observe(stats.max_error, iteration);
+
         if (stats.max_error <= settings_.tolerance) {
             stats.converged = true;
             if (reference != nullptr) {
@@ -1193,9 +1288,15 @@ ConstraintProjectionStats ConstraintSolver::shake_impl(
 
     stats.converged = false;
     write_local_atoms(system, atoms);
+    // format_number, not std::to_string: the latter prints six FIXED decimals,
+    // so every residual this message can carry came out as "0.000000" -- a
+    // failure that reported an error of zero. The same reasoning is already
+    // recorded above format_number() for the rank analysis.
     throw std::runtime_error(
         "SHAKE failed to converge within " + std::to_string(settings_.max_iterations) +
-        " iterations; max bond error = " + std::to_string(stats.max_error));
+        " iterations; max bond error = " + format_number(stats.max_error) + " A." +
+        progress.diagnosis(settings_.max_iterations, settings_.tolerance,
+                           achievable_floor_note(atoms)));
 }
 
 ConstraintProjectionStats ConstraintSolver::apply_rattle(System& system) const {
@@ -1243,6 +1344,7 @@ ConstraintProjectionStats ConstraintSolver::rattle_impl(
         lambda_sum.assign(constraints_.size(), 0.0);
     }
 
+    ConvergenceProgress progress;
     for (int iteration = 1; iteration <= settings_.max_iterations; ++iteration) {
         stats.iterations = iteration;
         stats.max_error = 0.0;
@@ -1293,6 +1395,8 @@ ConstraintProjectionStats ConstraintSolver::rattle_impl(
             }
         }
 
+        progress.observe(stats.max_error, iteration);
+
         if (stats.max_error <= settings_.tolerance) {
             stats.converged = true;
             if (virial_out != nullptr) {
@@ -1306,9 +1410,17 @@ ConstraintProjectionStats ConstraintSolver::rattle_impl(
 
     stats.converged = false;
     write_local_atoms(system, atoms);
+    // See the SHAKE failure above for why this is format_number.
+    //
+    // No coordinate-magnitude note here: RATTLE's residual |r.v|/|r| is a
+    // VELOCITY, and its floor is set by the velocity scale, not by how far the
+    // atoms sit from the origin. Offering the SHAKE floor estimate for it would
+    // be a plausible-looking number that does not apply.
     throw std::runtime_error(
         "RATTLE failed to converge within " + std::to_string(settings_.max_iterations) +
-        " iterations; max velocity constraint error = " + std::to_string(stats.max_error));
+        " iterations; max velocity constraint error = " +
+        format_number(stats.max_error) + " A per internal time unit." +
+        progress.diagnosis(settings_.max_iterations, settings_.tolerance, ""));
 }
 
 std::vector<BondConstraint> constraints_from_bond_types(
