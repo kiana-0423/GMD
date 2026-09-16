@@ -409,6 +409,24 @@ if(BUILD_TESTING)
         PROPERTIES LABELS "integration;integrator;force")
     set_tests_properties(gmd_pme_modes PROPERTIES LABELS "unit;force;pme")
 
+    # Constrained dynamics through the real CLI: a free rigid water molecule.
+    # Recomputes the constraint residuals and the virial from 17-digit
+    # checkpoint state rather than reading back the solver's own convergence
+    # flag, and checks the constraint virial against the pressure identity and
+    # against the analytic ideal-gas result for a free rigid body. A 3-atom
+    # system over a few hundred steps; fast enough to gate on.
+    add_test(
+        NAME gmd_validation_constrained_nve
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/validation/run_validation.py
+                --case constrained_nve_water
+                --gmd $<TARGET_FILE:gmd>
+                --gmd-validate $<TARGET_FILE:gmd_validate>
+                --work-root ${CMAKE_CURRENT_BINARY_DIR}/validation
+    )
+    set_tests_properties(gmd_validation_constrained_nve
+        PROPERTIES LABELS "validation;integration;integrator;constraints;restart")
+
     add_test(
         NAME gmd_validation_static_lj_cluster
         COMMAND ${Python3_EXECUTABLE}
@@ -478,6 +496,17 @@ if(BUILD_TESTING)
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_CURRENT_SOURCE_DIR}/validation/run_validation.py
                 --case short
+                --gmd $<TARGET_FILE:gmd>
+                --gmd-validate $<TARGET_FILE:gmd_validate>
+                --work-root ${CMAKE_CURRENT_BINARY_DIR}/validation
+        DEPENDS gmd gmd_validate
+        USES_TERMINAL
+    )
+
+    add_custom_target(gmd_validation_constrained
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/validation/run_validation.py
+                --case constrained
                 --gmd $<TARGET_FILE:gmd>
                 --gmd-validate $<TARGET_FILE:gmd_validate>
                 --work-root ${CMAKE_CURRENT_BINARY_DIR}/validation

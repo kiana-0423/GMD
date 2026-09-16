@@ -1,0 +1,30 @@
+{
+  "_comment": "Every bound here is derived from a measurement, not chosen for convenience. See README.md, section 'Tolerance derivation', for the reasoning and the observed value behind each one.",
+
+  "position_residual_abs_a": 2e-10,
+  "velocity_residual_abs_internal": 2e-10,
+
+  "initial_projection_xyz_abs_a": 5e-06,
+  "log_residual_column_bound_a": 1e-06,
+
+  "energy_drift_per_atom_ps_abs": 1e-08,
+  "momentum_rel": 1e-11,
+  "angular_momentum_rel": 1e-10,
+  "com_trajectory_abs_a": 1e-09,
+
+  "virial_symmetry_abs": 1e-15,
+  "virial_offdiagonal_min_abs": 1e-05,
+  "pressure_identity_rel": 1e-12,
+  "rotational_cancellation_abs": 5e-07,
+  "analytic_pressure_rel": 5e-06,
+
+  "wrapped_scalar_abs": 1e-09,
+  "wrapped_virial_abs": 1e-09,
+
+  "restart_position_abs_a": 1e-12,
+  "restart_velocity_abs_a_per_fs": 1e-12,
+  "restart_virial_abs": 1e-14,
+
+  "mpi_position_abs_a": 1e-12,
+  "mpi_virial_abs": 1e-14
+}
