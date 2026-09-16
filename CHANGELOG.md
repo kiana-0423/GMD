@@ -4,6 +4,67 @@ All notable user-facing changes in GMD are documented here.
 
 ## [Unreleased]
 
+### Constraint-rank fallback and tie-breaking coverage
+
+Three review gaps closed. No production behaviour changed: these are tests, a
+workflow, and documentation of rules that were already in force.
+
+**The rank fallback is now exercised end to end.** `analyze_independence()`
+decides HOW MANY constraint rows are redundant from the singular values, and
+WHICH ones from a pivoted Gram–Schmidt selection, then cross-checks the two;
+when they disagree the component cannot say which rows are redundant and falls
+back to naming its whole membership. That branch was previously covered only by
+assembling a `ConstraintRankReport` by hand, which cannot show the pipeline ever
+reaches it.
+
+A NATURAL FIXTURE EXISTS, so no test seam was added. Four atoms with all six
+pairwise distances constrained are exactly rigid at a generic geometry; make
+them coplanar and the Cayley–Menger determinant relating six distances of four
+coplanar points vanishes, dropping the rank to 5. Sweeping the out-of-plane
+height carries the smallest singular value continuously through the rank
+tolerance, and in that crossing the two methods disagree. The band is roughly
+`h ∈ [2.6e-15, 4.4e-15]`; the test sweeps it and requires a hit rather than
+pinning one value.
+
+A near-collinear fixture cannot reach this branch: three mutually constrained
+near-collinear atoms are rejected at construction by the degenerate-target
+check, which works on target distances alone.
+
+The fallback never changes accept/reject — `require_independent()` rejects any
+rank-deficient set regardless — and a rejected initialization leaves no velocity
+field, thermostat state or rank report behind, which is now asserted.
+
+**The relative near-tie window is now proven necessary.** Ties in the pivot
+selection are broken by the canonical atom pair, within a relative window
+`cutoff = best_norm * (1 - sqrt(eps))`. The existing symmetric fixtures are
+axis-aligned, so their tied norms are BIT-IDENTICAL and an absolute criterion
+agrees with a relative one — they could not show the window matters.
+
+A generically rotated square with unequal masses does: four columns sit within
+1.2e-16 to 3.7e-16 of the leader, non-zero but eight orders below `sqrt(eps)`.
+Restoring the old absolute `1e-300` criterion makes 14 checks fail, each naming
+the physical constraint picked instead — `(2,3)` becomes `(1,3)`, and uniform
+coordinate scaling moves it again to `(0,1)` and `(1,2)`. Scaling is the
+sharpest case: norms and the rank tolerance scale together, so a relative rule
+is invariant by construction and an absolute one is not.
+
+The negative direction is covered too: four irregular coplanar quadrilaterals
+whose norms differ by far more than `sqrt(eps)` must keep naming the
+magnitude-decided answer, so a window widened enough to swallow real
+differences fails.
+
+**Full MPI Validation was audited and repaired.** It was already free of a
+stale `-R` filter, but was missing the Open MPI 5.x oversubscription variable
+that the PR job sets, a timeout, least-privilege `permissions`, and
+`concurrency`; it uploaded logs on `always()` rather than on failure, and ran
+`--verbose` alongside `--output-on-failure`. A registration guard was added that
+fails loudly if any expected test is not selected — the failure mode this
+workflow must not have is silently running less than it claims — plus a totals
+report into the job summary.
+
+Note that the workflow is `disabled_inactivity` on GitHub. Editing the file does
+not re-enable a scheduled workflow; that is a separate API/UI action.
+
 ### Strict-tolerance SHAKE/RATTLE convergence audit
 
 `tests/constraint_convergence_audit.py` reproduces and maps the reported case
