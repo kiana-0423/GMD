@@ -135,6 +135,8 @@ if(BUILD_TESTING)
     target_link_libraries(gmd_nose_hoover_restart_tests PRIVATE gmd_core)
     add_executable(gmd_constraint_validation_tests tests/constraint_validation_tests.cpp)
     target_link_libraries(gmd_constraint_validation_tests PRIVATE gmd_core)
+    add_executable(gmd_constraint_rank_fallback_tests tests/constraint_rank_fallback_tests.cpp)
+    target_link_libraries(gmd_constraint_rank_fallback_tests PRIVATE gmd_core)
     add_executable(gmd_bonded_force_gradient_tests tests/bonded_force_gradient_tests.cpp)
     target_link_libraries(gmd_bonded_force_gradient_tests PRIVATE gmd_core)
     add_executable(gmd_constraint_virial_tests tests/constraint_virial_tests.cpp)
@@ -287,6 +289,14 @@ if(BUILD_TESTING)
     set_tests_properties(gmd_nose_hoover_restart PROPERTIES LABELS "unit;integrator;restart")
     add_test(NAME gmd_constraint_validation COMMAND gmd_constraint_validation_tests)
     set_tests_properties(gmd_constraint_validation PROPERTIES LABELS "unit;integrator")
+
+    # The rank-analysis FALLBACK, driven end to end rather than by assembling a
+    # ConstraintRankReport by hand: four near-coplanar atoms with all six pair
+    # distances constrained, swept through the band where the pivoted rank
+    # selection and the singular values disagree.
+    add_test(NAME gmd_constraint_rank_fallback COMMAND gmd_constraint_rank_fallback_tests)
+    set_tests_properties(gmd_constraint_rank_fallback
+        PROPERTIES LABELS "unit;integrator;constraints")
     add_test(NAME gmd_bonded_force_gradient COMMAND gmd_bonded_force_gradient_tests)
     set_tests_properties(gmd_bonded_force_gradient PROPERTIES LABELS "unit;force;validation")
     add_test(NAME gmd_constraint_virial COMMAND gmd_constraint_virial_tests)
@@ -583,6 +593,8 @@ if(BUILD_TESTING)
         target_link_libraries(gmd_mpi_constraint_virial_tests PRIVATE gmd_core)
         add_executable(gmd_mpi_constraint_independence_tests tests/mpi_constraint_independence.cpp)
         target_link_libraries(gmd_mpi_constraint_independence_tests PRIVATE gmd_core)
+        add_executable(gmd_mpi_constraint_rank_fallback_tests tests/mpi_constraint_rank_fallback.cpp)
+        target_link_libraries(gmd_mpi_constraint_rank_fallback_tests PRIVATE gmd_core)
         add_executable(gmd_mpi_virial_sources_tests tests/mpi_virial_sources.cpp)
         target_link_libraries(gmd_mpi_virial_sources_tests PRIVATE gmd_core)
         add_executable(gmd_mpi_boltzmann_constant_tests
@@ -860,6 +872,25 @@ if(BUILD_TESTING)
                 PROPERTIES
                     LABELS "mpi;parallel;integrator"
                     PROCESSORS ${independence_np})
+        endforeach()
+
+        # The FALLBACK and the near-tie SELECTION must be collective decisions
+        # too. The fixture straddles the x = 10 and y = 10 domain boundaries, and
+        # a second one is confined to a single octant so that at 2 and 4 ranks
+        # some rank owns no atoms and still has to reach the same verdict. A rank
+        # deciding on its own shows up as a disagreement in the allreduce, or as
+        # some ranks throwing while others do not -- the shape of a deadlock.
+        foreach(rank_fallback_np 1 2 4)
+            add_test(
+                NAME gmd_mpi_constraint_rank_fallback_${rank_fallback_np}proc
+                COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${rank_fallback_np}
+                        $<TARGET_FILE:gmd_mpi_constraint_rank_fallback_tests>
+            )
+            set_tests_properties(gmd_mpi_constraint_rank_fallback_${rank_fallback_np}proc
+                PROPERTIES
+                    LABELS "mpi;parallel;integrator;constraints"
+                    PROCESSORS ${rank_fallback_np}
+                    TIMEOUT 120)
         endforeach()
 
         # Same fixture at 1, 2 and 4 ranks: the constraint virial must come out
