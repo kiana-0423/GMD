@@ -443,6 +443,25 @@ if(BUILD_TESTING)
     set_tests_properties(gmd_validation_constrained_nvt
         PROPERTIES LABELS "validation;integration;integrator;constraints;restart")
 
+    # The strict-tolerance SHAKE/RATTLE convergence audit. Maps the boundary at
+    # which a configured tolerance stops being reachable and separates the two
+    # causes: an insufficient iteration limit, against the floating-point floor
+    # -- which scales with COORDINATE magnitude, not with bond length.
+    # Cross-checks the production iteration against an exact rational RATTLE
+    # solve and a 60-digit Newton SHAKE solve, neither of which uses the
+    # production solver. Also the regression coverage for the failure-message
+    # fix: the old std::to_string formatting printed every one of these
+    # residuals as "0.000000", and three of these checks fail against it.
+    add_test(
+        NAME gmd_constraint_convergence_audit
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/constraint_convergence_audit.py
+                --gmd $<TARGET_FILE:gmd>
+                --work-dir ${CMAKE_CURRENT_BINARY_DIR}/tests/constraint_convergence_audit
+    )
+    set_tests_properties(gmd_constraint_convergence_audit
+        PROPERTIES LABELS "integration;integrator;constraints;validation")
+
     add_test(
         NAME gmd_validation_static_lj_cluster
         COMMAND ${Python3_EXECUTABLE}
