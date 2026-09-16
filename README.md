@@ -20,6 +20,8 @@ GMD is a C++20 molecular dynamics engine built around a small set of composable 
 | **Special-pair / 1-4 scaling validation** — topology-derived 1-2/1-3 exclusions and 1-4 LJ/Coulomb scaling are documented as analytic-validation covered | `include/gmd/system/special_pair_map.hpp` `validation/static_special_pairs/` |
 | **SHAKE/RATTLE and checkpoint/restart status corrected** — both are documented as tested features, with MPI constraint and checkpoint scalability limits called out | `README.md` `tests/restart_continuity.py` `tests/constraint_solver_tests.cpp` |
 | **Independent external PME validation** — replicated PME is now compared against OpenMM PME and LAMMPS PPPM on a Coulomb-only fixture, with a convergence study showing all three codes approaching the same exact Ewald limit | `validation/pme_external/` |
+| **Constrained dynamics validation on the production path** — the first checked-in validation cases that use constraints: a force-free rigid water molecule checked against analytic rigid-body results, and four interacting rigid molecules under Nosé–Hoover, both through the real CLI at np = 1, 2, 4 | `validation/constrained_nve_water/` `validation/constrained_nvt_cluster/` `validation/constrained_common.py` |
+| **Strict-tolerance SHAKE/RATTLE convergence audit** — maps where a configured tolerance stops being reachable and separates an insufficient iteration limit from the floating-point floor, which scales with coordinate magnitude rather than bond length | `tests/constraint_convergence_audit.py` |
 | **Release evidence tooling** — collect serial/MPI configure, build, CTest, validation summaries, and environment info without touching existing build dirs | `scripts/collect_release_logs.sh` `docs/release_logs/README.md` |
 | **Manual/nightly full MPI CI** — full MPI CTest workflow separate from ordinary PR CI | `.github/workflows/full-mpi.yml` |
 
@@ -207,9 +209,11 @@ strides tags by **one**, so every molecule is split and every constraint spans
 ranks; at np=4 a rank owns nothing; a dependent set is rejected on *every* rank,
 with a timeout so a hang fails rather than stalls.
 
-**Baselines do not move.** No validation case uses constraints, so all ten
-reproduce bit-for-bit. Constrained runs themselves do change — that is the
-point.
+**Baselines do not move.** No validation case used constraints at the time of
+that change, so all ten reproduced bit-for-bit. Constrained runs themselves do
+change — that is the point. (Two validation cases *do* use constraints as of
+the constrained-dynamics validation below; they were added afterwards and
+carry their own baselines.)
 
 **Restart** is unaffected: a restart does not install the velocity initializer
 at all.
