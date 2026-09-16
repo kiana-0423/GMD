@@ -4,6 +4,61 @@ All notable user-facing changes in GMD are documented here.
 
 ## [Unreleased]
 
+### Strict-tolerance SHAKE/RATTLE convergence audit
+
+`tests/constraint_convergence_audit.py` reproduces and maps the reported case
+of a rigid triangle "about 0.3% off its target geometry exhausting RATTLE at
+`constraint_tolerance 1e-13`".
+
+**The reported attribution is wrong: the slack is incidental.** Sweeping slack,
+timestep, tolerance, iteration limit, mass ratio and orientation, failures are
+spread evenly across slack and concentrated entirely on **geometry**. A
+well-shaped triangle at 0.3% slack reaches 1e-13 without difficulty.
+
+**No defect was found in the solver's numerics**, and two independent
+references say so — neither using the production solver to produce its own
+expected answer. RATTLE is linear in the multipliers at fixed geometry, so it
+is solved here in closed form by Gaussian elimination in **exact rational
+arithmetic**; the production iteration agrees with it, and its distance from
+the exact answer scales as `1/h` in the triangle's height, which is the
+conditioning amplification a correct iteration on a near-degenerate Jacobian
+must show. SHAKE, being quadratic, is solved by **60-digit Newton iteration**.
+
+Two mechanisms make a strict tolerance unreachable, and they want **opposite**
+remedies:
+
+| | cause | remedy |
+|---|---|---|
+| **Category 2** | sweeps needed grow ~`1/h²` as a triangle approaches collinearity; convergence continues | raise `constraint_max_iterations` — every case failing at 500 converged at 4000 |
+| **Category 1** | `\|r_i − r_j\|` is a **difference of coordinates**, so its resolution is ~`eps·max\|coordinate\|`, not `eps·bond_length` | loosen `constraint_tolerance`, or keep coordinates near the origin |
+
+The identical fixture converges to 1e-13 at 10 Å from the origin and cannot
+reach it at 20000 Å at any iteration count.
+
+**No convergence decision, tolerance or residual bound was changed.** The one
+production change is the failure message, below.
+
+### Constraint failures reported "max bond error = 0.000000"
+
+`std::to_string` is six **fixed** decimals, so every residual a
+strict-tolerance failure could carry — 1e-13, 1e-11, 1e-8 — printed as
+`0.000000`. The solver reported an error of exactly zero while refusing to
+converge. `src/integrator/constraint_solver.cpp` had already diagnosed this for
+its rank analysis, which is why `format_number()` exists there; the SHAKE and
+RATTLE failure paths had simply never been moved over. The
+tolerance-equivalent-duplicate diagnostic printed the tolerance itself the same
+way.
+
+Worse than unreadable, it could not distinguish the two categories above, whose
+remedies are opposite. A failure now reports the best residual and where it
+stopped improving, and says which case it is; a stalled SHAKE additionally
+quotes the coordinate magnitude and the resolution it implies. **RATTLE
+deliberately does not** quote that estimate: its residual is a velocity, whose
+floor is set by the velocity scale rather than by distance from the origin.
+
+Diagnostics only — a failure is still a hard failure, and every rank builds the
+identical message from already-replicated state, so it stays collective.
+
 ### ⚠️ Simulation-results-changing corrections
 
 - **Constrained runs started at the wrong temperature.** A single rigid water
@@ -653,6 +708,46 @@ but unfaithful trajectory, which is worse than stopping. Restart from the input
 instead.
 
 ### Added
+
+- **Constrained dynamics validation on the production path.**
+  `validation/constrained_nve_water/` and `validation/constrained_nvt_cluster/`
+  are the first checked-in validation cases that use constraints. Both run
+  through the real `gmd` CLI; neither calls the constraint solver directly.
+  Registered in CTest serially and at np = 1, 2 and 4, and in
+  `validation/run_validation.py --case constrained`.
+
+  **Residuals are recomputed, not read back.** The `output.log` residual
+  columns are `%.6f`, so a 1e-13 error and a 1e-7 error both print as
+  `0.000000`; constraint satisfaction to 1e-10 cannot be validated from the log
+  at all. The checks instead recompute `||r_ij| − d_ij|` and
+  `|r_ij·v_ij|/|r_ij|` from 17-digit checkpoint state — an independent
+  measurement of what the production path produced, rather than a read-back of
+  the solver's own convergence flag.
+
+  `constrained_nve_water` is one rigid water molecule, alone in the cell with
+  every intramolecular pair excluded at zero force constant, so it feels **no
+  force at all**. A free rigid body's motion is analytically known, so most of
+  this case is checked against mechanics rather than a previous GMD run:
+  energy, linear momentum and angular momentum exactly conserved, the centre of
+  mass on a straight line, and — the sharpest — the constraint virial
+  cancelling the **rotational** kinetic energy so that the reported pressure
+  collapses to the ideal-gas value `M|v_com|²/3V`, matched to 2.4e-07 relative.
+  That single identity pins the constraint virial's magnitude (the 2/dt
+  endpoint factor), its sign and its time level at once.
+
+  `constrained_nvt_cluster` is four **interacting** rigid molecules under
+  Nosé–Hoover, so the provider virial is genuinely non-zero and the
+  completed-step virial is a sum of two independently produced tensors at the
+  same time level. It asserts the authoritative constrained DOF
+  (`3N − constraints − 3 = 21`, against the unconstrained 33), the initial
+  temperature landing exactly on the target, restart continuity including the
+  restored completed-step pressure, and serial/MPI agreement. Two molecules
+  straddle rank boundaries and one rank owns no atoms at np=4.
+
+  Each fixture starts off its target distances and with a non-tangent velocity
+  component, so the initial projections do real work; the wrapped variant is
+  placed to be **genuinely straddling a periodic face at the step the checks
+  look at**, which the case asserts rather than assumes.
 
 - **Boltzmann constant audit** `tests/boltzmann_constant_tests.cpp` and
   `tests/mpi_boltzmann_constant.cpp`. Neither reads a production constant: the

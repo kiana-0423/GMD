@@ -1,0 +1,26 @@
+# Rigid-water-like force field for the constrained NVE validation case.
+#
+# Units follow the GMD molecular .ff convention (see src/io/config_loader.cpp):
+# energies in kcal/mol, distances in Angstrom, angles in degrees.
+#
+# THE FORCE CONSTANTS ARE DELIBERATELY ZERO.
+#
+# The bonds and the angle are declared ONLY so that the special-pair map excludes
+# every intramolecular non-bonded pair: the two O-H bonds give the 1-2
+# exclusions and the H-O-H angle gives the 1-3 exclusion between the hydrogens.
+# With k = 0 they contribute no force and no energy, so the molecule -- alone in
+# the cell -- is exactly force free. Its geometry is held entirely by the three
+# distance constraints, which is what this case exists to validate.
+#
+# A free rigid body has analytically known motion, so the checks in analyze.py
+# compare against conservation laws rather than only against a previous GMD run.
+force_field molecular
+
+lj_cutoff 8.0
+
+type 1 O mass 15.9994 epsilon 0.1521 sigma 3.1507 charge 0.0
+type 2 H mass 1.0080  epsilon 0.0460 sigma 0.4000 charge 0.0
+
+# Exclusion-only terms; see above.
+bond_type 1 k 0.0 r0 0.9572
+angle_type 1 k 0.0 theta0 104.52

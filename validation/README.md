@@ -317,6 +317,162 @@ W_constraint(t+dt)  = sum_c (2 Lambda_c / dt) (r_c (x) r_c)
   报错拒绝。仅在**初始构型**验证：秩与构型有关，轨迹中途退化不会被再次检查。
 - 单步内键矢量转过 ~90° 时 SHAKE 的参考梯度线性化无解，此时报硬错误并要求减小步长。
 
+## 生产路径上的约束动力学验证 case（2026-09-16）
+
+在此之前，约束体系的覆盖全部是 unit test 与 `tests/constrained_pressure_reporting.py`；
+`validation/` 下**没有任何 case 使用约束**。现补入两个走真实 `gmd` CLI 的 validation case。
+
+### 为什么残差必须从 checkpoint 重算，而不能读日志
+
+`output.log` 的残差列是 `%.6f`：**1e-13 与 1e-7 都打印成 `0.000000`**。想验证约束满足到
+1e-10，从日志里根本做不到。checkpoint 则是 17 位有效数字，且携带 tag、质量、坐标、速度、
+约束 virial 及其时间层、provider virial、完成步压强。因此两个 case 都在
+`validation/constrained_common.py` 里**重新计算**
+
+```
+位置残差  ||r_ij| - d_ij|            [A]
+速度残差  |r_ij . v_ij| / |r_ij|     [A / internal time unit]
+```
+
+这是对生产路径**实际产出**的独立测量，而不是把 solver 自己的 converged 标志读回来。
+
+**单位提醒**：GMD 的速度以内部时间单位存储（`A sqrt(amu/eV)` = 10.180505717871194 fs），
+不是 fs。`output.log` 表头把该列标成 `rattle_error[A/fs]`，**这个标注差了 10.18 倍**；
+数值本身是内部单位的。
+
+### `constrained_nve_water` — 自由刚性水分子
+
+单个刚性水分子（2 个 O-H 约束 + 1 个等价于固定 H-O-H 角的 H-H 约束），质量不等、一般性旋转、
+每个距离初始偏离目标 **+0.25%**、初速度带**非切向**分量——后两者是为了让初始 SHAKE 与 RATTLE
+投影真的有活干，否则"投影后距离等于目标"是同义反复。
+
+bonded 项力常数**全为 0**，只用于产生分子内 non-bonded exclusion；分子在盒子里独处，因此
+**完全无受力**。这是刻意的：自由刚体的运动解析已知，所以这个 case 的多数检查对的是力学而非
+上一次的 GMD 输出——能量、线动量、对质心的角动量严格守恒，质心走直线，以及最锋利的一条：
+
+> 约束 virial 恰好抵消**转动**动能，于是报告压强退化为质心的理想气体压强 `M |v_com|^2 / 3V`。
+
+实测 `2K_rot + tr W = 3.6e-08`（该量本身为 7.7e-03），压强与解析值相对差 **2.4e-07**。
+该残差随 `dt` 二阶下降（dt=1.0/0.5/0.25 → 1.2e-07 / 3.6e-08 / 1.8e-08），dt=0.125 起触及
+~2e-08 的地板。这一条同时钉住了约束 virial 的**量级（2/dt 系数）、符号与时间层**。
+
+### `constrained_nvt_cluster` — 四个相互作用的刚性分子 + Nose-Hoover
+
+12 原子、12 约束、约束图 4 个连通分量。与上一个 case 的关键区别：分子之间**真的有 LJ 相互作用**，
+因此 provider virial 非零，完成步 virial 是**两个独立产生的张量在同一时间层上的和**。
+"总 virial == provider + constraint" 这一条正是**约束项取错时间层**会失败的检查，而对着一个
+全零张量根本无法做出。
+
+权威自由度 `3N - constraints - 3 = 36 - 12 - 3 = **21**`（无约束应为 33）。这个数是承重的：
+Nose-Hoover 的 `Q = dof kB T tau^2` 由它算出，用错会热浴到错误的动能。case 直接断言该值，
+并断言初始温度**精确**落在 300 K——只有"先投影后缩放"的顺序与约束自由度两者都对时才会如此。
+
+MPI 布局是特意排的：分子 C 跨 `x = Lx/2`、分子 D 跨 `y = Ly/2`，np=2 与 np=4 下都有约束跨 rank；
+`x > Lx/2, y > Ly/2` 象限**留空**，np=4 时有一个 rank 不拥有任何原子。
+
+**MPI 容差是推导出来的，不是猜的**：domain decomposition 改变了力求和顺序，400 步后 MPI 与
+serial 的约束 virial 差 `1.03e-11`（相对最大分量 5.8e-10）；而这条容差要抓的失效——张量被按
+rank 数重复 reduce——会让 `zz` 偏 `9.6e-03`，**高九个数量级**。np=2 与 np=4 的差异**完全相同**，
+这本身就说明它是求和重排而非 rank 缩放。
+
+**明确不声称**：400 步确定性轨迹是 **dynamics / regression 覆盖，不是正则系综的统计验证**。
+温度边界是动力学边界，不是涨落定理的预言。
+
+## 严格容差下的 SHAKE/RATTLE 收敛审计（`tests/constraint_convergence_audit.py`）
+
+针对"刚性三角形偏离目标几何约 0.3% 时在 `constraint_tolerance 1e-13` 下耗尽迭代"的报告。
+
+**报告的归因不对**：0.3% 的 slack 是偶然的。在 slack / 步长 / 容差 / 迭代上限 / 质量比 / 取向
+上做扫描，失败在 slack 上**均匀分布**，而**完全集中在几何上**。形状良好的三角形在 0.3% slack 下
+收敛到 1e-13 毫无困难。
+
+**solver 的数值没有缺陷**，由两个**不使用生产 solver**的独立参考证实：
+
+- RATTLE 在固定几何下对乘子是**线性**的，因此这里用**精确有理数**（`fractions.Fraction`）
+  直接消元求闭式解。生产迭代与之一致，且**与精确解的距离按 1/h 标度**（h 为三角形的高）：
+  `err*h` 在 h 变化 25 倍的范围内恒定在 2.5 倍以内。这正是接近秩亏的 Jacobian 的条件数放大，
+  是**正确**的迭代在病态系统上应有的表现。
+- SHAKE 是二次的，用 **60 位十进制** Newton 迭代求解，其自身残差地板远低于 float64。
+
+两种机制会让严格容差不可达，**且补救方向相反**：
+
+| | 成因 | 表现 | 补救 |
+|---|---|---|---|
+| **类别 2** | 迭代上限不足 | 三角形趋于共线时所需 sweep 数约按 `1/h^2` 增长；收敛仍在继续 | 提高 `constraint_max_iterations`（扫描中 500 次失败的 case 在 4000 次全部收敛） |
+| **类别 1** | 浮点地板 | `|r_i - r_j|` 是**坐标之差**，分辨率约为 `eps * max|坐标|` 而非 `eps * 键长` | 放松 `constraint_tolerance`，或让坐标靠近原点 |
+
+类别 1 的实测：**同一个** fixture 在距原点 10 A 处收敛到 1e-13，在 20000 A 处**无论多少次迭代
+都不可达**。地板随坐标量级线性增长（坐标 ~1e3 A 时约 8.5e-14，~1e4 A 时约 1.1e-12）。
+
+类别 3/4/5/6 均被排除：两个 solver 各自的残差范数在量纲上自洽；迭代确实到达精确解；精确有理消元
+从未遇到奇异矩阵，故没有 fixture 是不可行或秩亏的；而在下述修正之前，失败**没有**被正确诊断。
+
+**关于单调性**：本审计早期曾把收敛描述为单调，这是错的，测试也不这样断言。Gauss-Seidel 在
+max 范数下不是下降法——扫描一个约束会扰动其余两个，"当前最差"在 sweep 之间来回切换，因此最差残差
+单个 sweep 内最多可上升约 1.7 倍，而求解完全正常。测试断言的是**不发散**：单 sweep 增长有界，
+且包络下降十个数量级。
+
+### 唯一的生产改动：失败诊断
+
+审计没有发现数值缺陷，因此**没有改动任何收敛判据、容差或残差界**，失败仍然是硬失败。改的是这句话：
+
+```
+Error: SHAKE failed to converge within 500 iterations; max bond error = 0.000000
+```
+
+`std::to_string` 是**六位定点**，于是严格容差失败能携带的任何残差（1e-13、1e-11、1e-8）
+**全部打印成 `0.000000`**——报告"误差恰好为零"的同时拒绝收敛。本文件其实早就为秩分析诊断过
+同一个问题（`format_number()` 就在几百行之上），只是 SHAKE / RATTLE 的失败路径一直没切过去；
+tolerance-equivalent duplicate 诊断也把容差本身打成了 `0.000000`。
+
+比不可读更糟的是：它无法区分上表那两种**补救方向相反**的情形。现在失败会记录最优残差与它停止
+改善的位置，并说明属于哪一类；停滞的 SHAKE 还会给出坐标量级与它蕴含的分辨率。RATTLE **故意不**
+给这个地板估计——它的残差 `|r.v|/|r|` 是**速度**，地板由速度尺度而非离原点的距离决定，在那里给出
+SHAKE 的数字会是一个看着合理却不适用的值。
+
+诊断所需的一切都取自已经复制到各 rank 的原子数组，因此每个 rank 构造出相同的消息，失败保持 collective。
+
+### 负控制（negative controls）
+
+在一次性 worktree 里把生产代码按下表逐条弄坏、重建、跑 validation，**要求 validation 失败**。
+控制通过（validation 仍然绿）说明该检查其实没在测它声称的东西。所有变异跑完后全部还原，
+并比对整棵树的 checksum；**变异本身从不提交**。
+
+| 变异 | 结果 | 被哪个检查抓到 |
+|---|---|---|
+| 跳过速度投影（RATTLE） | CAUGHT | `max_velocity_tangency_residual` 等 |
+| 跳过位置投影（SHAKE） | CAUGHT | `initial_target_distances_after_projection`, `energy_drift_per_atom_ps` |
+| 约束自由度退回 `3N−3` | CAUGHT | `authoritative_constrained_dof` |
+| 移除约束 virial | CAUGHT | `constraint_virial_cancels_rotational_ke`, `pressure_matches_analytic_ideal_gas_com` |
+| 约束 virial 系数错一倍（`1/dt` 而非 `2/dt`，即时间层取错时会出现的值） | CAUGHT | 同上两条 |
+| MPI 下 virial 再按 rank 数乘一遍 | CAUGHT | `mpi_agreement` |
+| 漏掉一条跨 rank 约束 | CAUGHT | `authoritative_constrained_dof`, 两个残差检查, `mpi_agreement` |
+| wrapped 坐标用错 image | CAUGHT | `wrapped_unwrapped_equivalence` |
+| solver 在超出容差时报告成功 | CAUGHT | `per_frame_log_bounds`, `max_velocity_tangency_residual` 等 |
+| 把 NaN 折成 0 再算误差 | CAUGHT | `_finite()` 在形成任何误差度量**之前**就拒绝 |
+| restart 同时丢掉约束 virial **与**完成步压强 | CAUGHT | `restart_restores_completed_step_pressure` |
+| restart 只丢掉约束 virial | **EXPECTED MISS** | — |
+| restart 只丢掉完成步压强 | **EXPECTED MISS** | — |
+
+最后两条**不是缺陷，是冗余**：restart 会恢复约束 virial，也会在 checkpoint 坐标上重新求值
+provider virial 并单独恢复完成步压强记录；**任何一条单独存在就足以重建被报告的那个压强**，
+而下一步的 RATTLE 无论如何都会重新算出约束 virial。因此单独丢一条在 CLI 的任何输出上都不可观测；
+**两条同时丢就会被抓到**。约束 virial 张量本身在库层面由 `tests/mpi_constraint_virial.cpp` 覆盖。
+
+### 本次工作中发现、但不属于本次改动范围的两个既有缺陷
+
+两个都**与约束求解器无关**（都能在 `constraints off` 下复现），是在构造审计 fixture 时撞到的，
+没有在本次提交中修复：
+
+1. **`VerletNeighborBuilder::rebuild` 越界写**。盒子很大且坐标远离原点时 cell 索引越界，
+   `EXC_BAD_ACCESS`。复现：3 原子、盒子 25000 Å、坐标约 (5137, 6411, 7229)、`lj_cutoff 0.95`。
+   `constraints off` 同样崩溃。
+
+2. **只含 `constraints` 段、不含任何 bonded 项的 topology 在 MPI 下死锁**，条件是某个 rank
+   不拥有任何原子。加入哪怕一条 bond 即可避免。`constraints off` 同样死锁，所以与约束求解无关。
+   本仓库的 fixture 都声明了（力常数为 0 的）bond 用于 exclusion，因此不会触发；
+   `tests/constraint_convergence_audit.py` 里显式注明了这一点，以免被当成"随手加的"。
+
 运行方式：
 
 ```bash

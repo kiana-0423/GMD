@@ -1,0 +1,23 @@
+# Constrained NVE: a free rigid water molecule.
+#
+# No thermostat and no barostat, so the total energy is a real conserved
+# quantity and any drift is the integrator's own. `velocity_init input` takes
+# the velocities from the .xyz, so the run is deterministic with no RNG.
+#
+# COM removal is OFF on purpose: the fixture carries a deliberate centre-of-mass
+# velocity, and the straight-line motion of the COM is one of the analytic
+# results the case checks.
+velocity 300.0
+time_step 0.5
+run 400
+output_interval 10
+velocity_init input
+remove_com_velocity false
+molecular_nonbonded special
+
+constraints on
+constraint_tolerance 1e-10
+constraint_max_iterations 500
+
+write_checkpoint_every 400
+checkpoint_file nve_final.gmdchk

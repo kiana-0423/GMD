@@ -1,0 +1,115 @@
+{
+  "case": "constrained_nve_water",
+  "constraints": {
+    "components": 1,
+    "count": 3,
+    "max_iterations": 500,
+    "rattle": true,
+    "targets_a": [
+      {
+        "atom_tags": [
+          0,
+          1
+        ],
+        "kind": "O-H bond",
+        "target": 0.9572
+      },
+      {
+        "atom_tags": [
+          0,
+          2
+        ],
+        "kind": "O-H bond",
+        "target": 0.9572
+      },
+      {
+        "atom_tags": [
+          1,
+          2
+        ],
+        "kind": "H-H, equivalent to fixing the H-O-H angle at 104.52 deg",
+        "target": 1.51390065452732
+      }
+    ],
+    "tolerance": 1e-10
+  },
+  "degrees_of_freedom": {
+    "derivation": "3N - constraints = 9 - 3; the COM velocity is KEPT for this case",
+    "value": 6
+  },
+  "ensemble": "NVE",
+  "provenance": {
+    "baseline_kind": "analytic-and-gmd-regression",
+    "build_type": "Release",
+    "compiler_note": "Apple clang, arm64; the metrics are not bit-portable across compilers but every tolerance has orders of magnitude of headroom.",
+    "generation_command": "python3 validation/constrained_nve_water/generate_fixture.py   # fixtures\npython3 validation/run_validation.py --case constrained_nve_water --gmd <build>/gmd --gmd-validate <build>/gmd_validate --work-root <work>   # metrics",
+    "output_paths": [
+      "<work-root>/constrained_nve_water/output.log",
+      "<work-root>/constrained_nve_water/output.xyz",
+      "<work-root>/constrained_nve_water/thermo_series.csv",
+      "<work-root>/constrained_nve_water/residual_series.csv",
+      "<work-root>/constrained_nve_water/summary.json"
+    ],
+    "rank_counts": [
+      1,
+      2,
+      4
+    ],
+    "source_commit": "ee9839ea34a27ebc473fe73ccf6b8e71c6741c4c",
+    "source_input_sha256": {
+      "generate_fixture.py": "0daab37c9642303542229865c22c0cc937f399bb1c3e3e88f94737a05a85690b",
+      "nve.run": "3b47ed77f759c1df25787a8a80b0ec8207abd0c9219dab5810a4b30bd11ab988",
+      "water.ff": "ef1594567b31cf880ed45ee0453b38318069eee9e2e052d800a756661831d448",
+      "water.top": "fcd43278035a104eee34107f650cb5ee8e7631f527c6cd7a8779763839e91195",
+      "water.xyz": "6024de4c09b97a6ad23611cd2f25db2ea79e0186ba7250b17339be8e0dbcd117",
+      "water_wrapped.xyz": "6c494895c1a18dd13c4a36d9a61e69e668b55f9c891fef0b4f0a26abe3ba8718"
+    },
+    "statement": "The PHYSICS checks in this case are ANALYTIC: conservation of energy, linear momentum and angular momentum for a force-free rigid body, the straight-line motion of its centre of mass, and the collapse of the reported pressure to the ideal-gas value M|v_com|^2/3V once the constraint virial has cancelled the rotational kinetic energy. None of those expected values came from GMD. The numbers under 'recorded_observations' below are NOT references and are NOT compared against; they are GMD REGRESSION RESULTS recorded so a reviewer can see what this build produced. No independent external engine was used: LAMMPS, GROMACS and OpenMM do not expose a constraint virial in a form that could be compared component by component.",
+    "working_directory": "repository root"
+  },
+  "recorded_observations": {
+    "_comment": "GMD regression results, recorded not compared. See provenance.statement.",
+    "analytic_pressure_relative_error": 2.436557100489207e-07,
+    "angular_momentum_relative_change": 6.487870041299686e-14,
+    "com_straight_line_error_a": 1.1013412404281553e-13,
+    "constraint_virial_max_asymmetry": 2.168404344971009e-19,
+    "constraint_virial_smallest_offdiagonal": 0.00040417773899980225,
+    "energy_drift_per_atom_ps": 0.0,
+    "linear_momentum_relative_change": 3.951873000354871e-15,
+    "max_position_residual_a": 9.659373301218466e-11,
+    "max_velocity_residual_internal": 9.925105469288932e-11,
+    "restart_position_difference_a": 0.0,
+    "rotational_cancellation_residual": 3.5908988522265206e-08
+  },
+  "run": {
+    "barostat": null,
+    "output_interval": 10,
+    "remove_com_velocity": false,
+    "seed": null,
+    "seed_note": "velocity_init is 'input', so no random draw takes place and no seed affects the result",
+    "steps": 400,
+    "target_temperature_k": 300.0,
+    "thermostat": null,
+    "time_step_fs": 0.5,
+    "velocity_init": "input"
+  },
+  "solver": {
+    "max_iterations": 500,
+    "tolerance": 1e-10
+  },
+  "system": {
+    "atoms": 3,
+    "box_a": [
+      24.0,
+      26.0,
+      28.0
+    ],
+    "initial_slack_fraction": 0.0025,
+    "masses_amu": {
+      "H": 1.008,
+      "O": 15.9994
+    },
+    "molecules": 1,
+    "note": "force free: the molecule is alone in the cell and every intramolecular pair is excluded with zero force constants"
+  }
+}

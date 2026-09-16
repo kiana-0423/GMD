@@ -409,6 +409,59 @@ if(BUILD_TESTING)
         PROPERTIES LABELS "integration;integrator;force")
     set_tests_properties(gmd_pme_modes PROPERTIES LABELS "unit;force;pme")
 
+    # Constrained dynamics through the real CLI: a free rigid water molecule.
+    # Recomputes the constraint residuals and the virial from 17-digit
+    # checkpoint state rather than reading back the solver's own convergence
+    # flag, and checks the constraint virial against the pressure identity and
+    # against the analytic ideal-gas result for a free rigid body. A 3-atom
+    # system over a few hundred steps; fast enough to gate on.
+    add_test(
+        NAME gmd_validation_constrained_nve
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/validation/run_validation.py
+                --case constrained_nve_water
+                --gmd $<TARGET_FILE:gmd>
+                --gmd-validate $<TARGET_FILE:gmd_validate>
+                --work-root ${CMAKE_CURRENT_BINARY_DIR}/validation
+    )
+    set_tests_properties(gmd_validation_constrained_nve
+        PROPERTIES LABELS "validation;integration;integrator;constraints;restart")
+
+    # Constrained NVT: four interacting rigid molecules under Nose-Hoover. The
+    # molecules interact, so unlike the NVE case above the provider virial is
+    # genuinely non-zero and the completed-step virial is a sum of two
+    # independently produced tensors at the same time level.
+    add_test(
+        NAME gmd_validation_constrained_nvt
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/validation/run_validation.py
+                --case constrained_nvt_cluster
+                --gmd $<TARGET_FILE:gmd>
+                --gmd-validate $<TARGET_FILE:gmd_validate>
+                --work-root ${CMAKE_CURRENT_BINARY_DIR}/validation
+    )
+    set_tests_properties(gmd_validation_constrained_nvt
+        PROPERTIES LABELS "validation;integration;integrator;constraints;restart")
+
+    # The strict-tolerance SHAKE/RATTLE convergence audit. Maps the boundary at
+    # which a configured tolerance stops being reachable and separates the two
+    # causes: an insufficient iteration limit, against the floating-point floor
+    # -- which scales with COORDINATE magnitude, not with bond length.
+    # Cross-checks the production iteration against an exact rational RATTLE
+    # solve and a 60-digit Newton SHAKE solve, neither of which uses the
+    # production solver. Also the regression coverage for the failure-message
+    # fix: the old std::to_string formatting printed every one of these
+    # residuals as "0.000000", and three of these checks fail against it.
+    add_test(
+        NAME gmd_constraint_convergence_audit
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/constraint_convergence_audit.py
+                --gmd $<TARGET_FILE:gmd>
+                --work-dir ${CMAKE_CURRENT_BINARY_DIR}/tests/constraint_convergence_audit
+    )
+    set_tests_properties(gmd_constraint_convergence_audit
+        PROPERTIES LABELS "integration;integrator;constraints;validation")
+
     add_test(
         NAME gmd_validation_static_lj_cluster
         COMMAND ${Python3_EXECUTABLE}
@@ -478,6 +531,17 @@ if(BUILD_TESTING)
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_CURRENT_SOURCE_DIR}/validation/run_validation.py
                 --case short
+                --gmd $<TARGET_FILE:gmd>
+                --gmd-validate $<TARGET_FILE:gmd_validate>
+                --work-root ${CMAKE_CURRENT_BINARY_DIR}/validation
+        DEPENDS gmd gmd_validate
+        USES_TERMINAL
+    )
+
+    add_custom_target(gmd_validation_constrained
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/validation/run_validation.py
+                --case constrained
                 --gmd $<TARGET_FILE:gmd>
                 --gmd-validate $<TARGET_FILE:gmd_validate>
                 --work-root ${CMAKE_CURRENT_BINARY_DIR}/validation
@@ -820,6 +884,65 @@ if(BUILD_TESTING)
                     LABELS "mpi;parallel;integration;integrator;force"
                     PROCESSORS ${pressure_np})
         endforeach()
+
+        # The constrained validation cases under MPI. Molecule C of the NVT
+        # fixture straddles x = Lx/2 and molecule D straddles y = Ly/2, so
+        # constraints cross rank boundaries at both np=2 (2,1,1) and np=4
+        # (2,2,1); at np=4 one rank owns no atoms at all. The constraint solver
+        # replicates its state across ranks, so the tensors it produces are
+        # ALREADY global -- these compare them against the serial run and would
+        # fail on a tensor multiplied by the rank count.
+        foreach(constrained_validation_np 1 2 4)
+            add_test(
+                NAME gmd_mpi_validation_constrained_nve_${constrained_validation_np}proc
+                COMMAND ${Python3_EXECUTABLE}
+                        ${CMAKE_CURRENT_SOURCE_DIR}/validation/run_validation.py
+                        --case constrained_nve_water
+                        --gmd $<TARGET_FILE:gmd>
+                        --gmd-validate $<TARGET_FILE:gmd_validate>
+                        --work-root ${CMAKE_CURRENT_BINARY_DIR}/validation_mpi_${constrained_validation_np}
+                        --mpiexec ${MPIEXEC_EXECUTABLE}
+                        --mpi-ranks ${constrained_validation_np}
+            )
+            set_tests_properties(gmd_mpi_validation_constrained_nve_${constrained_validation_np}proc
+                PROPERTIES
+                    LABELS "mpi;parallel;validation;integration;constraints;restart"
+                    PROCESSORS ${constrained_validation_np})
+
+            add_test(
+                NAME gmd_mpi_validation_constrained_nvt_${constrained_validation_np}proc
+                COMMAND ${Python3_EXECUTABLE}
+                        ${CMAKE_CURRENT_SOURCE_DIR}/validation/run_validation.py
+                        --case constrained_nvt_cluster
+                        --gmd $<TARGET_FILE:gmd>
+                        --gmd-validate $<TARGET_FILE:gmd_validate>
+                        --work-root ${CMAKE_CURRENT_BINARY_DIR}/validation_mpi_${constrained_validation_np}
+                        --mpiexec ${MPIEXEC_EXECUTABLE}
+                        --mpi-ranks ${constrained_validation_np}
+            )
+            set_tests_properties(gmd_mpi_validation_constrained_nvt_${constrained_validation_np}proc
+                PROPERTIES
+                    LABELS "mpi;parallel;validation;integration;constraints;restart"
+                    PROCESSORS ${constrained_validation_np})
+        endforeach()
+
+        # The convergence decision must be COLLECTIVE: every rank has to reach
+        # the same verdict. A rank deciding on its own would show up here as a
+        # disagreement between rank counts, or as a hang -- which the test's own
+        # subprocess timeout turns into a failure rather than a stuck job.
+        add_test(
+            NAME gmd_mpi_constraint_convergence_audit
+            COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/tests/constraint_convergence_audit.py
+                    --gmd $<TARGET_FILE:gmd>
+                    --work-dir ${CMAKE_CURRENT_BINARY_DIR}/tests/constraint_convergence_audit_mpi
+                    --mpiexec ${MPIEXEC_EXECUTABLE}
+                    --mpi-ranks 1,2,4
+        )
+        set_tests_properties(gmd_mpi_constraint_convergence_audit
+            PROPERTIES
+                LABELS "mpi;parallel;integration;constraints;validation"
+                PROCESSORS 4)
 
         foreach(constraint_virial_np 1 2 4)
             add_test(

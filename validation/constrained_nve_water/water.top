@@ -1,0 +1,21 @@
+# Rigid water: two O-H bonds and the H-H distance equivalent to the H-O-H angle.
+#
+# The `bonds` and `angles` sections carry NO force here (their types have k = 0
+# in water.ff); they exist to generate the 1-2 and 1-3 non-bonded exclusions.
+# The rigid geometry comes from the `constraints` section below.
+#
+# Atom 1 is O, atoms 2 and 3 are H. Indices are 1-based in this file and are
+# stored as 0-based global atom tags internally.
+bonds 2
+  1 2  bond_type 1
+  1 3  bond_type 1
+
+angles 1
+  2 1 3  angle_type 1
+
+# Target distances [A]: r_OH = 0.9572, and
+# d_HH = 2 r_OH sin(104.52 deg / 2) = 1.51390065452732.
+constraints 3
+  1 2  0.95720000000000
+  1 3  0.95720000000000
+  2 3  1.51390065452732
