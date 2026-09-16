@@ -1,0 +1,31 @@
+# Constrained NVT with a Nose-Hoover thermostat.
+#
+# Nose-Hoover is used rather than Berendsen or velocity rescaling because it is
+# the thermostat with a genuine extended-system formulation in this code base,
+# and because its thermostat mass Q = dof * kB * T * tau^2 is computed from the
+# AUTHORITATIVE constrained degree-of-freedom count. A run whose DOF silently
+# reverted to the unconstrained 3N-3 would thermostat to the wrong kinetic
+# energy, which is exactly what this case is here to catch.
+#
+# `velocity_init input` takes the velocities from the .xyz and `velocity_seed`
+# is fixed, so the run is deterministic and reproducible. COM removal is ON, so
+# the reported degree-of-freedom count is 3N - constraints - 3 = 36 - 12 - 3 = 21,
+# which is clearly distinct from the unconstrained 3N - 3 = 33.
+velocity 300.0        # also the thermostat target temperature [K]
+time_step 0.5
+run 400
+output_interval 10
+velocity_init input
+velocity_seed 20260916
+remove_com_velocity true
+molecular_nonbonded special
+
+thermostat nose_hoover
+thermostat_tau 100.0
+
+constraints on
+constraint_tolerance 1e-10
+constraint_max_iterations 500
+
+write_checkpoint_every 400
+checkpoint_file nvt_final.gmdchk

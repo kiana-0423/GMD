@@ -427,6 +427,22 @@ if(BUILD_TESTING)
     set_tests_properties(gmd_validation_constrained_nve
         PROPERTIES LABELS "validation;integration;integrator;constraints;restart")
 
+    # Constrained NVT: four interacting rigid molecules under Nose-Hoover. The
+    # molecules interact, so unlike the NVE case above the provider virial is
+    # genuinely non-zero and the completed-step virial is a sum of two
+    # independently produced tensors at the same time level.
+    add_test(
+        NAME gmd_validation_constrained_nvt
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/validation/run_validation.py
+                --case constrained_nvt_cluster
+                --gmd $<TARGET_FILE:gmd>
+                --gmd-validate $<TARGET_FILE:gmd_validate>
+                --work-root ${CMAKE_CURRENT_BINARY_DIR}/validation
+    )
+    set_tests_properties(gmd_validation_constrained_nvt
+        PROPERTIES LABELS "validation;integration;integrator;constraints;restart")
+
     add_test(
         NAME gmd_validation_static_lj_cluster
         COMMAND ${Python3_EXECUTABLE}

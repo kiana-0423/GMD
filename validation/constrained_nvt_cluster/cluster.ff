@@ -1,0 +1,27 @@
+# Four rigid-water-like molecules for the constrained NVT validation case.
+#
+# Units follow the GMD molecular .ff convention (see src/io/config_loader.cpp):
+# energies in kcal/mol, distances in Angstrom, angles in degrees.
+#
+# THE BONDED FORCE CONSTANTS ARE DELIBERATELY ZERO. The bonds and angles in
+# cluster.top exist only to exclude the intramolecular non-bonded pairs (1-2 via
+# the O-H bonds, 1-3 via the H-O-H angle). The molecular geometry is held
+# entirely by the distance constraints.
+#
+# The INTERMOLECULAR Lennard-Jones terms are real and are what make this case
+# different from constrained_nve_water: the force providers report a non-zero
+# virial, so the constraint virial is added to a genuine partner rather than to
+# a tensor of zeros.
+#
+# Charges are zero, so there is no Coulomb term and no PME grid is involved --
+# the case runs with no external engine and no long-range solver.
+force_field molecular
+
+lj_cutoff 8.0
+
+type 1 O mass 15.9994 epsilon 0.1521 sigma 3.1507 charge 0.0
+type 2 H mass 1.0080  epsilon 0.0460 sigma 0.4000 charge 0.0
+
+# Exclusion-only terms; see above.
+bond_type 1 k 0.0 r0 0.9572
+angle_type 1 k 0.0 theta0 104.52

@@ -28,6 +28,7 @@ LONG_CASES = [
 # they validate rather than a separate concern.
 CONSTRAINED_CASES = [
     "constrained_nve_water",
+    "constrained_nvt_cluster",
 ]
 
 

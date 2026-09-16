@@ -1,0 +1,98 @@
+{
+  "case": "constrained_nvt_cluster",
+  "claim": "Dynamics and regression coverage. This is a 400-step deterministic trajectory; it does NOT establish that the sampled distribution is canonical, and no check here is a statistical ensemble test.",
+  "constraints": {
+    "components": 4,
+    "count": 12,
+    "max_iterations": 500,
+    "per_molecule_targets_a": {
+      "H-H": 1.51390065452732,
+      "O-H": 0.9572,
+      "note": "H-H fixes the H-O-H angle at 104.52 degrees"
+    },
+    "rattle": true,
+    "tolerance": 1e-10
+  },
+  "degrees_of_freedom": {
+    "derivation": "3N - constraints - 3 = 36 - 12 - 3",
+    "unconstrained_would_be": 33,
+    "value": 21
+  },
+  "ensemble": "NVT (Nose-Hoover)",
+  "provenance": {
+    "baseline_kind": "gmd-regression",
+    "build_type": "Release",
+    "compiler_note": "Apple clang, arm64. Metrics are not bit-portable; the MPI tolerances are set from the observed reordering round-off, which is platform dependent, with orders of magnitude of headroom.",
+    "generation_command": "python3 validation/constrained_nvt_cluster/generate_fixture.py   # fixtures\npython3 validation/run_validation.py --case constrained_nvt_cluster --gmd <build>/gmd --gmd-validate <build>/gmd_validate --work-root <work> [--mpiexec mpirun --mpi-ranks 1,2,4]",
+    "output_paths": [
+      "<work-root>/constrained_nvt_cluster/output.log",
+      "<work-root>/constrained_nvt_cluster/thermo_series.csv",
+      "<work-root>/constrained_nvt_cluster/residual_series.csv",
+      "<work-root>/constrained_nvt_cluster/summary.json"
+    ],
+    "rank_counts": [
+      1,
+      2,
+      4
+    ],
+    "source_commit": "ee9839ea34a27ebc473fe73ccf6b8e71c6741c4c",
+    "source_input_sha256": {
+      "cluster.ff": "487974e17bc4d1dfdfb938261139e0bb59423dcd228e9ca2b0a20710c83a5683",
+      "cluster.top": "45121aa56436e623c6f65eb3804686d290d49614e2d8aae177ec919c71d783f5",
+      "cluster.xyz": "59ce4db8fda801c013d3b4487b190e72f25491a16f6c6bccbfd6cce4660d9d65",
+      "generate_fixture.py": "bedff108c3d0d5cf4fd4952708740b8985408313f9feb6cf994f689d6d565f59",
+      "nvt.run": "69cc16c82188bb738b0785463dda6ee778da35d7584db42dca6b36f188264e2c"
+    },
+    "statement": "EVERY expected value in this case is a GMD REGRESSION RESULT, produced by the build named below from the inputs hashed below. It is NOT an independent scientific reference. Two checks are exceptions and rest on identities rather than on recorded numbers: the kinetic-plus-virial pressure identity P = (2K + tr W)/3V, and the requirement that the completed-step virial equal the provider virial plus the constraint virial at the same time level. No external engine was used: LAMMPS, GROMACS and OpenMM do not expose a constraint virial in a form that could be compared component by component, so no cross-engine reference exists for the quantity this case is mainly about.",
+    "working_directory": "repository root"
+  },
+  "recorded_observations": {
+    "_comment": "GMD regression results, recorded not compared. See provenance.statement.",
+    "constraint_virial_largest_component": -0.01763281,
+    "constraint_virial_max_asymmetry": 4.336808689942018e-19,
+    "initial_temperature_k": 300.0,
+    "max_position_residual_a": 9.993272875874482e-11,
+    "max_temperature_excursion_k": 0.20135199999998576,
+    "max_velocity_residual_internal": 9.740978966407763e-11,
+    "mean_temperature_k": 299.9693316585366,
+    "mpi_constraint_virial_max_difference": 1.03e-11,
+    "provider_virial_largest_component": 0.005130784553657987,
+    "restart_position_difference_a": 0.0
+  },
+  "run": {
+    "output_interval": 10,
+    "remove_com_velocity": true,
+    "seed_note": "velocity_init is 'input', so the seed is recorded for completeness but no random draw takes place",
+    "steps": 400,
+    "time_step_fs": 0.5,
+    "velocity_init": "input",
+    "velocity_seed": 20260916
+  },
+  "system": {
+    "atoms": 12,
+    "box_a": [
+      20.0,
+      22.0,
+      24.0
+    ],
+    "forces": "intermolecular Lennard-Jones only; bonded terms have k = 0 and exist solely to exclude intramolecular non-bonded pairs",
+    "initial_slack_fraction_per_molecule": [
+      0.0018,
+      -0.0022,
+      0.0031,
+      -0.0014
+    ],
+    "masses_amu": {
+      "H": 1.008,
+      "O": 15.9994
+    },
+    "molecules": 4,
+    "mpi_layout": "molecule C straddles x = Lx/2 = 10.0 and molecule D straddles y = Ly/2 = 11.0, so constraints cross rank boundaries at np=2 (2,1,1) and np=4 (2,2,1); the x>Lx/2, y>Ly/2 quadrant is empty, so one rank owns no atoms at np=4"
+  },
+  "thermostat": {
+    "target_temperature_k": 300.0,
+    "tau_fs": 100.0,
+    "thermostat_mass_Q": "dof * kB * T * tau^2, computed internally from the AUTHORITATIVE constrained dof of 21; not exposed by the CLI, so it is checked indirectly through the reported dof and the initial temperature",
+    "type": "nose_hoover"
+  }
+}
