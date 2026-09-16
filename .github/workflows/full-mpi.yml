@@ -1,3 +1,14 @@
+# Full MPI Validation — the scheduled/manual periodic guard.
+#
+# This is ADDITIONAL to the MPI job in ci.yml, which already runs the whole MPI
+# suite on every pull request. This one exists to keep running when nobody has
+# opened a PR, which is exactly when a slow rot goes unnoticed. It is also the
+# workflow to dispatch by hand after a merge that touches MPI behaviour.
+#
+# Note on the workflow STATE: GitHub disables scheduled workflows in a
+# repository after a period of inactivity (`disabled_inactivity`), and editing
+# this file does NOT re-enable them. Re-enabling is an API/UI action on the
+# workflow itself.
 name: Full MPI Validation
 
 on:
@@ -5,14 +16,34 @@ on:
   schedule:
     - cron: "0 8 * * 0"
 
+# Least privilege: this workflow only reads the tree and uploads an artifact on
+# failure, so it needs no write scope at all.
+permissions:
+  contents: read
+
+# Keeps a backlog of scheduled runs from piling up on top of each other without
+# ever cancelling a run in flight -- a full MPI sweep that is already running is
+# the thing we want the answer from. The group is scoped to this workflow, so
+# pull-request CI is untouched.
+concurrency:
+  group: full-mpi-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   full-mpi:
     name: Full MPI CTest
     runs-on: ubuntu-latest
+    timeout-minutes: 60
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Record the commit under test
+        run: |
+          echo "ref=${{ github.ref }}"
+          echo "sha=${{ github.sha }}"
+          git log -1 --format='%H %s'
 
       - name: Install dependencies
         run: |
@@ -35,20 +66,71 @@ jobs:
       - name: Build MPI targets
         run: cmake --build build-mpi --parallel
 
-      - name: List registered tests
-        run: ctest --test-dir build-mpi -N
+      # The whole suite is run below with no -R filter. A filter here had
+      # previously gone stale and silently stopped running newly added tests, so
+      # the point of this step is to fail loudly if a test that is supposed to be
+      # covered is not actually selected -- whether because a filter came back or
+      # because a registration was dropped.
+      - name: Check the expected tests are registered
+        run: |
+          ctest --test-dir build-mpi -N > selected.txt
+          cat selected.txt
+          missing=0
+          for name in \
+            gmd_constraint_rank_fallback \
+            gmd_constraint_tie_breaking \
+            gmd_mpi_constraint_rank_fallback_1proc \
+            gmd_mpi_constraint_rank_fallback_2proc \
+            gmd_mpi_constraint_rank_fallback_4proc \
+            gmd_mpi_constraint_independence_4proc \
+            gmd_mpi_validation_constrained_nve_4proc \
+            gmd_mpi_validation_constrained_nvt_4proc \
+            gmd_mpi_constraint_convergence_audit \
+            gmd_mpi_constraint_virial_4proc ; do
+            if ! grep -q "  Test .*: ${name}\$" selected.txt; then
+              echo "::error::expected test '${name}' is not registered/selected"
+              missing=1
+            fi
+          done
+          exit "${missing}"
 
+      # Oversubscription: some tests ask for more ranks than the runner has
+      # cores. OMPI_MCA_* covers Open MPI 4.x (what Ubuntu currently ships) and
+      # PRTE_MCA_* covers Open MPI 5.x, so this keeps working if the runner image
+      # moves on. Both are set for parity with the pull-request MPI job.
       - name: Run full MPI CTest suite
         env:
           OMPI_MCA_rmaps_base_oversubscribe: "1"
-        run: ctest --test-dir build-mpi --output-on-failure --verbose
+          PRTE_MCA_rmaps_default_mapping_policy: ":oversubscribe"
+        run: ctest --test-dir build-mpi --output-on-failure
 
-      - name: Upload CTest logs
+      # Reports how many tests were selected and how many passed, so a run that
+      # quietly selected a subset is visible in the summary rather than only in
+      # the log.
+      - name: Report test totals
         if: always()
+        env:
+          OMPI_MCA_rmaps_base_oversubscribe: "1"
+          PRTE_MCA_rmaps_default_mapping_policy: ":oversubscribe"
+        run: |
+          selected=$(ctest --test-dir build-mpi -N | sed -n 's/^Total Tests: //p')
+          echo "Selected tests: ${selected}"
+          {
+            echo "### Full MPI Validation"
+            echo ""
+            echo "- commit: \`${{ github.sha }}\`"
+            echo "- selected tests: **${selected}**"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      # Only on failure: a green run's logs are noise, and keeping them would
+      # make the artifact list useless for finding the run that actually broke.
+      - name: Upload CTest logs
+        if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: full-mpi-ctest-logs
           path: |
             build-mpi/Testing/**/*.log
             build-mpi/Testing/**/*.xml
+            selected.txt
           if-no-files-found: ignore
