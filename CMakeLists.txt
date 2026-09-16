@@ -137,6 +137,8 @@ if(BUILD_TESTING)
     target_link_libraries(gmd_constraint_validation_tests PRIVATE gmd_core)
     add_executable(gmd_constraint_rank_fallback_tests tests/constraint_rank_fallback_tests.cpp)
     target_link_libraries(gmd_constraint_rank_fallback_tests PRIVATE gmd_core)
+    add_executable(gmd_constraint_tie_breaking_tests tests/constraint_tie_breaking_tests.cpp)
+    target_link_libraries(gmd_constraint_tie_breaking_tests PRIVATE gmd_core)
     add_executable(gmd_bonded_force_gradient_tests tests/bonded_force_gradient_tests.cpp)
     target_link_libraries(gmd_bonded_force_gradient_tests PRIVATE gmd_core)
     add_executable(gmd_constraint_virial_tests tests/constraint_virial_tests.cpp)
@@ -296,6 +298,15 @@ if(BUILD_TESTING)
     # selection and the singular values disagree.
     add_test(NAME gmd_constraint_rank_fallback COMMAND gmd_constraint_rank_fallback_tests)
     set_tests_properties(gmd_constraint_rank_fallback
+        PROPERTIES LABELS "unit;integrator;constraints")
+
+    # Rank-column tie-breaking. The discriminating fixture is a GENERICALLY
+    # ROTATED square with unequal masses: its tied residual norms differ in the
+    # last ulps rather than being bit-identical, so it separates the relative
+    # near-tie window from the old absolute 1e-300 criterion, which the
+    # pre-existing axis-aligned fixtures cannot.
+    add_test(NAME gmd_constraint_tie_breaking COMMAND gmd_constraint_tie_breaking_tests)
+    set_tests_properties(gmd_constraint_tie_breaking
         PROPERTIES LABELS "unit;integrator;constraints")
     add_test(NAME gmd_bonded_force_gradient COMMAND gmd_bonded_force_gradient_tests)
     set_tests_properties(gmd_bonded_force_gradient PROPERTIES LABELS "unit;force;validation")
