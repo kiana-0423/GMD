@@ -1,0 +1,11 @@
+/build/
+/build-*/
+/out/
+/CMakeCache.txt
+/CMakeFiles/
+/Testing/
+/CTestTestfile.cmake
+/cmake_install.cmake
+/Makefile
+/build.ninja
+/.ninja_*
