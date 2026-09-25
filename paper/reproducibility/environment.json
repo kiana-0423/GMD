@@ -1,0 +1,92 @@
+{
+  "run_utc": "2026-09-17T06:23:20.209530+00:00",
+  "python_version": "3.9.6 (default, May 22 2026, 11:13:45) \n[Clang 21.0.0 (clang-2100.1.1.101)]",
+  "python_implementation": "CPython",
+  "numpy_version": "2.0.2",
+  "system": "Darwin",
+  "release": "27.0.0",
+  "machine": "arm64",
+  "float64_epsilon": 2.220446049250313e-16,
+  "numpy_build_configuration": {
+    "Compilers": {
+      "c": {
+        "name": "clang",
+        "linker": "ld64",
+        "version": "15.0.0",
+        "commands": "cc"
+      },
+      "cython": {
+        "name": "cython",
+        "linker": "cython",
+        "version": "3.0.11",
+        "commands": "cython"
+      },
+      "c++": {
+        "name": "clang",
+        "linker": "ld64",
+        "version": "15.0.0",
+        "commands": "c++"
+      }
+    },
+    "Machine Information": {
+      "host": {
+        "cpu": "aarch64",
+        "family": "aarch64",
+        "endian": "little",
+        "system": "darwin"
+      },
+      "build": {
+        "cpu": "aarch64",
+        "family": "aarch64",
+        "endian": "little",
+        "system": "darwin"
+      }
+    },
+    "Build Dependencies": {
+      "blas": {
+        "name": "accelerate",
+        "found": true,
+        "version": "unknown",
+        "detection method": "system",
+        "include directory": "unknown",
+        "lib directory": "unknown",
+        "openblas configuration": "unknown",
+        "pc file directory": "unknown"
+      },
+      "lapack": {
+        "name": "accelerate",
+        "found": true,
+        "version": "unknown",
+        "detection method": "system",
+        "include directory": "unknown",
+        "lib directory": "unknown",
+        "openblas configuration": "unknown",
+        "pc file directory": "unknown"
+      }
+    },
+    "Python Information": {
+      "path": "/private/var/folders/4d/0gnh84wj53j7wyk695q0tc_80000gn/T/build-env-kq4kuj35/bin/python",
+      "version": "3.9"
+    },
+    "SIMD Extensions": {
+      "baseline": [
+        "NEON",
+        "NEON_FP16",
+        "NEON_VFPV4",
+        "ASIMD"
+      ],
+      "found": [
+        "ASIMDHP"
+      ],
+      "not found": [
+        "ASIMDFHM"
+      ]
+    }
+  },
+  "source_sha256": {
+    "verify_equivalence.py": "bb1932ceae28b0e4b1a15d61ff0281a3da85ef49f4739bf02653eea2aa7d8c3f",
+    "config.json": "ae4ec6ddd8fda13838c1fc8c46e899cc9a7d123da8691447df917efc17f6df96"
+  },
+  "execution": "CPU only; no GMD engine, CUDA execution, LaTeX compilation, or external MD package.",
+  "verification_results_sha256": "92762292ba760adb9fd18d8bd14e15ab194d4a719fccc9a7498431486c624311"
+}

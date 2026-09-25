@@ -1,0 +1,2 @@
+# Version used for the recorded run (Python 3.9.6).
+numpy==2.0.2

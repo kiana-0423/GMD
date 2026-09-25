@@ -11,7 +11,7 @@ endif()
 project(GMDNext VERSION 0.1.0 LANGUAGES CXX)
 
 option(GMD_NEXT_BUILD_TESTS "Build CPU mathematical contract checks" ON)
-option(GMD_NEXT_ENABLE_CUDA "Build the CUDA Runtime/CUB environment probe" OFF)
+option(GMD_NEXT_ENABLE_CUDA "Build the CUDA runtime library and environment probe" OFF)
 option(GMD_NEXT_TEST_CUDA "Register the probe as a test; requires an NVIDIA GPU" OFF)
 
 if(GMD_NEXT_TEST_CUDA AND NOT GMD_NEXT_ENABLE_CUDA)
@@ -27,6 +27,26 @@ function(gmd_next_warnings target)
     endif()
 endfunction()
 
+# Host-side contracts: identity, state versions, validity, units, observable
+# requests, model/run validation and the device-free bookkeeping of the CUDA
+# runtime (capacity, view generations, completion tickets, fault decoding).
+# No hardware or legacy engine dependency.
+add_library(gmd_next_contracts STATIC
+    src/core/observables.cpp
+    src/core/status.cpp
+    src/core/units.cpp
+    src/core/version.cpp
+    src/model/model.cpp
+    src/model/validate.cpp
+    src/runtime/resources.cpp)
+add_library(GMDNext::contracts ALIAS gmd_next_contracts)
+target_compile_features(gmd_next_contracts PUBLIC cxx_std_20)
+set_target_properties(gmd_next_contracts PROPERTIES CXX_EXTENSIONS OFF)
+target_include_directories(gmd_next_contracts PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+gmd_next_warnings(gmd_next_contracts)
+
+# Independent CPU mathematical oracle. It deliberately does not depend on the
+# contracts target, so a contract change cannot silently move the reference.
 add_library(gmd_next_reference STATIC src/reference.cpp)
 add_library(GMDNext::reference ALIAS gmd_next_reference)
 target_compile_features(gmd_next_reference PUBLIC cxx_std_20)
@@ -42,13 +62,20 @@ if(GMD_NEXT_BUILD_TESTS OR GMD_NEXT_TEST_CUDA)
     enable_testing()
 endif()
 
+function(gmd_next_test test_name)
+    add_executable(gmd_next_${test_name}_tests tests/${test_name}_tests.cpp)
+    target_link_libraries(gmd_next_${test_name}_tests PRIVATE ${ARGN})
+    gmd_next_warnings(gmd_next_${test_name}_tests)
+    add_test(NAME gmd_next.${test_name} COMMAND gmd_next_${test_name}_tests)
+endfunction()
+
 if(GMD_NEXT_BUILD_TESTS)
-    foreach(test_name IN ITEMS operators lj)
-        add_executable(gmd_next_${test_name}_tests tests/${test_name}_tests.cpp)
-        target_link_libraries(gmd_next_${test_name}_tests PRIVATE GMDNext::reference)
-        gmd_next_warnings(gmd_next_${test_name}_tests)
-        add_test(NAME gmd_next.${test_name} COMMAND gmd_next_${test_name}_tests)
-    endforeach()
+    gmd_next_test(operators GMDNext::reference)
+    gmd_next_test(lj GMDNext::reference)
+    gmd_next_test(contracts GMDNext::contracts)
+    gmd_next_test(runtime GMDNext::contracts)
+    # The model checks compare the validated contract against the oracle.
+    gmd_next_test(model GMDNext::contracts GMDNext::reference)
 endif()
 
 if(GMD_NEXT_ENABLE_CUDA)

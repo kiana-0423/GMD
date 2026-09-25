@@ -17,6 +17,21 @@ inline void near(double actual, double expected, double atol = 1e-12, double rto
     }
 }
 
+// Exception type plus the code it must carry, for APIs that classify failures.
+template<class Exception, class Code, class Function>
+void throws_code(Code code, Function&& function) {
+    try {
+        std::forward<Function>(function)();
+    } catch (const Exception& error) {
+        if (error.code() != code) {
+            throw std::runtime_error("Expected error code " + std::string(name(code)) +
+                                     ", received " + std::string(name(error.code())));
+        }
+        return;
+    }
+    throw std::runtime_error("Expected exception was not raised");
+}
+
 template<class Exception, class Function>
 void throws(Function&& function) {
     try {

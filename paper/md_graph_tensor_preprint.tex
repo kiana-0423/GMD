@@ -1,52 +1,45 @@
-% !TeX program = xelatex
-% XeLaTeX twice; no external fonts, figures, or .sty files are bundled.
-% 在正式使用前填写作者与机构；当前空白不是匿名评审声明。
+% !TeX program = pdflatex
+% Standard single-column preprint; no custom class, style, or external fonts.
+% Formatting follows https://info.arxiv.org/help/submit_tex.html.
+% TODO: Supply author names, affiliations, and contact details before submission.
+% The blank author field is not an anonymous-review declaration.
+% AI assistance was used for translation, technical revision, and reference-code preparation.
+% Author review of the revised manuscript and reference implementation remains pending.
+% The new reference run is documented in paper/reproducibility/README.md.
+% Its recorded results replace the earlier draft's unavailable reference run.
 \documentclass[11pt,a4paper]{article}
-\usepackage[UTF8,scheme=plain,fontset=fandol,heading=true]{ctex}
-\usepackage[margin=25mm,headheight=14pt,headsep=7mm,footskip=11mm]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage[english]{babel}
+\usepackage{lmodern}
+\usepackage[margin=1in]{geometry}
 \usepackage{amsmath,amssymb,amsthm,bm,mathtools}
-\usepackage{newtxtext,newtxmath}
+\usepackage{microtype}
 \usepackage{booktabs,tabularx,array}
 \usepackage{algorithm,algpseudocode}
 \usepackage[numbers,sort&compress]{natbib}
-\usepackage{enumitem,fancyhdr,xurl,graphicx}
-\usepackage[unicode,hidelinks,bookmarksnumbered=true]{hyperref}
-\hypersetup{pdftitle={经典分子动力学的图—张量算子表述：传统公式的等价重构与硬件无关执行语义},pdfauthor={},pdfsubject={预印本草稿；数学表述与小系统等价性验证}}
-\ctexset{
-  section={format=\large\bfseries,beforeskip=2.0ex plus .4ex minus .2ex,afterskip=.9ex plus .2ex},
-  subsection={format=\normalsize\bfseries,beforeskip=1.5ex plus .3ex minus .2ex,afterskip=.65ex},
-  subsubsection={format=\normalsize\bfseries,beforeskip=1.1ex,afterskip=.4ex}}
-\setlength{\parindent}{2em}
-\setlength{\parskip}{.10em}
-\linespread{1.04}
-\setlength{\abovedisplayskip}{7pt plus 2pt minus 2pt}
-\setlength{\belowdisplayskip}{7pt plus 2pt minus 2pt}
-\setlength{\abovedisplayshortskip}{3pt plus 1pt}
-\setlength{\belowdisplayshortskip}{5pt plus 1pt}
+\usepackage{enumitem}
+\usepackage[hidelinks,bookmarksnumbered=true]{hyperref}
+\usepackage{xurl}
+\hypersetup{
+  pdftitle={A Graph-Tensor Operator Formulation of Classical Molecular Dynamics: Equivalent Reformulations and Hardware-Independent Execution Semantics},
+  pdfauthor={},
+  pdfsubject={Preprint: mathematical formulation and small-system equivalence checks},
+  pdfkeywords={molecular dynamics, graph operators, adjoint assembly, many-body potentials}
+}
 \setlength{\tabcolsep}{5pt}
 \renewcommand{\arraystretch}{1.12}
 \setlist{nosep,leftmargin=2em,topsep=.25em}
 \setlength{\emergencystretch}{2em}
 \allowdisplaybreaks[2]
 \raggedbottom
-\setcounter{secnumdepth}{2}
-\pagestyle{fancy}
-\fancyhf{}
-\fancyhead[L]{\footnotesize 经典分子动力学的图—张量算子表述}
-\fancyhead[R]{\footnotesize 预印本草稿}
-\fancyfoot[C]{\small\thepage}
-\renewcommand{\headrulewidth}{0pt}
-\renewcommand{\footrulewidth}{0pt}
-\renewcommand{\refname}{参考文献}
-\renewcommand{\abstractname}{摘要}
-\renewcommand{\proofname}{证明}
-\renewcommand{\tablename}{表}
-\floatname{algorithm}{算法}
-\renewcommand{\algorithmicrequire}{\textbf{输入：}}
-\renewcommand{\algorithmicensure}{\textbf{输出：}}
-\newcommand{\oldform}{\par\noindent\textbf{传统形式.}\quad}
-\newcommand{\newform}{\par\noindent\textbf{算子形式.}\quad}
-\newcommand{\parallelmeaning}{\par\noindent\textbf{等价性.}\quad}
+\setcounter{secnumdepth}{3}
+\pagestyle{plain}
+\algrenewcommand\algorithmicrequire{\textbf{Input:}}
+\algrenewcommand\algorithmicensure{\textbf{Output:}}
+\newcommand{\oldform}{\par\noindent\textbf{Conventional form.}\quad}
+\newcommand{\newform}{\par\noindent\textbf{Operator form.}\quad}
+\newcommand{\parallelmeaning}{\par\noindent\textbf{Equivalence.}\quad}
 \newcommand{\RR}{\mathbb R}
 \newcommand{\NN}{\mathbb N}
 \newcommand{\ZZ}{\mathbb Z}
@@ -70,55 +63,109 @@
 \newcommand{\src}{S_{\mathrm s}}
 \newcommand{\dst}{S_{\mathrm t}}
 \newcommand{\GE}{\mathcal G_I}
-\newtheorem{proposition}{命题}[section]
+\newtheorem{proposition}{Proposition}[section]
 \theoremstyle{definition}
-\newtheorem{definition}[proposition]{定义}
-\newtheorem{remark}[proposition]{说明}
+\newtheorem{definition}[proposition]{Definition}
+\newtheorem{remark}[proposition]{Remark}
 \newcolumntype{Y}{>{\raggedright\arraybackslash}X}
-\newcommand{\paperauthors}{} % 例如：作者姓名\\机构\\电子邮箱
-\title{\LARGE\bfseries 经典分子动力学的图—张量算子表述\\[.35em]
-\large\normalfont 传统公式的等价重构与硬件无关执行语义}
+\newcommand{\paperauthors}{} % Author Name\\Affiliation\\\texttt{email@example.org}
+\title{A Graph--Tensor Operator Formulation of\\
+Classical Molecular Dynamics:\\[0.4em]
+\large Equivalent Reformulations and Hardware-Independent Execution Semantics}
 \author{\paperauthors}
-\date{\small 2026 年 9 月 16 日}
-\makeatletter
-\renewcommand{\@maketitle}{%
-  \newpage\null\vskip -1.0em%
-  \begin{center}%
-  {\@title\par}\vskip .75em%
-  \ifx\paperauthors\@empty\else{\normalsize\@author\par}\vskip .5em\fi%
-  {\@date\par}\vskip .25em{\footnotesize 预印本草稿}\par
-  \end{center}\vskip .5em}
-\makeatother
+\date{September 17, 2026}
+
 \begin{document}
 \maketitle
 \thispagestyle{plain}
 \begin{abstract}
-经典分子动力学中的相互作用求和具有固有的数据并行性，但索引关系、几何变换、局部求导和力的累加往往与具体实现交织。本文给出一种硬件无关的图—张量算子表述，在保持势能、截断约定与运动方程不变的条件下，将传统指标公式转换为局部提取、几何映射、能量变换及伴随装配的组合。以有向关联算子描述二体相互作用，推导力的统一表达，并将其扩展到有序超边上的键、角与二面角，以及含节点—边聚合的嵌入原子模型。进一步给出周期镜像与邻居有效性的条件、Velocity Verlet 的状态映射形式，以及表示不变性和连续守恒性质。双精度小系统测试检验了能量梯度、半表／全表装配、提取—装配伴随关系与单步积分的等价性。结果支持所列实例中的数学一致性，但不构成 GPU 性能或完整模拟引擎的验证。该表述的作用是分离物理语义与数据布局、算子融合及硬件调度，为后续实现提供可检验的数学接口。
+Interaction sums in classical molecular dynamics are inherently data parallel, yet interaction
+indices, geometric transformations, local differentiation, and force accumulation are often
+intertwined with implementation details. We present a hardware-independent graph--tensor
+operator formulation that recasts conventional indexed expressions as compositions of local
+extraction, geometric maps, energy transformations, and adjoint assembly while preserving the
+potential energy, cutoff conventions, and equations of motion. A directed incidence operator
+yields a unified expression for pair forces. The formulation extends to bonds, angles, and
+dihedrals on ordered hyperedges, and to embedded-atom models with node--edge aggregation. We
+specify conditions for periodic images and neighbor-list validity, express velocity Verlet
+integration as a composition of state maps, and describe representation invariance and
+continuous conservation properties. Double-precision tests on small systems examine energy
+gradients, scalar-loop and operator agreement, half- and full-list assembly, the
+extraction--assembly adjoint identity, and single-step integration equivalence.
+The results support mathematical consistency for the tested
+examples; they do not validate GPU performance or a complete simulation engine. The formulation
+separates physical semantics from data layout, operator fusion, and hardware scheduling,
+providing testable mathematical interfaces for subsequent implementations.
 \end{abstract}
-\noindent\textbf{关键词：}经典分子动力学；稀疏相互作用图；伴随装配；多体势；硬件无关算子
+\noindent\textbf{Keywords:} classical molecular dynamics; sparse interaction graphs; adjoint assembly; many-body potentials; hardware-independent operators
 
-\section{引言}
+\section{Introduction}
 \label{sec:intro}
-分子动力学（MD）通过给定势能及其梯度求解粒子系统的运动方程。对相同的物理模型，逐原子循环、逐相互作用计算和图上的归约可以表达相同的能量与力；它们的区别首先在于数据依赖的组织，而不是物理定律。已有并行模拟系统已广泛使用空间分解、邻居表和加速器执行\cite{thompson2022,anderson2020}。因此，将指标求和改写为张量运算不应被解释为首次赋予 MD 并行能力。
+Molecular dynamics (MD) evolves a particle system using a specified potential energy and its
+gradient. For a given physical model, atom-wise loops, interaction-wise evaluations, and
+reductions on a graph can represent the same energy and forces. Their primary distinction lies
+in the organization of data dependencies. Existing parallel simulation systems already make
+extensive use of spatial decomposition, neighbor lists, and accelerator
+execution~\cite{thompson2022,anderson2020}. Rewriting indexed sums as tensor operations should
+therefore not be interpreted as introducing parallelism into MD for the first time.
 
-本文关注的是一种更具体的表述问题：能否使相互作用索引、局部几何、链式求导和全局累加各自具有明确的数学接口，并在不同实现之间保持可检验的等价性？为此，本文将相互作用提取写为线性算子，将局部几何保留为非线性映射，将力的累加定义为提取算子的伴随。数学上的中间张量不必对应独立缓冲区；实现可重新选择物理布局、融合边界和归约策略。
+We address a more specific representational question: can interaction indexing, local geometry,
+chain-rule differentiation, and global accumulation each be assigned an explicit mathematical
+interface while retaining testable equivalence across implementations? We express interaction
+extraction as a linear operator, retain local geometry as a nonlinear map, and define force
+accumulation through the adjoint of extraction. Mathematical intermediate tensors need not
+correspond to separate buffers: implementations remain free to choose storage layouts, fusion
+boundaries, and reduction strategies.
 
-本文的内容包括三方面：建立提取—装配与局部能量梯度的统一关系；逐项推导二体势、键合项、嵌入原子模型和时间积分的传统式与算子式；通过可复现的小系统测试检查符号、计数和链式求导的一致性。所讨论的是计算表述及其契约，不是新的势能模型。本文沿用已有的图、张量与链式求导工具，研究其在所列经典 MD 模型中的一致表述，不预设相对于现有软件的性能优势。
+The paper develops this formulation in three parts. It establishes a unified relation between
+extraction, assembly, and local energy gradients; derives conventional and operator expressions
+for pair potentials, bonded interactions, embedded-atom models, and time integration; and checks
+signs, counting factors, and chain-rule consistency through reproducible small-system tests. The
+subject is a computational formulation and its contracts, rather than a new potential-energy
+model. We use established graph, tensor, and differentiation tools to develop a consistent
+representation of the classical MD models considered here, without presupposing a performance
+advantage over existing software.
 
-\subsection{相关工作与定位}
-LAMMPS 提供涵盖不同尺度粒子模型的并行模拟框架\cite{thompson2022}。Kokkos 通过数据布局和并行执行抽象支持多核与加速器上的可移植实现\cite{edwards2014}；这类抽象与本文的数学表述并不冲突，可以作为实现后端。HOOMD-blue 从 GPU 加速出发组织粒子模拟及其数据结构\cite{anderson2020}。JAX-MD 则以可微函数、数组状态及空间划分操作构造模拟，并支持神经网络相互作用\cite{schoenholz2020}。这些工作已经覆盖了 GPU 执行与数组化 MD 的多个核心思想。
+\subsection{Related work and scope}
+LAMMPS provides a parallel simulation framework for particle models spanning multiple
+scales~\cite{thompson2022}. Kokkos supports portable implementations on multicore processors and
+accelerators through data-layout and parallel-execution abstractions~\cite{edwards2014}; such
+abstractions are compatible with the mathematical formulation developed here and could serve as
+implementation backends. HOOMD-blue organizes particle simulations and their data structures
+around GPU acceleration~\cite{anderson2020}. JAX-MD constructs simulations from differentiable
+functions, array-based states, and spatial partitioning operations, and supports neural-network
+interactions~\cite{schoenholz2020}. These systems already encompass many central ideas in GPU
+execution and array-based MD. More specifically, JAX-MD's structure-mapping functions lift
+pair and bonded functions to collections of interactions and support neighbor-list
+evaluation~\cite{jax-smap}. The extraction, local evaluation, and reduction pattern is therefore
+an established computational construction.
 
-与上述完整软件系统相比，本文限定于一份方法表述：显式写出指标公式到图—张量算子的变换、反向装配规则和正确性条件，并提供有限范围的参考检查。其适用性与性能需要由后续后端实现和独立基准进一步确定。
-\section{问题定义与记号}
+The physical ingredients also have established precedents: the EAM formulation of Daw and
+Baskes~\cite{daw1984}, torsion-angle derivatives studied by Blondel and
+Karplus~\cite{blondel1996}, reversible operator splitting by Tuckerman, Berne, and
+Martyna~\cite{tuckerman1992}, and periodic many-body virial formulations by Thompson,
+Plimpton, and Mattson~\cite{thompson2009}. We do not claim these ingredients or the
+Gather--assembly adjoint rule as new. The contribution is their organization into a common set
+of explicit mathematical contracts, with aligned sign, counting, geometry, and differentiation
+conventions and executable checks for the examples considered here.
+
+In contrast to these complete software systems, this paper is limited to a methodological
+formulation: explicit transformations from indexed equations to graph--tensor operators, reverse
+assembly rules, correctness conditions, and a restricted set of reference checks. Applicability
+and performance must be established by subsequent backend implementations and independent
+benchmarks.
+\section{Problem definition and notation}
 \label{sec:notation}
-\subsection{状态与索引空间}
-将第 $i$ 个粒子的位置、速度和力记为列向量 $\vect x_i,\vect v_i,\vect f_i\in\RR^3$。对应的数组以它们的转置作为第 $i$ 行：
+\subsection{State and index spaces}
+Let the position, velocity, and force of particle $i$ be column vectors $\vect x_i,\vect
+v_i,\vect f_i\in\RR^3$. Their transposes form row $i$ of the corresponding arrays:
 \begin{equation}
 X_{i,:}=\vect x_i^{\mathsf T},\qquad
 V_{i,:}=\vect v_i^{\mathsf T},\qquad
 F_{i,:}=\vect f_i^{\mathsf T}.
 \end{equation}
-梯度 $\nabla_X U$ 与 $X$ 具有相同形状，并用 Frobenius 内积定义微分：
+The gradient $\nabla_X U$ has the same shape as $X$, with the differential defined using the
+Frobenius inner product:
 \begin{equation}
 \dd U=\ip{\nabla_XU}{\dd X}_F
 =\sum_{i=1}^N\sum_{\alpha=1}^3
@@ -127,57 +174,79 @@ F_{i,:}=\vect f_i^{\mathsf T}.
 
 \begin{table}[htbp]
 \centering
-\caption{主要符号与数组形状。各粒子的三维向量按行存储；索引、参数与连续状态的数学角色不同。}
+\caption{Principal symbols and array shapes. Three-dimensional particle vectors are stored as rows. Indices, parameters, and continuous state variables have distinct mathematical roles.}
 \label{tab:notation}
-\begin{tabularx}{\textwidth}{@{}p{27mm}p{39mm}Y@{}}
+\small
+\begin{tabularx}{\textwidth}{@{}p{22mm}p{45mm}Y@{}}
 \toprule
-符号 & 形状或定义 & 含义\\
+Symbol & Shape or definition & Meaning\\
 \midrule
-$X,V,F$ & $\RR^{N\times3}$ & 位置、速度、力；连续变量\\
-$m,\mass$ & $m\in\RR_{>0}^N$, $\mass=\diag(m)$ & 原子质量；$\mass^{-1}F$ 按行除以质量\\
-$z,\Theta$ & $z\in\NN^N$；参数集合 & 元素／类型与固定势函数参数\\
-$U,K,\mathcal H$ & 标量 & 势能、动能、总能量；$\mathcal H=K+U$\\
-$P$ & 非负整数 & 无序二体相互作用的条数，避免与能量混淆\\
-$I^{(k)}$ & $\{1,\ldots,N\}^{P_k\times k}$ & 每个 $k$ 体项的有序原子索引\\
-$B,C$ & $\RR^{P\times N}$ & 有向关联算子与无符号端点算子\\
-$D,r$ & $\RR^{P\times3}$，$\RR_{>0}^{P}$ & 边位移与边距离\\
-$\cell,\Omega$ & $\RR^{3\times3}$，$|\det\cell|$ & 晶胞矩阵（晶格矢量为行）与体积\\
+$X,V,F$ & $\RR^{N\times3}$ & Positions, velocities, and forces; continuous variables\\
+$m,\mass$ & $m\in\RR_{>0}^N$, $\mass=\diag(m)$ & Atomic masses; $\mass^{-1}F$ divides each row by its mass\\
+$z,\Theta$ & $z\in\NN^N$; parameter set & Element/type labels and fixed potential parameters\\
+$U,K,\mathcal H$ & Scalars & Potential, kinetic, and total energy; $\mathcal H=K+U$\\
+$P$ & Nonnegative integer & Number of unordered pair interactions, distinct from energy\\
+$I^{(k)}$ & $\{1,\ldots,N\}^{P_k\times k}$ & Ordered atom indices for each $k$-body term\\
+$B,C$ & $\RR^{P\times N}$ & Directed incidence and unsigned endpoint operators\\
+$D,r$ & $\RR^{P\times3}$, $\RR_{>0}^{P}$ & Edge displacements and distances\\
+$\cell,\Omega$ & $\RR^{3\times3}$, $|\det\cell|$ & Cell matrix (lattice vectors as rows) and volume\\
 \bottomrule
 \end{tabularx}
 \end{table}
 
-表~\ref{tab:notation} 汇总本文记号。元素、质量和参数可以以数组存储，但不因此变成同一类“可学习特征”。特别地，索引属于离散结构，位置属于连续变量；求位置梯度时，固定参数和离散索引不被当作位置分量求导。
+Table~\ref{tab:notation} summarizes the notation. Element labels, masses, and parameters may be
+stored in arrays without becoming a common class of ``learnable features.'' In particular,
+indices define discrete structure, whereas positions are continuous variables. Fixed parameters
+and discrete indices are not differentiated as position components when computing position
+gradients.
 
-\subsection{适用假设}
-本文的主推导采用固定粒子数、固定正质量、保守势能和无约束运动。未说明周期边界时，公式在非周期欧氏空间中成立。二体边 $(i_e,j_e)$ 满足 $i_e\ne j_e$，每个无序原子对只出现一次，方向仅用于记号。对称二体参数满足 $\phi_{ij}=\phi_{ji}$。
+\subsection{Assumptions}
+The main derivations assume a fixed number of particles, fixed positive masses, a conservative
+potential energy, and unconstrained motion. Unless periodic boundaries are specified, the
+equations apply in nonperiodic Euclidean space. Pair edges $(i_e,j_e)$ satisfy $i_e\ne j_e$,
+with each unordered atom pair appearing once; edge direction is a notational choice. Symmetric
+pair interactions satisfy $\phi_{ij}=\phi_{ji}$.
 
-对周期体系，矩阵形式在\textbf{当前邻居关系和当前镜像分支固定的局部区域}内求导。实际运行时镜像和邻居有效性仍需更新，详见第~\ref{sec:pbc} 节。
+Periodic nonbonded examples use an invertible, fixed cell and one closest image for each
+distinct unordered atom pair, with no self-image terms. This defines a minimum-image model;
+it is not, in general, a sum over all lattice images. Section~\ref{sec:pbc} states a sufficient
+cutoff condition under which the two short-range descriptions agree.
+
+For periodic systems, the matrix expressions are differentiated \textbf{locally with the current
+neighbor relation and image branch held fixed}, away from image ties and other nonsmooth
+points of the specified potential. No cutoff is needed for this local chain rule.
+Image selection and neighbor validity must still be updated during a simulation, as discussed
+in Section~\ref{sec:pbc}.
 
 
-\paragraph{物理语义与实现自由度}
-不改变：给定的势能模型、截断约定、单位、排除规则和运动方程。
+\paragraph{Physical semantics and implementation freedom.}
+The specified potential-energy model, cutoff conventions, units, exclusions, and equations of
+motion remain unchanged.
 
-可以改变：指标组织、边／原子分组、存储布局、求和顺序、算子融合及硬件调度。实数算术下保持数学等价；浮点实现还需规定误差和可重复性要求。
+Index organization, edge/atom grouping, storage layout, summation order, operator fusion, and
+hardware scheduling may change. Mathematical equivalence holds in real arithmetic;
+floating-point implementations additionally require error and reproducibility specifications.
 
 
 
-\subsection{传统动力学与张量状态}
+\subsection{Conventional dynamics and tensor state}
 \label{sec:baseline}
-\oldform 对每个原子应用牛顿方程和保守力关系：
+\oldform Newton's equations and the conservative-force relation apply to each atom:
 \begin{equation}
 \frac{\dd\vect x_i}{\dd t}=\vect v_i,\qquad
 m_i\frac{\dd\vect v_i}{\dd t}=\vect f_i,\qquad
 \vect f_i=-\frac{\partial U}{\partial\vect x_i}.
 \label{eq:newton-classic}
 \end{equation}
-动能与总能量为
+The kinetic and total energies are
 \begin{equation}
 K=\frac12\sum_{i=1}^N m_i\norm{\vect v_i}^2,
 \qquad \mathcal H=K+U.
 \end{equation}
-这些关系不依赖具体势函数和处理器类型\cite{gromacs-md}。
+These relations do not depend on the particular potential or processor
+architecture~\cite{gromacs-md}.
 
-\newform 将同一关系写成数组与算子形式：
+\newform The same relations can be written using arrays and operators:
 \begin{equation}
 \dot X=V,\qquad \dot V=\mass^{-1}F,\qquad F=-\nabla_XU(X;\Theta).
 \label{eq:newton-tensor}
@@ -185,53 +254,58 @@ K=\frac12\sum_{i=1}^N m_i\norm{\vect v_i}^2,
 \begin{equation}
 K=\frac12\tr(V^{\mathsf T}\mass V).
 \end{equation}
-这一步只是统一状态表示，尚未改变力的计算组织。
+This step unifies the state representation without yet changing the organization of force
+evaluation.
 
-\section{提取算子、伴随装配与局部能量的统一求导}
+\section{Extraction, adjoint assembly, and local energy gradients}
 \label{sec:gather}
-\subsection{传统局部相互作用}
-对一类 $k$ 体相互作用，设第 $a$ 项涉及
-$(I_{a,1},\ldots,I_{a,k})$。传统能量写成
+\subsection{Conventional local interactions}
+For a class of $k$-body interactions, let term $a$ involve atoms
+$(I_{a,1},\ldots,I_{a,k})$. The conventional energy is
 \begin{equation}
 U_I(X)=\sum_{a=1}^{P_k}
 u_a\bigl(\vect x_{I_{a,1}},\ldots,\vect x_{I_{a,k}};\Theta_a\bigr).
 \label{eq:local-classic}
 \end{equation}
-每个原子的梯度等于所有涉及该原子的局部梯度之和：
+The gradient for each atom sums the local gradients of all interactions involving that atom,
+giving the force
 \begin{equation}
 \vect f_i=-\sum_{\substack{a,p\\I_{a,p}=i}}
-\frac{\partial u_a}{\partial\vect x_{I_{a,p}}}.
+\nabla_p u_a\bigl(\vect x_{I_{a,1}},\ldots,\vect x_{I_{a,k}};\Theta_a\bigr).
 \label{eq:local-classic-force}
 \end{equation}
-相互作用内部的角色和顺序必须保留，例如角度的第二个原子是中心原子。
+Here $\nabla_p$ means the gradient with respect to the $p$th argument before identifying
+arguments with global atom coordinates. If an atom occupies several slots, each slot contributes.
+Roles and ordering within an interaction must be preserved; for example, the second atom in an
+angle is its central atom.
 
-\subsection{定义 Gather 及其伴随}
-\begin{definition}[局部提取]
-对固定索引 $I$，定义线性算子
+\subsection{Gather and its adjoint}
+\begin{definition}[Local extraction]
+For fixed indices $I$, define the linear operator
 \begin{equation}
 \GE:\RR^{N\times3}\to\RR^{P_k\times k\times3},\qquad
 [\GE(X)]_{a,p,\alpha}=X_{I_{a,p},\alpha}.
 \label{eq:gather}
 \end{equation}
 \end{definition}
-\begin{definition}[累加装配]
-定义
+\begin{definition}[Additive assembly]
+Define
 \begin{equation}
 \GE^*:\RR^{P_k\times k\times3}\to\RR^{N\times3},\qquad
 [\GE^*(Z)]_{i,\alpha}=\sum_{\substack{a,p\\I_{a,p}=i}} Z_{a,p,\alpha}.
 \label{eq:assemble}
 \end{equation}
 \end{definition}
-重复索引必须求和，不是覆盖写入，也不是求平均。
+Contributions at repeated indices must be summed, rather than overwritten or averaged.
 
-\begin{proposition}[提取—装配伴随关系]
+\begin{proposition}[Extraction--assembly adjoint identity]
 \begin{equation}
 \ip{\GE(X)}{Z}=\ip{X}{\GE^*(Z)}.
 \label{eq:adjoint-identity}
 \end{equation}
 \end{proposition}
 \begin{proof}
-直接对索引重新分组：
+Regrouping the indexed sum gives
 \begin{align}
 \ip{\GE(X)}{Z}
 &=\sum_{a,p,\alpha}X_{I_{a,p},\alpha}Z_{a,p,\alpha}\\
@@ -239,98 +313,107 @@ u_a\bigl(\vect x_{I_{a,1}},\ldots,\vect x_{I_{a,k}};\Theta_a\bigr).
 \sum_{a,p:I_{a,p}=i}Z_{a,p,\alpha}
 =\ip{X}{\GE^*(Z)}.\nonumber
 \end{align}
-因此 $\GE^*$ 是 $\GE$ 在所选内积下的伴随。
+Thus $\GE^*$ is the adjoint of $\GE$ under the chosen inner products.
 \end{proof}
 
-\subsection{能量与力的重构}
-令 $Q=\GE(X)$，$\Phi_I(Q)=\sum_a u_a(Q_a)$。则
+\subsection{Reformulating energy and forces}
+Let $Q=\GE(X)$ and $\Phi_I(Q)=\sum_a u_a(Q_a)$. Then
 \begin{equation}
 U_I(X)=\Phi_I(\GE(X)),\qquad
 F_I=-\GE^*\bigl(\nabla_Q\Phi_I(Q)\bigr).
 \label{eq:local-reform}
 \end{equation}
-证明只需使用链式法则：
+The result follows directly from the chain rule:
 \begin{equation}
 \dd U_I=\ip{\nabla_Q\Phi_I}{\GE(\dd X)}
 =\ip{\GE^*\nabla_Q\Phi_I}{\dd X}.
 \end{equation}
 
-如果局部坐标还需先变成距离、角度或其他几何量 $Y=\Gamma_I(Q)$，则应写成
+If local coordinates are first mapped to distances, angles, or other geometric quantities
+$Y=\Gamma_I(Q)$, the expression becomes
 \begin{equation}
 U_I=\Phi_I\circ\Gamma_I\circ\GE(X),\qquad
 F_I=-\GE^*\,\mathrm D\Gamma_I(Q)^*\,
 \nabla_Y\Phi_I(Y).
 \label{eq:geometry-chain}
 \end{equation}
-$\mathrm D\Gamma_I(Q)^*$ 是几何映射雅可比的转置作用。只有线性的 Gather 可以直接用固定伴随；非线性几何的导数依赖当前坐标。
+Here $\mathrm D\Gamma_I(Q)^*$ denotes the transpose action of the geometric Jacobian. The linear
+Gather operator has a fixed adjoint, whereas the derivative of nonlinear geometry depends on the
+current coordinates.
 
 
-\paragraph{前向与反向依赖}
-前向：局部提取 $\to$ 几何变换 $\to$ 局部能量 $\to$ 求和。
+\paragraph{Forward and reverse dependencies.}
+The forward chain is local extraction $\to$ geometry $\to$ local energy $\to$ summation.
 
-反向：能量导数 $\to$ 几何雅可比转置作用 $\to$ 累加装配 $\to$ 取负号得到力。
+The reverse chain is energy derivatives $\to$ geometric Jacobian transpose action $\to$ additive
+assembly $\to$ negation to obtain forces.
 
-这是数学依赖，不规定中间数组必须存在，也不规定必须使用自动微分软件。
+These are mathematical dependencies. They do not require materialized intermediate arrays or the
+use of automatic-differentiation software.
 
 
-\section{典型相互作用的等价重构}
+\section{Equivalent reformulations of representative interactions}
 \label{sec:models}
-\subsection{二体势与图关联算子}
+\subsection{Pair potentials and graph incidence operators}
+\label{sec:pair}
 
-令 $\vect d_{ij}=\vect x_j-\vect x_i$，$r_{ij}=\norm{\vect d_{ij}}$，$\mathcal N(i)$ 为对称邻居集合。每个无序相互作用只计一次的能量为
+Let $\vect d_{ij}=\vect x_j-\vect x_i$, $r_{ij}=\norm{\vect d_{ij}}$, and let $\mathcal N(i)$ be
+a symmetric neighbor set. Counting each unordered interaction once gives
 \begin{equation}
 U_2=\sum_{i<j}\phi_{ij}(r_{ij})
 =\frac12\sum_i\sum_{j\in\mathcal N(i)}\phi_{ij}(r_{ij}).
 \label{eq:pair-traditional-energy}
 \end{equation}
-求和集合仅包含所定义的有效相互作用。对应的原子力为
+The sums include only the specified active interactions. The corresponding atomic force is
 \begin{equation}
 \vect f_i=\sum_{j\in\mathcal N(i)}
 \phi'_{ij}(r_{ij})\frac{\vect x_j-\vect x_i}{r_{ij}}.
 \label{eq:pair-traditional-force}
 \end{equation}
-注意符号：本文位移指向 $i\to j$，因此上式前面是正号；$\phi'(r)$ 本身可以为正或负。
+The sign follows from the displacement convention $i\to j$: the expression has a positive
+prefactor, while $\phi'(r)$ itself may be positive or negative.
 
 
-\label{sec:pair}
-\subsubsection{从边索引构造选择算子}
-对 $P$ 条边 $e=(i_e,j_e)$，定义
+\subsubsection{Selection operators from edge indices}
+For $P$ edges $e=(i_e,j_e)$, define
 \begin{equation}
-(\src)_{ei}=\begin{cases}1&i=i_e,\\0&\text{其他},\end{cases}
+(\src)_{ei}=\begin{cases}1&i=i_e,\\0&\text{otherwise},\end{cases}
 \qquad
-(\dst)_{ei}=\begin{cases}1&i=j_e,\\0&\text{其他}.\end{cases}
+(\dst)_{ei}=\begin{cases}1&i=j_e,\\0&\text{otherwise}.\end{cases}
 \end{equation}
-二者均为 $P\times N$。令
+Both operators have shape $P\times N$. Set
 \begin{equation}
 B=\dst-\src,\qquad C=\src+\dst=|B|.
 \label{eq:incidence}
 \end{equation}
-$B$ 的每行只有 $-1$ 和 $+1$ 两个非零元，$C$ 在两个端点上均为 $1$。由定义
+Each row of $B$ has exactly two nonzero entries, $-1$ and $+1$, while $C$ has a $1$ at both
+endpoints. By definition,
 \begin{equation}
 D=BX=(\dst X)-(\src X),\qquad D_e=(\vect x_{j_e}-\vect x_{i_e})^{\mathsf T}.
 \label{eq:edge-difference}
 \end{equation}
 
-\subsubsection{从传统能量到逐边势能}
+\subsubsection{From conventional energy to edge-wise potentials}
 \oldform
 \begin{equation}
 U_2=\sum_{\{i,j\}\in\mathcal E}\phi_{ij}(\norm{\vect x_j-\vect x_i}).
 \end{equation}
-\newform 令 $\phi(r)_e=\phi_e(r_e;\theta_e)$、$r_e=\sqrt{\sum_\alpha D_{e\alpha}^2}$，则
+\newform With $\phi(r)_e=\phi_e(r_e;\theta_e)$ and $r_e=\sqrt{\sum_\alpha D_{e\alpha}^2}$,
 \begin{equation}
 U_2(X)=\ones_P^{\mathsf T}\phi(r),\qquad r=\operatorname{RowNorm}(BX).
 \label{eq:pair-reform-energy}
 \end{equation}
-参数 $\theta_e$ 可由类型对 $z_{i_e},z_{j_e}$ 查表，不要求物理存储上复制到每条边。
+The parameter $\theta_e$ may be obtained by a lookup using the type pair $z_{i_e},z_{j_e}$; it
+need not be physically replicated on every edge.
 
-\subsubsection{能量微分与力的伴随装配}
-对 $r_e>0$，有
+\subsubsection{Energy differentials and adjoint force assembly}
+For $r_e>0$,
 \begin{equation}
 \dd r_e=\frac{D_e\cdot\dd D_e}{r_e},\qquad
 g_e=\frac{\partial U_2}{\partial D_e}
 =\frac{\phi'_e(r_e)}{r_e}D_e.
 \end{equation}
-因此
+Consequently,
 \begin{align}
 \dd U_2
 &=\sum_e\phi'_e(r_e)\,\dd r_e
@@ -338,84 +421,94 @@ g_e=\frac{\partial U_2}{\partial D_e}
 &=\ip{g}{B\,\dd X}_F
 =\ip{B^{\mathsf T}g}{\dd X}_F.\nonumber
 \end{align}
-比较梯度定义得到
+Comparing with the gradient definition yields
 \begin{equation}
 F=-B^{\mathsf T}g
 =-B^{\mathsf T}\diag\!\left(\frac{\phi'(r)}{r}\right)D.
 \label{eq:pair-reform-force}
 \end{equation}
-第 $e=(i,j)$ 条边的装配恰好是
+For edge $e=(i,j)$, assembly is exactly
 \begin{equation}
 \vect f_i\mathrel{+}=g_e^{\mathsf T},\qquad
 \vect f_j\mathrel{-}=g_e^{\mathsf T}.
 \label{eq:pair-endpoints}
 \end{equation}
-这与式~\eqref{eq:pair-traditional-force} 完全一致。
+This agrees with Eq.~\eqref{eq:pair-traditional-force}.
 
-\subsubsection{非线性与稀疏实现}
-在无周期镜像偏移时，进一步写成
+\subsubsection{Nonlinearity and sparse implementation}
+In the absence of periodic image offsets, one may further write
 \begin{equation}
 F=-L_w(X)X,\qquad
 L_w(X)=B^{\mathsf T}\diag(w(X))B,\qquad
 w_e(X)=\frac{\phi'_e(r_e(X))}{r_e(X)}.
 \label{eq:nonlinear-laplacian}
 \end{equation}
-$L_w$ 依赖 $X$，所以通常不是固定线性系统。权重 $w_e$ 也可能为负，不能无条件把它视为正半定图拉普拉斯。
+Since $L_w$ depends on $X$, this is generally not a fixed linear system. The weights $w_e$ may
+also be negative, so the operator cannot unconditionally be treated as a positive-semidefinite graph
+Laplacian.
 
-实际表示只需 $i_e,j_e$。$BX$ 可由索引读取与减法实现，$B^{\mathsf T}g$ 可由端点累加或分组归约实现。后端可以融合它们，不生成 $B$、$L_w$ 或全部 $D$ 的显式存储。
+An implementation needs only $i_e,j_e$. The action $BX$ can be evaluated by indexed reads and
+subtraction, and $B^{\mathsf T}g$ by endpoint accumulation or grouped reduction. A backend may
+fuse these operations without explicitly storing $B$, $L_w$, or all of $D$.
 
-\subsubsection{平移不变性的直接检验}
-对边 $(1,2),(2,3)$，
+\subsubsection{A direct check of translation invariance}
+For edges $(1,2),(2,3)$,
 \begin{equation}
 B=\begin{bmatrix}-1&1&0\\0&-1&1\end{bmatrix},\qquad
 F=\begin{bmatrix}g_1\\-g_1+g_2\\-g_2\end{bmatrix}.
 \end{equation}
-因此 $\sum_i\vect f_i=0$。一般地，$B\ones_N=0$，故
+Hence $\sum_i\vect f_i=0$. More generally, $B\ones_N=0$, so
 \begin{equation}
 \ones_N^{\mathsf T}F=-(B\ones_N)^{\mathsf T}g=0.
 \label{eq:net-force}
 \end{equation}
 
-\subsubsection{半表与全表的计数等价性}
-LAMMPS 明确区分只存一次的 half list 与两个方向均存储的 full list\cite{lammps-neighbor}。本文默认半表。
+\subsubsection{Counting equivalence of half and full lists}
+LAMMPS distinguishes a half list, which stores each pair once, from a full list, which stores
+both directions~\cite{lammps-neighbor}. We use half lists unless stated otherwise.
 
-\oldform 对完整双向邻居集合，
+\oldform For a complete bidirectional neighbor set,
 \begin{equation}
 U_2=\frac12\sum_i\sum_{j\in\mathcal N(i)}\phi_{ij}(r_{ij}),\qquad
 \vect f_i=\sum_{j\in\mathcal N(i)}g_{i\to j}^{\mathsf T}.
 \end{equation}
-\newform 若 $\widetilde B,\widetilde\src,\widetilde g$ 基于完整双向边，则
+\newform If $\widetilde B,\widetilde\src,\widetilde g$ are defined on the complete set of directed edges,
 \begin{equation}
 U_2=\frac12\ones^{\mathsf T}\phi(\widetilde r),\qquad
 F=-\frac12\widetilde B^{\mathsf T}\widetilde g
 =\widetilde\src^{\mathsf T}\widetilde g.
 \label{eq:full-list}
 \end{equation}
-最后一个等号要求反向边完整且势函数对称，使 $g_{j\to i}=-g_{i\to j}$。
+The final equality requires all reverse edges and a symmetric potential, so that $g_{j\to
+i}=-g_{i\to j}$.
 
 
 
-半表：每个无序对算一次，能量无 $1/2$，力写入两个端点。
+For a half list, each unordered pair is evaluated once. The energy has no factor of $1/2$, and
+forces are accumulated at both endpoints.
 
-全表：能量有 $1/2$；若每个原子只收集从自身发出的边力，该力累加\textbf{不再乘 $1/2$}。如果对全表能量直接做完整链式求导，则使用 $-\tfrac12\widetilde B^{\mathsf T}\widetilde g$。
+For a full list, the energy carries a factor of $1/2$. If each atom collects only the forces
+from its outgoing edges, that force sum \textbf{has no additional factor of $1/2$}.
+Differentiating the full-list energy through the complete chain instead gives
+$-\tfrac12\widetilde B^{\mathsf T}\widetilde g$.
 
 
-\subsection{Lennard--Jones 势与截断约定}
+\subsection{The Lennard--Jones potential and cutoff conventions}
 \label{sec:lj}
-\oldform 标准 12--6 LJ 势为\cite{lammps-lj}
+\oldform The standard 12--6 Lennard--Jones (LJ) potential is~\cite{lammps-lj}
 \begin{equation}
 \phi_{ij}(r)=4\epsilon_{ij}\left[
 \left(\frac{\sigma_{ij}}r\right)^{12}
 -\left(\frac{\sigma_{ij}}r\right)^6\right].
 \label{eq:lj-energy}
 \end{equation}
-由直接求导，
+Direct differentiation gives
 \begin{equation}
 \phi'_{ij}(r)=\frac{24\epsilon_{ij}}r
 \left[\left(\frac{\sigma_{ij}}r\right)^6
 -2\left(\frac{\sigma_{ij}}r\right)^{12}\right].
 \end{equation}
-故原子力为
+The atomic force is therefore
 \begin{equation}
 \vect f_i=\sum_j\frac{24\epsilon_{ij}}{r_{ij}^2}
 \left[\left(\frac{\sigma_{ij}}{r_{ij}}\right)^6
@@ -424,22 +517,23 @@ F=-\frac12\widetilde B^{\mathsf T}\widetilde g
 \label{eq:lj-force-traditional}
 \end{equation}
 
-\newform 令逐边变量
+\newform Define the edge-wise quantities
 \begin{equation}
 a_e=\left(\frac{\sigma_e}{r_e}\right)^6,\qquad
 u_e=4\epsilon_e(a_e^2-a_e),\qquad
 w_e=\frac{24\epsilon_e}{r_e^2}(a_e-2a_e^2).
 \end{equation}
-则完整表达为
+The complete expression is then
 \begin{equation}
 D=BX,\quad r=\operatorname{RowNorm}(D),\quad
 U=\ones^{\mathsf T}u,\quad F=-B^{\mathsf T}\diag(w)D.
 \label{eq:lj-force-tensor}
 \end{equation}
-\parallelmeaning 距离与解析函数可在边维度独立计算，端点贡献需要归约。这是同一 LJ 势的计算重排，不是把 LJ 变成神经网络或固定矩阵势。
+\parallelmeaning Distances and analytic functions can be evaluated independently along the edge dimension, whereas endpoint contributions require reduction. This reorganizes the evaluation of the same LJ potential; it does not turn LJ into a neural network or a fixed matrix potential.
 
-\subsubsection{截断：模型定义必须先固定}
-未经截断的 LJ 在 $r=2^{1/6}\sigma$ 处导数为零。若选择 force-shifted 截断，则定义\cite{lammps-shift}
+\subsubsection{Cutoffs require a fixed model definition}
+The untruncated LJ potential has zero derivative at $r=2^{1/6}\sigma$. A force-shifted
+truncation is defined by~\cite{lammps-shift}
 \begin{equation}
 \widetilde\phi(r)=
 \begin{cases}
@@ -452,61 +546,86 @@ U=\ones^{\mathsf T}u,\quad F=-B^{\mathsf T}\diag(w)D.
 \widetilde\phi'(r)=
 \begin{cases}\phi'(r)-\phi'(r_c),&r<r_c,\\0,&r\ge r_c.\end{cases}
 \end{equation}
-于是边算子中替换 $\phi,\phi'$ 即可，但传统参考程序必须使用相同模型。该处理改变了截断内的力，不应被描述为“仅仅改写公式而完全没有改模型”。
+The edge operators can use these expressions in place of $\phi,\phi'$, but the conventional
+reference implementation must use the same model. Force shifting changes forces inside the
+cutoff and therefore changes the model, rather than merely rewriting its equations.
 
-当 $r_e=0$ 时 LJ 奇异；未使用的填充边必须被安全排除，不能先计算 $1/r_e$ 再寄希望于 $0\times\infty$ 被消除。参数混合规则、排除关系和缩放权重也属于模型约定。
-\subsection{有序超边上的键、角与二面角}
+LJ is singular at $r_e=0$. Unused padding edges must be excluded safely before evaluating
+$1/r_e$; multiplying an invalid result by zero does not reliably remove $0\times\infty$.
+Parameter mixing, exclusions, and scaling weights are also part of the model specification.
+For position-independent scaling coefficients $s_e$, the pair expression is
+\begin{equation}
+U_2=\sum_e s_e\phi_e(r_e),\qquad
+g_e=s_e\frac{\phi'_e(r_e)}{r_e}D_e,\qquad F=-B^{\mathsf T}g.
+\label{eq:pair-scaling}
+\end{equation}
+An excluded pair has $s_e=0$ and is skipped before singular functions are evaluated. The same
+factor must multiply energy and its derivative. Type parameters are obtained from a specified
+symmetric lookup or mixing rule, $\theta_e=\mathcal M(z_{i_e},z_{j_e};\Theta)$; no universal
+mixing rule is assumed. For EAM, changes to density contributions and to pair energies must be
+specified separately, since scaling a pair energy does not by itself scale an embedding term.
+\subsection{Bonds, angles, and dihedrals on ordered hyperedges}
 \label{sec:bonded}
-\oldform 对谐和键与谐和角，分别采用
+\oldform For harmonic bonds and angles, respectively, we use
 \begin{equation}
  U_b=\frac12\sum_b k_b(r_b-r_{0,b})^2,\qquad
  U_\theta=\frac12\sum_a k_a(\theta_a-\theta_{0,a})^2.
 \end{equation}
-每个角 $a=(i,j,k)$ 的第二个原子为中心。设
-$\vect a=\vect x_i-\vect x_j$、$\vect b=\vect x_k-\vect x_j$，并令
-$\vect g_a=\partial u_a/\partial\vect a$、$\vect g_b=\partial u_a/\partial\vect b$，则
+In each angle $a=(i,j,k)$, the second atom is central. Let
+$\vect a=\vect x_i-\vect x_j$ and $\vect b=\vect x_k-\vect x_j$, and define
+$\vect g_a=\partial u_a/\partial\vect a$ and $\vect g_b=\partial u_a/\partial\vect b$. Then
 \begin{equation}
  \vect f_i=-\vect g_a,\qquad
  \vect f_j=\vect g_a+\vect g_b,\qquad
  \vect f_k=-\vect g_b.
  \label{eq:angle-local-forces}
 \end{equation}
-\newform 谐和键仍采用二端点关联算子 $B_b$：
+\newform Harmonic bonds retain a two-endpoint incidence operator $B_b$:
 \begin{equation}
  D_b=B_bX,\quad r_b=\operatorname{RowNorm}(D_b),\quad
  F_b=-B_b^{\mathsf T}\diag\!\left(\frac{k\odot(r_b-r_0)}{r_b}\right)D_b.
 \end{equation}
-对全部角的三个位置分别建立选择算子 $S_i,S_j,S_k$，局部几何与装配为
+For all angles, construct selection operators $S_i,S_j,S_k$ for the three atom roles. Geometry
+and assembly become
 \begin{align}
  A_\theta&=(S_i-S_j)X, & C_\theta&=(S_k-S_j)X,\\
  F_\theta&=-(S_i-S_j)^{\mathsf T}G_a-(S_k-S_j)^{\mathsf T}G_b.
  \label{eq:angle-tensor}
 \end{align}
-其中 $G_a,G_b$ 为逐角局部导数组成的数组。式~\eqref{eq:angle-tensor} 展开即为式~\eqref{eq:angle-local-forces}，因此三体几何不必被拆成二体势。
+Here $G_a,G_b$ collect the local derivatives for each angle. Expanding
+Eq.~\eqref{eq:angle-tensor} gives Eq.~\eqref{eq:angle-local-forces}; three-body geometry need
+not be decomposed into pair potentials.
 
-对有序四原子的二面角 $\chi$，例如
-$u(\chi)=\kappa[1+\cos(n\chi-\delta)]$，可统一写为
+For a dihedral $\chi$ defined by four ordered atoms, with a potential such as
+$u(\chi)=\kappa[1+\cos(n\chi-\delta)]$, the unified expression is
 \begin{equation}
  U_\chi=\ones^{\mathsf T}u\!\left(\Gamma_\chi(\mathcal G_{I^{(4)}}X)\right),\qquad
  F_\chi=-\mathcal G_{I^{(4)}}^*\mathrm D\Gamma_\chi^*u'(\chi).
 \end{equation}
-这里必须保留四个原子的顺序、角度方向及镜像约定。附录~\ref{app:bonded} 给出完整的角与二面角传统公式、局部梯度及算子对照；附录~\ref{app:torsion} 给出二面角的反向链。与其他软件对照时需映射势参数，例如 LAMMPS 的 harmonic 键、角系数已经包含 $1/2$\cite{lammps-bond,lammps-angle}。
-\subsection{具有环境聚合的嵌入原子模型}
+The atom order, angular orientation, and image convention must be retained.
+Appendix~\ref{app:bonded} gives the full conventional expressions, local gradients, and operator
+counterparts for angles and dihedrals; Appendix~\ref{app:torsion} provides the reverse chain for
+a dihedral. Comparisons with other software require parameter mapping. For example, the harmonic
+bond and angle coefficients in LAMMPS already include the factor of
+$1/2$~\cite{lammps-bond,lammps-angle}.
+\subsection{Embedded-atom models with environment aggregation}
 \label{sec:eam}
-\subsubsection{单元素 EAM 的传统公式}
-标准 EAM 通过邻居密度与非线性嵌入能产生多体依赖\cite{lammps-eam}。单元素情形记为
+\subsubsection{Conventional single-element EAM}
+The embedded-atom model (EAM) introduces many-body dependence through neighbor density and a
+nonlinear embedding energy~\cite{daw1984,lammps-eam}. For a single element,
 \begin{equation}
 \rho_i=\sum_{j\in\mathcal N(i)}\psi(r_{ij}),\qquad
 U=\sum_i\mathcal A(\rho_i)+\frac12\sum_i\sum_{j\in\mathcal N(i)}\phi(r_{ij}).
 \label{eq:eam-traditional}
 \end{equation}
-不能把每一项嵌入能当成独立二体势。沿一对 $(i,j)$ 对距离求导，得到
+An embedding-energy term cannot be treated as an independent pair potential. Differentiation
+with respect to the distance of a pair $(i,j)$ gives
 \begin{equation}
 \frac{\partial U}{\partial r_{ij}}
 =\phi'(r_{ij})+
 \left[\mathcal A'(\rho_i)+\mathcal A'(\rho_j)\right]\psi'(r_{ij}).
 \end{equation}
-因此传统原子力为
+The conventional atomic force is therefore
 \begin{equation}
 \vect f_i=\sum_j
 \left\{\phi'(r_{ij})+
@@ -515,130 +634,204 @@ U=\sum_i\mathcal A(\rho_i)+\frac12\sum_i\sum_{j\in\mathcal N(i)}\phi(r_{ij}).
 \label{eq:eam-traditional-force}
 \end{equation}
 
-\subsubsection{节点—边往返的算子表达}
-仍使用无序边只存一次的 $B$ 和 $C=|B|$。由于一条边向两个端点贡献密度，
+\subsubsection{An operator expression with node--edge coupling}
+Retain $B$ and $C=|B|$, with each unordered edge stored once. Since an edge contributes density
+to both endpoints,
 \begin{equation}
 D=BX,\quad r=\operatorname{RowNorm}(D),\quad
 \rho=C^{\mathsf T}\psi(r).
 \label{eq:eam-density}
 \end{equation}
-势能变为
+The potential energy becomes
 \begin{equation}
 U=\ones_N^{\mathsf T}\mathcal A(\rho)+\ones_P^{\mathsf T}\phi(r).
 \end{equation}
-令节点量 $b=\mathcal A'(\rho)$。链式法则给出
+Let the node quantity be $b=\mathcal A'(\rho)$. The chain rule gives
 \begin{align}
 \dd U
 &=b^{\mathsf T}\dd\rho+\phi'(r)^{\mathsf T}\dd r\\
 &=b^{\mathsf T}C^{\mathsf T}\diag(\psi'(r))\dd r
 +\phi'(r)^{\mathsf T}\dd r.\nonumber
 \end{align}
-故
+Thus
 \begin{equation}
 w\equiv\nabla_rU=\phi'(r)+\psi'(r)\odot(Cb).
 \label{eq:eam-w}
 \end{equation}
-最终力为
+The resulting force is
 \begin{equation}
 F=-B^{\mathsf T}\diag\!\left(\frac{w}{r}\right)D.
 \label{eq:eam-force}
 \end{equation}
-因为 $(Cb)_e=b_{i_e}+b_{j_e}$，逐边展开式~\eqref{eq:eam-w} 就得到式~\eqref{eq:eam-traditional-force}。
+Since $(Cb)_e=b_{i_e}+b_{j_e}$, expanding Eq.~\eqref{eq:eam-w} edge by edge gives
+Eq.~\eqref{eq:eam-traditional-force}.
 
 
-\paragraph{环境聚合的依赖关系}
-$X\to D\to r\to\psi(r)\to\rho\to b\to w\to g\to F$。
+\paragraph{Dependencies in environment aggregation.}
+$X\to D\to r\to\psi(r)\to\rho\to b\to w\to g\to F$.
 
-可以并行计算每一阶段的边或节点，但后续力计算必须等待它所需的密度聚合完成。多体依赖不能仅靠“张量化”删除。
+Edges or nodes within each stage can be processed in parallel, but force evaluation must wait
+for the density aggregation on which it depends. Tensor notation does not remove these many-body
+dependencies.
 
 
 
-\subsubsection{多元素：密度贡献不能默认对称}
-更一般地，让 $\psi_{\alpha\leftarrow\beta}(r)$ 表示类型 $\beta$ 原子对类型 $\alpha$ 接收原子的密度贡献。传统式是
+\subsubsection{Multiple elements and asymmetric density contributions}
+More generally, let $\psi_{\alpha\leftarrow\beta}(r)$ denote the density contributed by an atom
+of type $\beta$ to a receiving atom of type $\alpha$. The conventional expression is
 \begin{equation}
 \rho_i=\sum_j\psi_{z_i\leftarrow z_j}(r_{ij}),\qquad
 U=\sum_i\mathcal A_{z_i}(\rho_i)+\sum_{i<j}\phi_{z_i z_j}(r_{ij}).
 \end{equation}
-这种接收者／贡献者都可影响密度的形式包含 EAM/FS 类情形\cite{lammps-eam}。对边 $e=(i_e,j_e)$，令
+This form, in which both the receiver and contributor can affect the density, includes
+EAM/FS-type cases~\cite{lammps-eam}. For edge $e=(i_e,j_e)$, define
 \begin{equation}
 p_e=\psi_{z_{i_e}\leftarrow z_{j_e}}(r_e),\quad
 q_e=\psi_{z_{j_e}\leftarrow z_{i_e}}(r_e),\quad
 b_i=\mathcal A'_{z_i}(\rho_i).
 \end{equation}
-重构为
+The reformulation is
 \begin{equation}
 \rho=\src^{\mathsf T}p+\dst^{\mathsf T}q,\qquad
 w=\phi'(r)+p'(r)\odot(\src b)+q'(r)\odot(\dst b).
 \label{eq:eam-multi}
 \end{equation}
-然后仍用式~\eqref{eq:eam-force} 装配。若不同项具有不同截断，候选关系必须覆盖所有被使用项的有效范围。
-\section{周期几何、邻居有效性与时间演化}
-\subsection{离散关系与周期几何}
+Forces are again assembled using Eq.~\eqref{eq:eam-force}. If different terms have different
+cutoffs, the candidate relation must cover the active range of every term used.
+\section{Periodic geometry, neighbor validity, and time evolution}
+\subsection{Discrete relations and periodic geometry}
 \label{sec:pbc}
-\subsubsection{周期位移的传统式与矩阵式}
-对一般固定晶胞，晶格矢量按行放入 $\cell$。传统最近镜像位移可定义为
+\subsubsection{Conventional and matrix expressions for periodic displacements}
+For a general fixed cell, store the lattice vectors as rows of $\cell$. The conventional
+minimum-image displacement can be defined by
 \begin{equation}
 \vect d_{ij}=\vect x_j-\vect x_i-\cell^{\mathsf T}\vect\lambda_{ij},\qquad
 \vect\lambda_{ij}\in\argmin_{\vect n\in\ZZ^3}
 \norm{\vect x_j-\vect x_i-\cell^{\mathsf T}\vect n}.
 \end{equation}
-\newform 将每条边的镜像整数放入 $\Lambda\in\ZZ^{P\times3}$，得到
+\newform Collecting the integer image vectors into $\Lambda\in\ZZ^{P\times3}$ gives
 \begin{equation}
 D=BX-\Lambda\cell.
 \label{eq:pbc-matrix}
 \end{equation}
-在固定 $\Lambda,\cell$ 的局部求导中，$\dd D=B\dd X$，因此
+For local differentiation at fixed $\Lambda,\cell$, we have $\dd D=B\dd X$, so
 \begin{equation}
 F=-B^{\mathsf T}g
 \end{equation}
-仍然成立；但不应把有镜像偏移的该式写成没有附加项的 $F=-L_wX$。
+still holds. With nonzero image offsets, however, it cannot be replaced by $F=-L_wX$ without an
+additional term.
 
-固定正交盒 $\cell=\diag(L_x,L_y,L_z)$ 时，
+For a fixed orthorhombic box $\cell=\diag(L_x,L_y,L_z)$,
 \begin{equation}
 D_{e\alpha}=(BX)_{e\alpha}-L_\alpha
 \round\!\left(\frac{(BX)_{e\alpha}}{L_\alpha}\right).
 \end{equation}
-本文讨论的简单情形可限制 $r_{\mathrm{list}}<\tfrac12\min_\alpha L_\alpha$。对一般倾斜晶胞，逐分量取整不是无条件正确的最近晶格点算法；镜像选择属于独立几何算子的实现责任。
+For a general skew cell, component-wise rounding of fractional coordinates is not an
+unconditionally valid nearest-lattice-point algorithm. The geometry operator must return a
+minimizer of the stated distance problem and specify how ties are handled; the orthorhombic
+rounding formula alone is not a general-cell implementation.
 
-\subsubsection{候选图与真实相互作用图}
-\oldform 使用 $r_{\mathrm{list}}=r_c+\delta$ 的候选表，其中 $\delta>0$ 是 skin。邻居表无需每步重建，但必须覆盖所有当前有效相互作用\cite{lammps-neighbor}。
-\newform 将构图视为带契约的离散算子：
+\paragraph{Minimum-image models and periodic image sums.}
+Define the shortest nonzero lattice-translation length by
+\begin{equation}
+\ell_{\mathrm{lat}}=\min_{\vect n\in\ZZ^3\setminus\{0\}}
+\norm{\cell^{\mathsf T}\vect n}.
+\label{eq:lattice-length}
+\end{equation}
+For short-range pair or radial EAM terms that vanish for $r\ge r_c$, a sufficient condition
+for at most one active image of each pair, and no self-image contributions, is
+\begin{equation}
+r_c<\frac12\ell_{\mathrm{lat}}.
+\label{eq:unique-image-cutoff}
+\end{equation}
+Indeed, two images within $r_c$ of the same point would be separated by less than $2r_c$,
+contradicting the definition of $\ell_{\mathrm{lat}}$. Under this condition the minimum-image
+evaluation agrees with the corresponding finite-range periodic image sum. For an orthorhombic
+box, $\ell_{\mathrm{lat}}=\min_\alpha L_\alpha$, giving the familiar half-box restriction
+for short-range interactions~\cite{gromacs-pbc}. For a general cell, half the minimum
+perpendicular face-to-face width is a possibly more restrictive sufficient bound; half the
+shortest \emph{listed basis vector} is not valid for an arbitrary unreduced basis.
+
+The physical cutoff $r_c$ and candidate radius $r_{\mathrm{list}}$ have different roles.
+Requiring $r_{\mathrm{list}}<\ell_{\mathrm{lat}}/2$ is a convenient sufficient restriction
+for a simple image-based list builder, but is not required by the local force identity.
+A larger candidate radius is permissible for a builder that returns distinct unordered pairs,
+covers all active interactions, and recomputes their nearest images. If the intended model
+instead sums multiple active images, edges must include image labels and explicit counting
+rules. Self-image terms require separate treatment; for a self-edge $B_e=0$, so $|B|$ cannot
+represent its endpoint density contributions. Such models are outside the present simple-graph
+formulation.
+
+\paragraph{Regularity at image changes.}
+For a smooth radial pair potential, the minimum distance, and hence its potential energy,
+is continuous at an image tie away from collisions. Its gradient need not be continuous or
+exist there. For example, along one periodic coordinate with period $L$,
+\begin{equation}
+U(s)=\phi\!\left(\min(s,L-s)\right),\quad 0<s<L,
+\qquad
+U'_-(L/2)=\phi'(L/2),\quad U'_+(L/2)=-\phi'(L/2).
+\end{equation}
+Thus an uncut LJ minimum-image energy generally has a cusp, rather than an energy jump.
+Away from ties, its fixed-branch derivative is the actual local derivative. Condition
+\eqref{eq:unique-image-cutoff} places image ties outside the active range and removes this
+source of nonsmoothness. Regularity at the cutoff itself still depends on the truncation:
+force shifting makes the radial energy continuously differentiable there, not generally twice
+continuously differentiable. The periodic numerical example below tests only a fixed-branch
+region of the uncut minimum-image model.
+
+\subsubsection{Candidate and active interaction graphs}
+\oldform A candidate list uses radius $r_{\mathrm{list}}=r_c+\delta$, where $\delta>0$ is the skin distance. The list need not be rebuilt at every step, but it must cover all currently active interactions~\cite{lammps-neighbor}.
+\newform Treat graph construction as a discrete operator with an explicit contract:
 \begin{equation}
 \mathcal E_{\mathrm{cand}}=\mathcal R(X,\cell;r_c+\delta),\qquad
 \mathcal E_{\mathrm{active}}(X)\subseteq\mathcal E_{\mathrm{cand}}.
 \label{eq:neighbor-contract}
 \end{equation}
-允许候选图多存暂时不作用的边，但不允许漏边。能量计算通过截断函数或有效掩码确定真实贡献。
+The candidate graph may contain inactive edges, but it must not omit active ones. Cutoff
+functions or validity masks determine the actual energy contributions.
 
-\begin{proposition}[固定盒下的充分重用条件]
-设上次构图后所有原子的最大真实位移为
+\begin{proposition}[A sufficient reuse condition for a fixed box]
+Let the maximum actual particle displacement since the last graph construction be
 \begin{equation}
 d_{\max}=\max_i\norm{\vect x_i(t)-\vect x_i(t_{\mathrm{build}})}.
 \end{equation}
-若位移正确处理跨周期边界，且 $2d_{\max}<\delta$，则从候选半径外进入物理 cutoff 的原子对不会被遗漏。
+If displacements correctly account for periodic crossings and $2d_{\max}<\delta$, no pair that
+moves from outside the candidate radius into the physical cutoff will be missed.
 \end{proposition}
 \begin{proof}
-相对位移的变化不超过两个端点位移之和，即 $2d_{\max}$。原来距离大于 $r_c+\delta$ 的一对粒子，在上述条件下仍然大于 $r_c$。周期最短距离同样满足该界，但须使用一致的运动位移而非直接相减的折回坐标。
+The change in relative displacement is bounded by the sum of the endpoint displacements, hence
+by $2d_{\max}$. A pair initially farther apart than $r_c+\delta$ therefore remains farther apart
+than $r_c$ under this condition. The periodic minimum distance satisfies the same bound,
+provided that displacement tracking is consistent with particle motion rather than obtained by
+directly subtracting wrapped coordinates.
 \end{proof}
-该条件不直接覆盖盒形变；NPT 需要额外考虑晶胞变化。即使候选边不重建，当前距离和镜像仍需保持正确，不能永久复用过期 $\Lambda$。
+This condition does not directly cover cell deformation; NPT simulations must additionally
+account for changes in the cell. Even when the candidate edges are reused, current distances and
+images must remain correct. An outdated $\Lambda$ cannot be reused indefinitely.
 
-\subsubsection{关于求导与动态容量}
-邻居索引是离散元数据。通常在当前有效候选图上，对连续几何和能量求位置梯度，而不是对“排序/构图”本身求梯度。其成立依赖候选图不漏边、模型截断一致以及当前导数所在分支有效。
+\subsubsection{Differentiation and dynamic capacity}
+Neighbor indices are discrete metadata. Position gradients are normally taken through continuous
+geometry and energy on a currently valid candidate graph, rather than through sorting or graph
+construction itself. This requires complete candidate coverage, consistent cutoff definitions,
+and validity of the branch on which the derivative is evaluated.
 
-如果固定容量不足，必须报告、扩容并重算，不能静默截断边。JAX-MD 也显式暴露邻居缓冲区溢出状态\cite{jax-neighbor}。这种错误会改变物理相互作用集合，属于正确性失败，不是可接受的小数值误差。
-\subsection{Velocity Verlet 的状态映射}
+If a fixed-capacity buffer overflows, the implementation must report the condition, increase
+capacity, and recompute, rather than silently discard edges. JAX-MD likewise exposes
+neighbor-buffer overflow explicitly~\cite{jax-neighbor}. Omitting interactions changes the
+physical model and is a correctness failure, not an acceptable small numerical error.
+\subsection{Velocity Verlet as a state map}
 \label{sec:verlet}
-\subsubsection{传统更新公式}
-令 $h=\Delta t$。标准 Velocity Verlet 为\cite{gromacs-md}
+\subsubsection{Conventional update equations}
+Let $h=\Delta t$. The standard velocity Verlet scheme is~\cite{tuckerman1992,gromacs-md}
 \begin{align}
 \vect v_i^{n+1/2}&=\vect v_i^n+\frac{h}{2m_i}\vect f_i(X_n),\\
 \vect x_i^{n+1}&=\vect x_i^n+h\vect v_i^{n+1/2},\\
 \vect v_i^{n+1}&=\vect v_i^{n+1/2}+\frac{h}{2m_i}\vect f_i(X_{n+1}).
 \label{eq:vv-traditional}
 \end{align}
-第二次速度更新采用新位置的势能梯度。
+The second velocity update uses the potential-energy gradient at the new positions.
 
-\subsubsection{张量更新形式}
+\subsubsection{Tensor update}
 \begin{equation}
 \begin{aligned}
 V_{n+1/2}&=V_n+\frac h2\mass^{-1}F_n,\\
@@ -648,208 +841,337 @@ V_{n+1}&=V_{n+1/2}+\frac h2\mass^{-1}F_{n+1}.
 \end{aligned}
 \label{eq:vv-tensor}
 \end{equation}
-新位置产生后，先确认候选图有效，再计算 $F_{n+1}$。初始化需计算 $F_0$；之后可复用上一步末尾得到的力。
+After obtaining the new positions, candidate-graph validity must be established before
+evaluating $F_{n+1}$. Initialization requires $F_0$; subsequent steps can reuse the force
+obtained at the end of the preceding step.
 
-\subsubsection{作为两个简单流的对称组合}
-定义 kick 与 drift 状态映射：
+\subsubsection{A symmetric composition of two elementary flows}
+Define the kick and drift state maps by
 \begin{align}
 \mathcal K_h(X,V)&=(X,\,V+h\mass^{-1}F(X)),\\
 \mathcal D_h(X,V)&=(X+hV,\,V).
 \end{align}
-则
+Then
 \begin{equation}
 \mathcal T_h=\mathcal K_{h/2}\circ\mathcal D_h\circ\mathcal K_{h/2}.
 \label{eq:vv-composition}
 \end{equation}
-约定函数复合从右向左执行；两次 $\mathcal K$ 各自在其输入位置上评估力。与演化算子的对称分裂思想相一致\cite{gromacs-md}。
+Function composition is evaluated from right to left. Each application of $\mathcal K$ evaluates
+the force at its own input positions, consistent with symmetric splitting of evolution
+operators~\cite{tuckerman1992,gromacs-md}.
 
-对足够光滑的保守力，在通常稳定性条件下，该方法为二阶时间方法；它不意味着每一步的原始总能量严格不变。非光滑截断、错误邻居表和不一致的能量—力定义会破坏预期数值行为。
+For sufficiently smooth conservative forces and under the usual stability conditions, the method
+is second order in time. It does not conserve the original total energy exactly at every step.
+Nonsmooth cutoffs, invalid neighbor lists, and inconsistent energy--force definitions can
+compromise the expected numerical behavior.
 
-\parallelmeaning 各原子的 kick/drift 可以并行，但 $X_{n+1}$、$F_{n+1}$、$V_{n+1}$ 之间的因果依赖不能删除。硬件无关的算子重构不等于把所有时间步同时独立计算。
-\section{结构性质与实现语义}
+\parallelmeaning Atom-wise kick and drift updates can be parallelized, but the causal dependencies between $X_{n+1}$, $F_{n+1}$, and $V_{n+1}$ must be retained. A hardware-independent operator reformulation does not make all time steps independently executable at once.
+\section{Structural properties and implementation semantics}
 \label{sec:validation}
-\subsection{表示不变性}
+\subsection{Representation invariance}
 
-\textbf{边反向：}反转某行 $B_e$ 时，$D_e,g_e$ 同时变号，$u_e$ 不变，故 $-B_e^{\mathsf T}g_e$ 不变。
+\textbf{Edge reversal.} Reversing a row $B_e$, together with its image vector in a periodic
+system, changes the signs of both $D_e,g_e$ while leaving $u_e$ unchanged. The contribution
+$-B_e^{\mathsf T}g_e$ is therefore unchanged. Any endpoint-dependent parameters or density
+contributions must follow their endpoint roles.
 
-\textbf{边重排：}若 $Q$ 为边排列矩阵，$B'=QB$、$g'=Qg$，则
+\textbf{Edge permutation.} Permute all edge-associated parameters, images, and masks together.
+For an edge permutation matrix $Q$, with $B'=QB$ and $g'=Qg$,
 \begin{equation}
 -(B')^{\mathsf T}g'=-B^{\mathsf T}Q^{\mathsf T}Qg=-B^{\mathsf T}g.
 \end{equation}
 
-\textbf{原子重编号：}若 $\Pi$ 为原子排列矩阵，同时正确重排类型／质量并变换索引，则 $X'=\Pi X$、$B'=B\Pi^{\mathsf T}$，因而
+\textbf{Atom relabeling.} For an atom permutation matrix $\Pi$, correctly permuting types and masses and transforming the indices gives $X'=\Pi X$ and $B'=B\Pi^{\mathsf T}$. Thus
 \begin{equation}
 U'=U,\qquad F'=\Pi F.
 \end{equation}
-只重排坐标而不更新索引和类型，不是同一物理体系。
+Permuting coordinates without updating indices and types does not represent the same physical
+system.
 
-\subsection{守恒量的适用条件}
-对无外场、依赖相对坐标的势能，平移不变性给出
+\subsection{Conditions for conservation laws}
+For a potential depending on relative coordinates in the absence of external fields, translation
+invariance gives
 \begin{equation}
 \sum_i\vect f_i=0.
 \end{equation}
-在非周期孤立体系中，若能量还具有整体旋转不变性，则
+For an isolated nonperiodic system whose energy is also invariant under global rotations,
 \begin{equation}
 \sum_i\vect x_i\times\vect f_i=0.
 \end{equation}
-该转矩式不应直接用折回的周期坐标检验任意周期体系。旋转检验也应同时旋转相关晶胞和外场，或限定为无外场非周期情形。
+This torque identity should not be tested on an arbitrary periodic system by inserting wrapped
+coordinates. Rotational tests must rotate the relevant cell and external fields as well, or be
+restricted to nonperiodic systems without external fields.
 
-连续保守动力学满足
+Continuous conservative dynamics satisfies
 \begin{equation}
 \frac{\dd\mathcal H}{\dd t}
 =\ip{\mass V}{\dot V}_F+\ip{\nabla_XU}{\dot X}_F
 =\ip{V}{F}_F+\ip{-F}{V}_F=0.
 \end{equation}
-这是连续方程结论，不等于离散 Verlet 每步精确保能。
+This is a property of the continuous equations; it does not imply exact energy conservation at
+every discrete Verlet step.
 
 
+\subsection{Operator interfaces and semantics}
 \label{sec:operators}
-\subsection{算子接口及其语义}
 \begin{table}[htbp]
 \centering
-\caption{核心算子的前向定义与伴随／有效性语义。反向变量以横线表示。}
+\caption{Forward definitions and adjoint or validity semantics of the core operators. Overbars denote reverse-mode variables.}
 \label{tab:operators}
 \small
-\begin{tabularx}{\textwidth}{@{}p{32mm}YY@{}}
+\begin{tabularx}{\textwidth}{@{}p{36mm}YY@{}}
 \toprule
-算子 & 前向定义 & 反向或正确性语义\\
+Operator & Forward definition & Reverse or correctness semantics\\
 \midrule
 \texttt{Gather} & $Q=\mathcal G_I(X)$ & $\overline X=\mathcal G_I^*(\overline Q)$\\
-\texttt{Difference} & $D=BX-\Lambda\cell$ & 固定索引／镜像／盒时 $\overline X=B^{\mathsf T}\overline D$\\
+\texttt{Difference} & $D=BX-\Lambda\cell$ & $\overline X=B^{\mathsf T}\overline D$ at fixed indices, images, and cell\\
 \texttt{LocalMap} & $Y_a=f_a(Q_a)$ & $\overline Q_a=\mathrm D f_a(Q_a)^*\overline Y_a$\\
 \texttt{SegmentSum} & $Y_i=\sum_{e:s_e=i}Z_e$ & $\overline Z_e=\overline Y_{s_e}$\\
 \texttt{ReduceSum} & $u=\sum_a y_a$ & $\overline y_a=\overline u$\\
-\texttt{AssembleSum} & $F=\mathcal G_I^*(Z)$ & 对 $Z$ 的反向是 Gather\\
-\texttt{NeighborRelation} & 候选索引、容量、有效性 & 离散元数据；必须不漏有效边\\
-\texttt{StateUpdate} & kick/drift 等状态映射 & 保留输入输出依赖与步长语义\\
+\texttt{AssembleSum} & $F=\mathcal G_I^*(Z)$ & The reverse action on $Z$ is Gather\\
+\texttt{NeighborRelation} & Candidate indices, capacity, validity & Discrete metadata; must cover all active edges\\
+\texttt{StateUpdate} & State maps such as kick/drift & Preserve input--output dependencies and step-size semantics\\
 \bottomrule
 \end{tabularx}
 \end{table}
-表~\ref{tab:operators} 中的上横线表示反向传播的伴随变量，而非时间平均。多个后续算子依赖同一输入时，它们产生的反向贡献也必须相加。
+The overbars in Table~\ref{tab:operators} indicate adjoint variables in reverse propagation, not
+time averages. When several downstream operators depend on the same input, their reverse
+contributions must also be summed.
 
-每个算子的规范至少包含输入／输出形状、连续与离散参数、单位、边界与退化情形、求导规则、有效掩码以及误差约定。无需真的构造完整雅可比。
+An operator specification should include at least input/output shapes, continuous and discrete
+parameters, units, boundary and degenerate cases, differentiation rules, validity masks, and
+error conventions. Explicit construction of the full Jacobian is unnecessary.
 
-\subsection{数学张量不等于物理中间缓冲区}
-表达
+\subsection{Mathematical tensors and physical intermediate buffers}
+The expression
 \begin{equation}
 D\to r\to u,g\to U,F
 \end{equation}
-并不要求分别分配 $D,r,u,g$。合法实现可以在寄存器或局部缓存中即时计算，融合相邻算子，只输出最终需要的量。
+does not require separate allocations for $D,r,u,g$. A valid implementation may compute
+quantities on demand in registers or local storage, fuse adjacent operators, and write only the
+required outputs.
 
-同一个 $B^{\mathsf T}g$ 可由边并行加原子累加、按原子分组归约、双向全表的本地收集或其他等价策略实现。算子语义不应绑定某种特定线程、warp、原子指令或内存布局。
+The same action $B^{\mathsf T}g$ can be implemented by edge-parallel evaluation with atomic
+accumulation, atom-grouped reduction, local collection from a bidirectional full list, or other
+equivalent strategies. Operator semantics should not prescribe a particular thread, warp, atomic
+instruction, or memory layout.
 
 \begin{equation}
-\text{势能与算子语义}\ \longrightarrow\
-\text{合法重排／融合}\ \longrightarrow\
-\text{硬件后端实现}.
+\text{Physical semantics}\ \longrightarrow\
+\text{Reordering/fusion}\ \longrightarrow\
+\text{Backend execution}.
 \end{equation}
-“硬件无关”保证上层数学定义可复用，不保证一个调度在所有硬件上都最优。
+Hardware independence makes the upper-level mathematical definitions reusable; it does not
+guarantee that one schedule is optimal on every architecture.
 
-\subsection{浮点与分布式语义}
-浮点加法不满足严格结合律，归约树、融合运算和精度选择可以改变舍入结果\cite{nvidia-fp}。因此应区分实数数学等价、给定容差内一致和逐位可重复三个层级。
+\subsection{Floating-point and distributed semantics}
+Floating-point addition is not strictly associative. Reduction trees, fused operations, and
+precision choices can change rounding results~\cite{nvidia-fp}. It is therefore necessary to
+distinguish mathematical equivalence in real arithmetic, agreement within a specified tolerance,
+and bitwise reproducibility.
 
-若相互作用的输入分布于不同设备，Gather 可能需要取得远程节点数据，其伴随装配可能需要把贡献归还或归约到所有者。图／张量表达没有消除跨分区数据依赖；只是可以把这种依赖纳入算子契约。
-\section{小系统数值验证}
+When interaction inputs are distributed across devices, Gather may require remote node data, and
+its adjoint assembly may require returning or reducing contributions to their owners. A
+graph--tensor representation retains these cross-partition dependencies and makes them part of
+the operator contract.
+\section{Small-system numerical verification}
 \label{sec:experiments}
-\subsection{实验设置与误差定义}
-验证使用独立的 Python/NumPy 双精度参考脚本。非周期算例包含五个粒子，固定坐标与全部参数见附录~\ref{app:verification}。周期算例为固定正交盒内的四粒子几何检查。LJ 采用完整无序对，$\epsilon=0.8$、$\sigma=0.9$；本组 LJ 检查不应用截断。EAM 使用人为构造的光滑函数检查嵌入项的链式法则，而不是拟合材料势。该实验不包含生产规模模拟或硬件计时。
+\subsection{Setup and error measures}
+Verification uses the Python/NumPy implementation in \texttt{reproducibility/}, alongside
+the manuscript source. It is independent of the repository's simulation engines: it imports
+none of their force or integration routines. Within the script, explicit incidence/Gather
+operators are compared with separately written scalar-loop energies and forces. The loop
+dihedral uses a closed-form Cartesian gradient and a scalar-triple-product angle definition,
+while the operator path uses the reverse chain in Appendix~\ref{app:torsion}. Both paths
+implement the same stated model conventions; this is not a third-party software comparison.
 
-对能量函数采用中心差分
+The recorded run uses Python 3.9.6, NumPy 2.0.2, and double precision on an arm64 CPU.
+The nonperiodic examples contain five particles. A periodic example contains four particles
+in a fixed orthorhombic box. Coordinates, parameters, units, lists, velocities, and random
+inputs are specified in Appendix~\ref{app:verification} and \texttt{config.json}.
+The seven main tests include uncut LJ with $\epsilon=0.8$, $\sigma=0.9$ on all unordered
+pairs. The periodic LJ example uses the closest image of each pair and stays away from image
+ties; it does not approximate an infinite uncut periodic lattice sum. The EAM tests also use
+all unordered pairs, with constructed smooth functions that test the embedding chain rule
+rather than fitted material potentials.
+
+The script and its recorded outputs were newly prepared for this revision. They replace the
+earlier draft's numerical entries, whose original script and run metadata were unavailable;
+they are not presented as recovered original-run data.
+
+For each energy function, central differences are computed as
 \begin{equation}
  F^{\rm FD}_{i\alpha}=-\frac{U(X+\eta E^{i\alpha})-U(X-\eta E^{i\alpha})}{2\eta},\qquad
  e_F=\max_{i,\alpha}|F_{i\alpha}-F^{\rm FD}_{i\alpha}|,
  \label{eq:finite-difference}
 \end{equation}
-其中 $E^{i\alpha}$ 仅在 $(i,\alpha)$ 处为 $1$，本次取 $\eta=10^{-6}$。此差分步长不同于时间积分步长。测试配置避开重合、共线及镜像分支切换点；单个步长和单组构型不能替代系统的收敛研究。
+where $E^{i\alpha}$ is $1$ at $(i,\alpha)$ and zero elsewhere. The finite-difference energy
+is evaluated by the scalar-loop path; $F$ is obtained from the operator path. We also report
+the dimensionless, scale-normalized error
+\begin{equation}
+e_{\mathrm{norm}}=\frac{e_F}{\max(F_*,\max_{i,\alpha}|F_{i\alpha}|)},\qquad
+F_*=E_*/L_*,
+\label{eq:normalized-force-error}
+\end{equation}
+where $E_*,L_*$ are the reference energy and length units. This is not a component-wise
+relative error, which is ill-conditioned for nearly zero force components.
 
-\subsection{结果}
-表~\ref{tab:numerics} 给出实际运行得到的最大绝对力差。该组测试的误差处于 $10^{-10}$ 到 $10^{-9}$ 量级，与相应解析导数一致；这只是所列配置的数值证据，不是对任意输入的穷尽证明。
+The script evaluates $\eta/L_*=10^{-4},10^{-5},10^{-6},10^{-7}$ and records every result;
+Table~\ref{tab:numerics} uses $\eta/L_*=10^{-6}$, without selecting a different optimal
+step for each model. These increments are distinct from the integration time step.
+Central differences balance truncation and floating-point cancellation, so their errors need
+not decrease monotonically as $\eta$ decreases. The configurations and stencils avoid
+coincident particles, collinearity, and image ties. The checks require
+$e_{\mathrm{norm}}\le10^{-7}$ at the tabulated step. This tolerance is an executable
+consistency criterion for the chosen fixtures, not a bound on arbitrary configurations.
+
+\subsection{Results}
+Table~\ref{tab:numerics} reports the maximum absolute and scale-normalized force differences
+in the new reference run. All seven absolute errors are below $7\times10^{-10}$ in the
+reference force unit. These results support local derivative consistency for the listed
+configurations, not an exhaustive proof for arbitrary inputs.
 \begin{table}[tb]
 \centering
-\caption{双精度小系统的能量—力一致性检查。所有数值为本次参考脚本的实际输出；单位为该构造算例的内部一致单位。周期二面角指角势的周期性，其测试坐标为非周期坐标。}
+\caption{Energy--force checks from the new double-precision reference run, at $\eta/L_*=10^{-6}$. The second column is in units of $E_*/L_*$; the third uses Eq.~\eqref{eq:normalized-force-error}. ``Periodic dihedral'' denotes angular periodicity; its coordinates are nonperiodic. The periodic LJ row is a local minimum-image check.}
 \label{tab:numerics}
-\begin{tabular}{@{}lr@{}}
+\begin{tabular}{@{}lrr@{}}
 \toprule
-测试模型 & $e_F$\\
+Test model & $e_F/(E_*/L_*)$ & $e_{\mathrm{norm}}$\\
 \midrule
-Lennard--Jones & $4.0200\times10^{-10}$\\
-谐和键 & $6.5197\times10^{-10}$\\
-谐和角 & $5.7914\times10^{-10}$\\
-周期二面角势 & $7.2262\times10^{-10}$\\
-单元素 EAM 形式 & $2.1400\times10^{-10}$\\
-多元素 EAM 形式 & $2.6794\times10^{-10}$\\
-固定正交盒中的 LJ & $3.8043\times10^{-10}$\\
+% BEGIN GENERATED VERIFICATION ROWS
+Lennard--Jones & $4.7743\times10^{-10}$ & $2.5400\times10^{-10}$\\
+Harmonic bonds & $6.5197\times10^{-10}$ & $4.0346\times10^{-10}$\\
+Harmonic angles & $5.7914\times10^{-10}$ & $4.9471\times10^{-10}$\\
+Periodic dihedral potential & $5.5923\times10^{-10}$ & $2.4012\times10^{-10}$\\
+Single-element EAM form & $3.0318\times10^{-10}$ & $3.0318\times10^{-10}$\\
+Multi-element EAM form & $3.7896\times10^{-10}$ & $3.7896\times10^{-10}$\\
+LJ in a fixed orthorhombic box & $1.9740\times10^{-10}$ & $1.9740\times10^{-10}$\\
+% END GENERATED VERIFICATION ROWS
 \bottomrule
 \end{tabular}
 \end{table}
 
-LJ 与单元素 EAM 的逐对循环和关联算子力在本次浮点运算中给出相同结果。半表与完整双向表装配的最大力差为 $2.22\times10^{-16}$；提取—装配伴随恒等式的绝对残差为 $1.78\times10^{-15}$。将相同初态推进一次 Velocity Verlet，逐原子式与数组式的位置和速度差均为 $0$。这些零值仅描述该次运行，不意味着不同硬件或所有输入必然逐位一致。
+Across the seven models, the maximum scalar-loop versus operator force difference was
+$8.88\times10^{-16}$ in the reference force unit, including explicit bonded and dihedral
+comparisons. For LJ, the half-list versus full-list force difference was
+$2.22\times10^{-16}$ for both adjoint and source-only full-list assembly. The
+extraction--assembly adjoint residual was $8.88\times10^{-16}$ in the numerical inner products.
+One velocity Verlet step gave maximum position and velocity differences of $0$ and
+$3.47\times10^{-18}$ in their respective reference units. These small residuals, including
+the exact zero, are consistency checks for this run; they do not demonstrate bitwise agreement
+on other hardware or independent validation of the physical conventions.
 
-\subsection{验证范围}
-已检查的是局部梯度、累加符号、双计数系数和一次状态更新。动态邻居构建、缓冲区容量溢出、截断切换、长期能量行为、可变晶胞以及多设备通信均未在该组实验中验证。GPU 吞吐率、内存占用与扩展性没有被测量，故本文不报告加速比。参考脚本与原始 JSON 输出随源码提供。
-\section{讨论与局限}
+The archived JSON additionally records edge and atom permutation checks, nonperiodic net force
+and torque, LJ virial strain derivatives, and a force-shifted LJ example with fixed exclusions
+and scaling. It includes an excluded coincident pair, values at and approaching the cutoff,
+and illustrative image-tie and skew-cell checks. These supplements do not constitute a general
+geometry solver or a simulation-level validation suite.
+
+\subsection{Scope of verification}
+The checks cover local gradients, accumulation signs, counting factors, selected static cutoff
+and geometry cases, and one state update. They do not test dynamic neighbor construction,
+buffer overflow, trajectories crossing cutoff or image boundaries, long-term energy behavior,
+variable-cell dynamics, or communication across devices. Finite differences can reveal a
+mismatch between an energy and its derivative, but cannot exclude a convention error shared
+by both. No external MD package was used in this reference run. GPU throughput, memory usage,
+and scalability were not measured, so no speedup is reported. The complete inputs, script,
+outputs, and environment metadata accompany the source in \texttt{reproducibility/}.
+\section{Discussion and limitations}
 \label{sec:extensions}
-\subsection{长程静电需要场或全局算子}
-传统 Coulomb 形式为
+\subsection{Long-range electrostatics requires field or global operators}
+The conventional Coulomb expression is
 \begin{equation}
-U_C=\frac12\sum_{i\ne j}\frac{q_iq_j}{4\pi\varepsilon_0r_{ij}},
+U_C=\frac12\sum_{i\ne j}\frac{q_iq_j}{4\pi\varepsilon_0r_{ij}}.
 \end{equation}
-但周期边界下的长程问题不能仅靠短程邻居图表示。Ewald/PME 包含实空间、倒空间及自作用／边界等修正\cite{gromacs-electro}。
+The periodic long-range problem cannot be represented by a short-range neighbor graph
+alone. Ewald and particle-mesh Ewald (PME) methods include real-space and reciprocal-space
+contributions, together with self-interaction, boundary, and other
+corrections~\cite{gromacs-electro}.
 
-可为\emph{选定离散网格模型的某个场能量项}定义
+For \emph{a field-energy term in a selected discrete mesh model}, one may define
 \begin{equation}
 \rho_g=\mathcal S_Xq,\qquad
 \varphi_g=\mathcal L^{-1}\rho_g,\qquad
 U_g=\frac12\rho_g^{\mathsf T}\varphi_g.
 \end{equation}
-若 $\mathcal L^{-1}$ 是所用内积下对称的固定离散算子，则
+If $\mathcal L^{-1}$ is a fixed discrete operator symmetric under the chosen inner product, then
 \begin{equation}
 F_g=-\mathrm D_X(\mathcal S_Xq)^*\varphi_g.
 \end{equation}
-FFT 可以是 $\mathcal L^{-1}$ 的一种实现；该式并非完整 PME 推导，电中性、零模、网格权重及其他修正必须另行定义。
+An FFT may implement $\mathcal L^{-1}$. This expression is not a complete PME derivation: charge
+neutrality, the zero mode, mesh weights, and other corrections must be specified separately.
 
-\subsection{约束需要耦合求解}
-位置约束 $c(X)=0$ 与速度约束 $J_c(X)v=0$ 引入耦合关系。以展平速度 $v\in\RR^{3N}$、质量矩阵 $\mathbb M=\mass\otimes I_3$ 为例，固定位置处的质量度量速度投影可写成
+\subsection{Constraints require coupled solves}
+Position constraints $c(X)=0$ and velocity constraints $J_c(X)v=0$ introduce coupled relations.
+For a flattened velocity $v\in\RR^{3N}$ and mass matrix $\mathbb M=\mass\otimes I_3$, the
+mass-metric velocity projection at fixed positions can be written as
 \begin{equation}
 v=v^*-\mathbb M^{-1}J^{\mathsf T}\lambda,\qquad
 (J\mathbb M^{-1}J^{\mathsf T})\lambda=Jv^*.
 \end{equation}
-该表达要求正确处理约束秩及可解性；非线性位置约束还需迭代求解。这里预留 \texttt{Solve} 语义，而不是宣称一个独立 \texttt{Map} 就能处理所有约束。
+This expression requires appropriate treatment of constraint rank and solvability; nonlinear
+position constraints additionally require iterative solution. We therefore reserve a
+\texttt{Solve} semantic operation rather than assuming that independent \texttt{Map} evaluations
+can handle all constraints.
 
-\subsection{机器学习势共享的是接口与导数链}
-经典势可由解析局部函数与聚合组成，能量型 ML 势则用可学习映射定义
+\subsection{Machine-learning potentials share interfaces and derivative chains}
+Classical potentials can be composed of analytic local functions and aggregations, while
+energy-based machine-learning potentials use learnable maps of the form
 \begin{equation}
 U_\Theta=\mathcal N_\Theta(X,z,I),\qquad F=-\nabla_XU_\Theta.
 \end{equation}
-共同点是状态、索引、能量梯度和装配契约；并不要求模型内部都采用同一种稠密矩阵乘法，也不表示多层消息传递的依赖会消失。
+The common elements are state, indices, energy gradients, and assembly contracts. This does not
+require all model internals to use the same dense matrix multiplication, nor does it eliminate
+dependencies in multilayer message passing.
 
-\section{结论}
-本文将传统经典 MD 的指标表达组织为提取、几何、局部变换、聚合与伴随装配。在局部相互作用可分解时，统一能量和力为
+\section{Conclusions}
+We have organized conventional indexed expressions for classical MD into extraction, geometry,
+local transformations, aggregation, and adjoint assembly. When the energy decomposes into local
+interaction terms, its energy and force expressions are
 \begin{align}
- U(X)&=\sum_a\Phi_a\!\left(\Gamma_a(\mathcal G_aX);\Theta_a\right),\label{eq:master-energy}\\
- F(X)&=-\sum_a\mathcal G_a^*\mathrm D\Gamma_a(\mathcal G_aX)^*\nabla\Phi_a.
+ U(X)&=\sum_c\Phi_c\!\left(\Gamma_c(\mathcal G_cX);\Theta_c\right),\label{eq:master-energy}\\
+ F(X)&=-\sum_c\mathcal G_c^*\mathrm D\Gamma_c(\mathcal G_cX)^*\nabla\Phi_c.
  \label{eq:master-force}
 \end{align}
-对于 EAM 等包含中间聚合的模型，使用其有依赖的计算链逐层求导，而非将嵌入项误写为独立二体函数。周期镜像、相互作用计数和邻居有效性与这些算子共同构成数学契约。时间积分则以保持因果依赖的状态映射组织。
+Here $c$ indexes interaction classes, and each $\Phi_c$ includes the sum over its local terms.
+For models such as EAM that contain intermediate aggregations, differentiation follows the
+dependent computational chain rather than treating embedding energies as independent pair
+functions. Periodic images, interaction counting, and neighbor validity form part of the
+mathematical contract alongside the operators. Time integration is organized through state maps
+that preserve causal dependencies.
 
-所列传统式和重构式在给定假设下具有相同的物理含义。小系统检验支持其局部数值一致性，但尚不能推出生产模拟的稳定性或性能结论。后续实现应将数学语义作为参考层，在不改变模型定义的前提下探索稀疏存储、算子融合、不同归约与硬件调度，并分别验证正确性和性能。
+Under the stated assumptions, the conventional and reformulated expressions have the same
+physical meaning. Small-system checks support local numerical consistency, but do not establish
+stability or performance in production simulations. Subsequent implementations can use these
+mathematical semantics as a reference layer while exploring sparse storage, operator fusion,
+reduction strategies, and hardware scheduling, with correctness and performance evaluated
+separately and the model definition held fixed.
 
-\paragraph{代码与数据可用性}
-配套源文件包括本文的 \LaTeX{} 源码、\texttt{verify\_equivalence.py}、运行环境信息和 \texttt{verification\_results.json}。当前未声明公共代码仓库、软件发行版或 arXiv 收录编号。
+\paragraph{Code and data availability.}
+The \texttt{reproducibility/} directory beside this \LaTeX{} source contains
+\texttt{verify\_equivalence.py}, \texttt{config.json}, \texttt{requirements.txt},
+\texttt{verification\_results.json}, \texttt{environment.json}, a generated table-row fragment,
+and a README with execution instructions and provenance. The JSON contains all tested force
+arrays, finite-difference sweeps, and scalar residuals; source and configuration hashes connect
+it to the recorded run. These files document the new reference calculation for this revision.
+No archived software release or arXiv identifier is specified in this draft.
 
 \begin{thebibliography}{99}
 \small
 
 \bibitem{thompson2022}
 A.~P. Thompson, H.~M. Aktulga, R.~Berger, et al.
-LAMMPS---a flexible simulation tool for particle-based materials modeling at the atomic, meso, and continuum scales.
+LAMMPS---a flexible simulation tool for particle-based materials modeling at the atomic, meso,
+and continuum scales.
 \emph{Computer Physics Communications}, 271:108171, 2022.
 \href{https://doi.org/10.1016/j.cpc.2021.108171}{doi:10.1016/j.cpc.2021.108171}.
 
 \bibitem{anderson2020}
 J.~A. Anderson, J.~Glaser, and S.~C. Glotzer.
-HOOMD-blue: A Python package for high-performance molecular dynamics and hard particle Monte Carlo simulations.
+HOOMD-blue: A Python package for high-performance molecular dynamics and hard particle Monte
+Carlo simulations.
 \emph{Computational Materials Science}, 173:109363, 2020.
+\href{https://doi.org/10.1016/j.commatsci.2019.109363}{doi:10.1016/j.commatsci.2019.109363}.
 \href{https://arxiv.org/abs/1308.5587}{arXiv:1308.5587}.
 
 \bibitem{edwards2014}
@@ -864,68 +1186,104 @@ JAX, M.D.: A framework for differentiable physics.
 \emph{Advances in Neural Information Processing Systems}, 33, 2020.
 \href{https://arxiv.org/abs/1912.04232}{arXiv:1912.04232}.
 
+\bibitem{daw1984}
+M.~S. Daw and M.~I. Baskes.
+Embedded-atom method: Derivation and application to impurities, surfaces, and other defects in metals.
+\emph{Physical Review B}, 29:6443--6453, 1984.
+\href{https://doi.org/10.1103/PhysRevB.29.6443}{doi:10.1103/PhysRevB.29.6443}.
+
+\bibitem{blondel1996}
+A. Blondel and M. Karplus.
+New formulation for derivatives of torsion angles and improper torsion angles in molecular
+mechanics: Elimination of singularities.
+\emph{Journal of Computational Chemistry}, 17(9):1132--1141, 1996.
+\href{https://doi.org/10.1002/(SICI)1096-987X(19960715)17:9<1132::AID-JCC5>3.0.CO;2-T}{Publisher DOI}.
+
+\bibitem{tuckerman1992}
+M. Tuckerman, B.~J. Berne, and G.~J. Martyna.
+Reversible multiple time scale molecular dynamics.
+\emph{The Journal of Chemical Physics}, 97(3):1990--2001, 1992.
+\href{https://doi.org/10.1063/1.463137}{doi:10.1063/1.463137}.
+
+\bibitem{thompson2009}
+A.~P. Thompson, S.~J. Plimpton, and W. Mattson.
+General formulation of pressure and stress tensor for arbitrary many-body interaction
+potentials under periodic boundary conditions.
+\emph{The Journal of Chemical Physics}, 131:154107, 2009.
+\href{https://doi.org/10.1063/1.3245303}{doi:10.1063/1.3245303}.
+
+\bibitem{jax-smap}
+JAX-MD documentation. \emph{Higher Order Functions}.
+\url{https://jax-md.readthedocs.io/en/main/jax_md.smap.html}.
+Accessed September 17, 2026.
+
+\bibitem{gromacs-pbc}
+GROMACS Reference Manual. \emph{Periodic boundary conditions}.
+\url{https://manual.gromacs.org/current/reference-manual/algorithms/periodic-boundary-conditions.html}.
+Accessed September 17, 2026.
+
 \bibitem{lammps-lj}
 LAMMPS documentation. \emph{pair\_style lj/cut command}.
 \url{https://docs.lammps.org/pair_lj.html}.
-访问日期：2026-09-16。
+Accessed September 16, 2026.
 
 \bibitem{lammps-eam}
 LAMMPS documentation. \emph{pair\_style eam command}.
 \url{https://docs.lammps.org/pair_eam.html}.
-访问日期：2026-09-16。
+Accessed September 16, 2026.
 
 \bibitem{lammps-neighbor}
 LAMMPS Programmer Guide. \emph{4.4.3 Neighbor lists}.
 \url{https://docs.lammps.org/Developer_par_neigh.html}.
-访问日期：2026-09-16。
+Accessed September 16, 2026.
 
 \bibitem{lammps-bond}
 LAMMPS documentation. \emph{bond\_style harmonic command}.
 \url{https://docs.lammps.org/bond_harmonic.html}.
-访问日期：2026-09-16。
+Accessed September 16, 2026.
 
 \bibitem{lammps-angle}
 LAMMPS documentation. \emph{angle\_style harmonic command}.
 \url{https://docs.lammps.org/angle_harmonic.html}.
-访问日期：2026-09-16。
+Accessed September 16, 2026.
 
 \bibitem{lammps-shift}
 LAMMPS documentation. \emph{pair\_style lj/smooth/linear command}.
 \url{https://docs.lammps.org/pair_lj_smooth_linear.html}.
-访问日期：2026-09-16。
+Accessed September 16, 2026.
 
 \bibitem{gromacs-md}
 GROMACS Reference Manual. \emph{Molecular Dynamics}.
 \url{https://manual.gromacs.org/current/reference-manual/algorithms/molecular-dynamics.html}.
-访问日期：2026-09-16。
+Accessed September 16, 2026.
 
 \bibitem{jax-neighbor}
 JAX-MD documentation. \emph{Spatial Partitioning}.
 \url{https://jax-md.readthedocs.io/en/main/jax_md.partition.html}.
-访问日期：2026-09-16。
+Accessed September 16, 2026.
 
 \bibitem{nvidia-fp}
 NVIDIA. \emph{Floating Point and IEEE 754}.
 \url{https://docs.nvidia.com/cuda/floating-point/index.html}.
-访问日期：2026-09-16。
+Accessed September 16, 2026.
 
 \bibitem{gromacs-electro}
 GROMACS Reference Manual. \emph{Long Range Electrostatics}.
 \url{https://manual.gromacs.org/current/reference-manual/functions/long-range-electrostatics.html}.
-访问日期：2026-09-16。
+Accessed September 16, 2026.
 \end{thebibliography}
 \appendix
 \numberwithin{equation}{section}
-\section{键合项的详细公式对照}
+\section{Detailed formula comparisons for bonded interactions}
 \label{app:bonded}
-\subsection{谐和键}
-\oldform 对键集合 $\mathcal B$，本文定义
+\subsection{Harmonic bonds}
+\oldform For a bond set $\mathcal B$, define
 \begin{equation}
 U_b=\frac12\sum_{b\in\mathcal B}k_b(r_b-r_{0,b})^2,
 \qquad
 \frac{\dd u_b}{\dd r_b}=k_b(r_b-r_{0,b}).
 \end{equation}
-\newform 用键关联算子 $B_b$ 取代邻居边关联算子：
+\newform Replace the neighbor-edge incidence operator with a bond incidence operator $B_b$:
 \begin{equation}
 D_b=B_bX,\qquad r_b=\operatorname{RowNorm}(D_b),
 \end{equation}
@@ -933,12 +1291,16 @@ D_b=B_bX,\qquad r_b=\operatorname{RowNorm}(D_b),
 U_b=\frac12\ones^{\mathsf T}\!\left[k\odot(r_b-r_0)^2\right],\qquad
 F_b=-B_b^{\mathsf T}\diag\!\left(\frac{k\odot(r_b-r_0)}{r_b}\right)D_b.
 \end{equation}
-LAMMPS 的 harmonic 键写成 $K(r-r_0)^2$，其 $1/2$ 已包含在系数中\cite{lammps-bond}。因此与本文对照时应使用 $k=2K$，不能只复制参数数值。
+The LAMMPS harmonic bond energy is written as $K(r-r_0)^2$, with the factor of $1/2$ absorbed
+into the coefficient~\cite{lammps-bond}. Comparison with the present convention therefore
+requires $k=2K$, rather than copying parameter values directly.
 
-键拓扑通常不由非键 cutoff 决定。周期边界下还必须采用与分子拓扑一致的键镜像，不能对复杂跨盒分子任意挑选互不一致的坐标副本。
+Bond topology is generally independent of the nonbonded cutoff. Under periodic boundaries, bond
+images must also be consistent with molecular topology; arbitrary, mutually inconsistent
+coordinate copies cannot be assigned to a complex molecule crossing the box.
 
-\subsection{谐和角：完整三原子梯度}
-\oldform 对角 $a=(i,j,k)$，以 $j$ 为中心，定义
+\subsection{Harmonic angles: the full three-atom gradient}
+\oldform For an angle $a=(i,j,k)$ centered at $j$, define
 \begin{equation}
 \vect a=\vect x_i-\vect x_j,\qquad
 \vect b=\vect x_k-\vect x_j,\qquad
@@ -949,7 +1311,7 @@ c=\frac{\vect a\cdot\vect b}{\alpha\beta},\qquad
 \theta=\arccos c,\qquad
 u_a=\frac12k_a(\theta-\theta_{0,a})^2.
 \end{equation}
-在 $\alpha,\beta>0$ 且 $|c|<1$ 的非退化区域，
+In the nondegenerate region $\alpha,\beta>0$ and $|c|<1$,
 \begin{align}
 \frac{\partial\theta}{\partial\vect a}
 &=-\frac1{\sqrt{1-c^2}}
@@ -958,13 +1320,13 @@ u_a=\frac12k_a(\theta-\theta_{0,a})^2.
 &=-\frac1{\sqrt{1-c^2}}
 \left(\frac{\vect a}{\alpha\beta}-\frac{c\vect b}{\beta^2}\right).
 \end{align}
-令
+Let
 \begin{equation}
 \vect g_a=k_a(\theta-\theta_{0,a})\frac{\partial\theta}{\partial\vect a},
 \qquad
 \vect g_b=k_a(\theta-\theta_{0,a})\frac{\partial\theta}{\partial\vect b}.
 \end{equation}
-则局部原子力为
+The local atomic forces are then
 \begin{equation}
 \vect f_i=-\vect g_a,\qquad
 \vect f_j=\vect g_a+\vect g_b,\qquad
@@ -972,28 +1334,31 @@ u_a=\frac12k_a(\theta-\theta_{0,a})^2.
 \label{eq:angle-local-forces-app}
 \end{equation}
 
-\newform 对整类角建立三个选择算子 $S_i,S_j,S_k$。令
+\newform Construct three selection operators $S_i,S_j,S_k$ for the angle set. Let
 \begin{equation}
 A_\theta=(S_i-S_j)X,\qquad
 C_\theta=(S_k-S_j)X.
 \end{equation}
-在各行计算上述角度及导数，汇总成 $G_a,G_b\in\RR^{P_3\times3}$。于是
+Evaluate the angles and derivatives above row by row, collecting them into
+$G_a,G_b\in\RR^{P_3\times3}$. Then
 \begin{equation}
 F_\theta=-(S_i-S_j)^{\mathsf T}G_a
 -(S_k-S_j)^{\mathsf T}G_b.
 \label{eq:angle-tensor-app}
 \end{equation}
-或者用统一超边提取表示为
+Equivalently, using the unified hyperedge extraction notation,
 \begin{equation}
 U_\theta=\Phi_\theta\circ\Gamma_\theta\circ\mathcal G_{I^{(3)}}(X),
 \qquad
 F_\theta=-\mathcal G_{I^{(3)}}^*\,
 \mathrm D\Gamma_\theta^*\,\nabla\Phi_\theta.
 \end{equation}
-LAMMPS 的 harmonic 角同样采用 $K(\theta-\theta_0)^2$ 的系数约定\cite{lammps-angle}。本文角度在计算中使用弧度；参数单位转换和共线退化不能忽略。
+LAMMPS harmonic angles also use the coefficient convention
+$K(\theta-\theta_0)^2$~\cite{lammps-angle}. Angles in the present calculations are in radians;
+parameter-unit conversion and collinear degeneracies require explicit treatment.
 
-\subsection{周期二面角：保留方向约定，不强拆为二体势}
-\oldform 对有序四元组 $(i,j,k,l)$，选定如下定义：
+\subsection{Periodic dihedrals and orientation conventions}
+\oldform For an ordered quadruplet $(i,j,k,l)$, choose the definitions
 \begin{gather}
 \vect b_1=\vect x_j-\vect x_i,\quad
 \vect b_2=\vect x_k-\vect x_j,\quad
@@ -1006,56 +1371,63 @@ y=\widehat{\vect b}_2\cdot(\vect n_1\times\vect n_2),\qquad
 \chi=\atan(y,x).
 \label{eq:dihedral-definition}
 \end{gather}
-为演示定义周期势
+For illustration, define the periodic potential
 \begin{equation}
 u(\chi)=\kappa[1+\cos(n\chi-\delta)],\qquad
 u'(\chi)=-\kappa n\sin(n\chi-\delta),
 \end{equation}
-其中 $n$ 为整数。传统力为
+where $n$ is an integer. The conventional forces are
 \begin{equation}
 \vect f_p=-u'(\chi)\frac{\partial\chi}{\partial\vect x_p},
 \qquad p\in\{i,j,k,l\}.
 \end{equation}
-\newform 定义 $Q=\mathcal G_{I^{(4)}}(X)$，$\chi=\Gamma_\chi(Q)$，则
+\newform With $Q=\mathcal G_{I^{(4)}}(X)$ and $\chi=\Gamma_\chi(Q)$,
 \begin{equation}
 U_\chi=\ones^{\mathsf T}u(\chi),\qquad
 F_\chi=-\mathcal G_{I^{(4)}}^*\,
 \mathrm D\Gamma_\chi(Q)^*\,u'(\chi).
 \label{eq:dihedral-reform}
 \end{equation}
-局部求导只需依次应用点积、叉积、归一化和
+Torsion derivatives have established molecular-mechanics formulations~\cite{blondel1996}.
+For the convention specified here, local differentiation requires only successive applications of dot products, cross products,
+normalization, and
 \begin{equation}
 \dd\chi=\frac{x\,\dd y-y\,\dd x}{x^2+y^2}.
 \label{eq:atan-derivative}
 \end{equation}
-附录~\ref{app:torsion} 给出无需构造完整雅可比的反向链。
+Appendix~\ref{app:torsion} gives the reverse chain without constructing a full Jacobian.
 
-不同软件可能使用不同有序原子和相位约定，比较时必须先映射定义。$\norm{\vect b_2}=0$ 或法向量退化时，应显式处理；不能把二面角角度分支的跳变误认为周期能量必然不连续。
-\section{二面角局部梯度的反向链}
+Software packages may use different atom orders and phase conventions, which must be mapped
+before comparison. Cases with $\norm{\vect b_2}=0$ or degenerate normal vectors require explicit
+treatment. A jump in the dihedral angle branch does not by itself imply a discontinuity in the
+periodic energy.
+\section{Reverse chain for the local dihedral gradient}
 \label{app:torsion}
-本附录对应式~\eqref{eq:dihedral-definition} 的\emph{特定方向约定}。为简化记号，令 $h=\widehat{\vect b}_2$、$\ell=\norm{\vect b_2}$、$c_\chi=u'(\chi)$。先有
+This appendix uses the \emph{specific orientation convention} of
+Eq.~\eqref{eq:dihedral-definition}. For brevity, let $\vect t=\widehat{\vect b}_2$, $\ell=\norm{\vect
+b_2}$, and $c_\chi=u'(\chi)$. First,
 \begin{equation}
 \overline x=-\frac{c_\chi y}{x^2+y^2},\qquad
 \overline y=\frac{c_\chi x}{x^2+y^2}.
 \end{equation}
-点积与叉积的反向为
+The reverse rules for the dot and cross products give
 \begin{align}
 \overline{\vect n}_1&=\overline x\,\vect n_2
-+\overline y\,(\vect n_2\times h),\\
++\overline y\,(\vect n_2\times\vect t),\\
 \overline{\vect n}_2&=\overline x\,\vect n_1
-+\overline y\,(h\times\vect n_1),\\
-\overline h&=\overline y\,(\vect n_1\times\vect n_2).
++\overline y\,(\vect t\times\vect n_1),\\
+\overline{\vect t}&=\overline y\,(\vect n_1\times\vect n_2).
 \end{align}
-由归一化和两个叉积得到
+Normalization and the two cross products yield
 \begin{align}
 \overline{\vect b}_1&=\vect b_2\times\overline{\vect n}_1,\\
 \overline{\vect b}_2&=
-\frac{\overline h-h(h\cdot\overline h)}{\ell}
+\frac{\overline{\vect t}-\vect t(\vect t\cdot\overline{\vect t})}{\ell}
 +\overline{\vect n}_1\times\vect b_1
 +\vect b_3\times\overline{\vect n}_2,\\
 \overline{\vect b}_3&=\overline{\vect n}_2\times\vect b_2.
 \end{align}
-最后局部坐标梯度为
+Finally, the local coordinate gradients are
 \begin{equation}
 \begin{aligned}
 \nabla_{\vect x_i}u&=-\overline{\vect b}_1,\qquad &
@@ -1064,10 +1436,12 @@ F_\chi=-\mathcal G_{I^{(4)}}^*\,
 \nabla_{\vect x_l}u&=\overline{\vect b}_3.
 \end{aligned}
 \end{equation}
-对这些梯度取负号，再使用 $\mathcal G_{I^{(4)}}^*$ 累加，即得到式~\eqref{eq:dihedral-reform} 的力。整个过程只需要局部向量运算，不需要形成大型稠密雅可比。
-\section{能量、温度与构型维里的张量表达}
+Negating these gradients and accumulating them through $\mathcal G_{I^{(4)}}^*$ gives the force
+in Eq.~\eqref{eq:dihedral-reform}. The calculation uses only local vector operations and does
+not require a large dense Jacobian.
+\section{Tensor expressions for energy, temperature, and configurational virial}
 \label{sec:observables}
-\subsection{动能与温度}
+\subsection{Kinetic energy and temperature}
 \oldform
 \begin{equation}
 K=\frac12\sum_i m_i\vect v_i\cdot\vect v_i,\qquad
@@ -1079,73 +1453,101 @@ K=\frac12\tr(V^{\mathsf T}\mass V),\qquad
 T=\frac{\tr(V^{\mathsf T}\mass V)}{N_{\mathrm{dof}}k_B},\qquad
 \mathcal H=K+U.
 \end{equation}
-自由度应与约束和质心运动移除规则匹配，温度使用与约定时间点一致的速度\cite{gromacs-md}。
+The degrees of freedom must be consistent with constraints and center-of-mass removal.
+Temperature must use velocities at the time point specified by the integration
+convention~\cite{gromacs-md}.
 
-\subsection{二体／径向 EAM 情形的维里}
-为避免不同软件的符号与 $1/2$ 约定混淆，本文\emph{定义}构型维里为
+\subsection{Virial for pair potentials and radial EAM}
+To avoid ambiguity in signs and factors of $1/2$ across software packages, we \emph{define} the
+configurational virial as
 \begin{equation}
 W_{\alpha\beta}=-\sum_{e=1}^P D_{e\alpha}g_{e\beta}.
 \label{eq:virial-component}
 \end{equation}
-在本文方向约定下，$g_e$ 是作用于源端点 $i_e$ 的边力；$D_e$ 指向目标端点。重构形式是
+Under our orientation convention, $g_e$ is the edge force acting on the source endpoint $i_e$,
+while $D_e$ points toward the target endpoint. The reformulated expression is
 \begin{equation}
 W=-D^{\mathsf T}g.
 \label{eq:virial-tensor}
 \end{equation}
-它也可由均匀形变 $D\mapsto D(I+\varepsilon)$ 的能量导数定义：
+It can also be defined from the energy derivative under the uniform deformation $D\mapsto
+D(I+\varepsilon)$:
 \begin{equation}
 \delta U=\ip{D^{\mathsf T}g}{\delta\varepsilon}_F,
 \qquad W=-\left.\nabla_\varepsilon U\right|_{\varepsilon=0}.
 \end{equation}
-对仅含这些短程内力、无约束／外场及其他修正的周期体系，压力张量按本约定写为
+For a periodic system containing only these short-range internal forces, with no constraints,
+external fields, or other corrections, the pressure tensor under this convention is
 \begin{equation}
 \mathsf P=\frac{V^{\mathsf T}\mass V+W}{\Omega},\qquad
 p=\frac13\tr(\mathsf P).
 \end{equation}
-GROMACS 使用另一种构型维里符号 $\Xi$ 及系数，比较时应先映射 $W=-2\Xi$，而不是只比较变量名称\cite{gromacs-md}。
+GROMACS uses a different configurational virial symbol $\Xi$ and prefactor. Comparison requires
+the mapping $W=-2\Xi$, rather than matching variable names alone~\cite{gromacs-md}.
 
-对周期体系，不能直接用折回坐标的 $X^{\mathsf T}F$ 取代使用正确镜像位移的式~\eqref{eq:virial-tensor}。角项、约束、长程项和显式晶胞依赖应从完整能量／约束定义推导其额外贡献。
-\section{语义级算法}
+For periodic systems, $X^{\mathsf T}F$ formed from wrapped coordinates cannot replace
+Eq.~\eqref{eq:virial-tensor}, which uses the correct image displacements. Additional
+contributions from angles, constraints, long-range terms, and explicit cell dependence must be
+derived from the complete energy or constraint definitions.
+For a broader treatment of periodic virials with many-body potentials, see
+Thompson, Plimpton, and Mattson~\cite{thompson2009}.
+\section{Algorithms at the semantic level}
 \label{app:algorithms}
-算法~\ref{alg:pair} 表示一般径向二体势的数学求值顺序，算法~\ref{alg:verlet} 表示一次状态推进。标注的中间变量可以由后端融合或消除；伪代码既不规定显存布局，也不要求各行对应独立 kernel。算法中的势函数包含已经选定的截断、排除和缩放规则。
+Algorithm~\ref{alg:pair} specifies the mathematical evaluation order for a general radial pair
+potential, and Algorithm~\ref{alg:verlet} specifies one state update. A backend may fuse or
+eliminate the named intermediates. The pseudocode prescribes neither a device-memory layout nor
+a separate kernel for each line. The potential functions include the selected cutoff, exclusion,
+and scaling rules.
 
 \begin{algorithm}[htbp]
-\caption{二体能量与力的关联算子求值}\label{alg:pair}
+\caption{Pair energy and force evaluation with incidence operators}\label{alg:pair}
 \begin{algorithmic}[1]
-\Require $X$，有效候选半表 $I$，当前镜像 $\Lambda$，晶胞 $\cell$，势参数 $\Theta$
-\Ensure $U,F$，可选构型维里 $W$
-\State 由 $I$ 定义 $B=\dst-\src$；实际仅需端点索引
-\State $D\gets BX-\Lambda\cell$；对有效边计算 $r_e\gets\|D_e\|$
-\State 计算 $u_e\gets\phi_e(r_e;\Theta)$，$g_e\gets\phi'_e(r_e;\Theta)D_e/r_e$
+\Require $X$, valid candidate half list $I$, current images $\Lambda$, cell $\cell$, potential parameters $\Theta$
+\Ensure $U,F$, and optional configurational virial $W$
+\State Define $B=\dst-\src$ from $I$; only endpoint indices need to be stored
+\State $D\gets BX-\Lambda\cell$; evaluate $r_e\gets\|D_e\|$ on valid edges
+\State Evaluate $u_e\gets\phi_e(r_e;\Theta)$ and $g_e\gets\phi'_e(r_e;\Theta)D_e/r_e$
 \State $U\gets\sum_e u_e$
-\State $F\gets-B^{\mathsf T}g$ \Comment{重复原子贡献必须求和}
-\State 可选：$W\gets-D^{\mathsf T}g$
+\State $F\gets-B^{\mathsf T}g$ \Comment{Sum contributions at repeated atom indices}
+\State Optionally, $W\gets-D^{\mathsf T}g$
 \State \Return $U,F,W$
 \end{algorithmic}
 \end{algorithm}
 
 \begin{algorithm}[htbp]
-\caption{带邻居有效性检查的 Velocity Verlet 单步}\label{alg:verlet}
+\caption{One velocity Verlet step with neighbor-validity checks}\label{alg:verlet}
 \begin{algorithmic}[1]
-\Require $X_n,V_n,F_n$，质量 $\mass$，步长 $h$，候选关系缓存
+\Require $X_n,V_n,F_n$, mass matrix $\mass$, step size $h$, cached candidate relation
 \Ensure $X_{n+1},V_{n+1},F_{n+1}$
 \State $V_{n+1/2}\gets V_n+(h/2)\mass^{-1}F_n$
 \State $X_{n+1}\gets X_n+hV_{n+1/2}$
-\If{候选关系不再满足有效性条件}
-\State 根据 $X_{n+1}$ 重建候选关系；容量不足时报告并扩容重算
+\If{the candidate relation no longer satisfies the validity condition}
+\State Rebuild the relation at $X_{n+1}$; report overflow, expand capacity, and rebuild if needed
 \EndIf
-\State 更新当前镜像和连续几何，不复用过期边位移
+\State Update current images and continuous geometry; do not reuse stale displacements
 \State $(U_{n+1},F_{n+1})\gets\operatorname{Potential}(X_{n+1},I,\Theta)$
 \State $V_{n+1}\gets V_{n+1/2}+(h/2)\mass^{-1}F_{n+1}$
 \State \Return $X_{n+1},V_{n+1},F_{n+1}$
 \end{algorithmic}
 \end{algorithm}
 
-对于多体势，\texttt{Potential} 必须包含全部中间聚合依赖；算法~\ref{alg:pair} 不能原样替代 EAM 的密度—嵌入—力链。多设备执行时，提取远端输入和向所有者归约贡献也是该调用必须完成的责任。
-\section{参考实现的复现细节}
+For many-body potentials, \texttt{Potential} must retain all intermediate aggregation
+dependencies. Algorithm~\ref{alg:pair} cannot directly replace the EAM density--embedding--force
+chain. In a multi-device implementation, this call must also obtain remote inputs and reduce
+contributions to their owners.
+\section{Reproducibility details for the reference implementation}
 \label{app:verification}
 
-配套文件 \texttt{verify\_equivalence.py} 使用 Python 与 NumPy 的 \texttt{float64}。非周期测试固定五个粒子坐标：
+The accompanying \texttt{reproducibility/verify\_equivalence.py} uses Python and NumPy with
+\texttt{float64} arithmetic. All numerical values below are expressed in fixed reference units
+$L_*$ for length, $E_*$ for energy, $M_*$ for mass, and a chosen density unit $\rho_*$ for
+the constructed EAM functions. Time and force units are
+$t_*=L_*\sqrt{M_*/E_*}$ and $F_*=E_*/L_*$. Angles are in radians. Exponential functions
+below take the numerical distance $r/L_*$ as their argument; coefficients carry the units
+needed by their respective energy and density definitions. No material-specific unit mapping
+is asserted.
+
+The nonperiodic tests fix the following five-particle configuration, displayed as $X/L_*$:
 \begin{equation}
 X=\begin{bmatrix}
 0.10&0.20&0.00\\
@@ -1155,34 +1557,95 @@ X=\begin{bmatrix}
 -0.80&0.70&0.50
 \end{bmatrix}.
 \end{equation}
-LJ 使用 $\epsilon=0.8,\sigma=0.9$ 和完整无序对。其他局部索引与参数在脚本中完整给出。单元素 EAM 仅用人工光滑函数验证链式法则：
+LJ uses $\epsilon/E_*=0.8,\sigma/L_*=0.9$. LJ and both EAM examples use all ten unordered
+pairs, in lexicographic order $(0,1),(0,2),\ldots,(3,4)$, with no cutoff or exclusions.
+The single-element EAM test uses constructed smooth functions
+solely to check the chain rule:
 \begin{equation}
 \psi(r)=e^{-r},\qquad \mathcal A(\rho)=0.4\rho^2,\qquad
 \phi(r)=0.15e^{-2r}.
 \end{equation}
-这些函数\textbf{不是已拟合的材料势}，测试不是材料性质验证。多元素例子采用不对称密度幅度，以检查式~\eqref{eq:eam-multi} 的接收方向。
+These functions are \textbf{not fitted material potentials}, and the tests do not validate
+material properties. The multi-element example uses asymmetric density amplitudes to check
+that force differentiation preserves the receiver direction specified by its energy in
+Eq.~\eqref{eq:eam-multi}; this is not an external validation of an EAM file convention.
 
 
-\subsection{其他参数及运行方式}
-谐和键的零基索引为 $(0,1),(1,2),(2,3),(3,4)$，
-$k=(1.2,1.7,2.1,0.8)$，$r_0=(1.0,1.1,1.2,1.1)$。
-角索引为 $(0,1,2),(1,2,3),(2,3,4)$，
-$k=(1.1,1.3,0.9)$，$\theta_0=(1.6,1.7,1.8)$ 弧度。
-二面角索引为 $(0,1,2,3),(1,2,3,4)$，各项使用
-$\kappa=0.7$、$n=3$、$\delta=0.2$。
-正文中的数学原子编号从 $1$ 开始，脚本索引从 $0$ 开始。
+\subsection{Additional parameters and execution}
+The zero-based harmonic bond indices are $(0,1),(1,2),(2,3),(3,4)$, with
+$k=(1.2,1.7,2.1,0.8)$, $r_0=(1.0,1.1,1.2,1.1)$.
+The angle indices are $(0,1,2),(1,2,3),(2,3,4)$, with
+$k=(1.1,1.3,0.9)$ and $\theta_0=(1.6,1.7,1.8)$ radians.
+The dihedral indices are $(0,1,2,3),(1,2,3,4)$, with each term using
+$\kappa=0.7$, $n=3$, $\delta=0.2$.
+Mathematical atom labels in the text start at $1$, whereas script indices start at $0$.
 
-多元素例子的元素标签为 $z=(0,1,0,1,1)$，密度幅度矩阵为
+The multi-element example has labels $z=(0,1,0,1,1)$ and density-amplitude matrix
 \begin{equation}
  A_{\alpha\leftarrow\beta}=\begin{bmatrix}1.0&0.7\\1.3&0.9\end{bmatrix},\qquad
  \psi_{\alpha\leftarrow\beta}(r)=A_{\alpha\leftarrow\beta}e^{-r}.
 \end{equation}
-嵌入函数为 $\mathcal A_\alpha(\rho)=a_\alpha\rho^2$，$a=(0.3,0.5)$；二体项仍为 $0.15e^{-2r}$。这些不对称参数用于测试接收者与贡献者方向，不能作为材料参数使用。
+The embedding functions are $\mathcal A_\alpha(\rho)=a_\alpha\rho^2$ with $a=(0.3,0.5)$; the
+pair term remains $0.15e^{-2r}$. These asymmetric parameters test the receiver/contributor
+direction and are not material parameters.
 
-单步积分采用质量向量 $m=(1.0,1.3,0.9,1.2,1.1)$，时间步长为 $h=10^{-3}$。
+The single integration step uses the nonperiodic uncut LJ model above,
+$m/M_*=(1.0,1.3,0.9,1.2,1.1)$, $h/t_*=10^{-3}$, and
+\begin{equation}
+\frac{V_0}{L_*/t_*}=\begin{bmatrix}
+0.10&-0.05&0.02\\
+-0.03&0.04&0.01\\
+0.02&0.01&-0.04\\
+-0.01&-0.02&0.03\\
+0.00&0.03&-0.02
+\end{bmatrix}.
+\end{equation}
+The initial forces are evaluated separately by the scalar-loop and operator paths.
 
-随机变量由 NumPy 的 \texttt{default\_rng(17)} 按脚本的固定调用次序产生。运行命令为
-\begin{quote}\ttfamily python verify\_equivalence.py\end{quote}
-脚本会写出 \texttt{verification\_results.json}。参考实现有意显式构造小型关联矩阵以便验证数学等式；它不是大系统的稀疏后端示例。实际 Python 和 NumPy 版本记录于配套 \texttt{environment.json}。
+The periodic example uses all six unordered pairs of
+\begin{equation}
+\frac{X_{\mathrm{pbc}}}{L_*}=\begin{bmatrix}
+0.2&0.3&0.1\\
+3.2&0.5&3.0\\
+1.4&3.0&1.3\\
+2.6&1.7&0.3
+\end{bmatrix},\qquad
+\frac{\cell}{L_*}=\diag(4.0,4.2,3.8).
+\end{equation}
+It has no cutoff. The smallest component-wise distance of an image displacement to a
+half-box boundary is $0.2L_*$, so all stated finite-difference stencils remain on the same
+image branch. Images are nevertheless recomputed for each perturbed energy evaluation.
+
+The adjoint test uses the zero-based index array
+\begin{equation}
+I=\begin{bmatrix}0&1&0\\2&1&3\\4&2&1\end{bmatrix}
+\end{equation}
+and a tensor $Z\in\RR^{3\times3\times3}$ generated by exactly one call to
+\texttt{numpy.random.default\_rng(17).standard\_normal((3,3,3))}, with no preceding draws.
+The repeated index in the first term tests additive accumulation of multiple slots. The
+actual tensor is also saved in the JSON, so its values need not be inferred from a seed alone.
+
+The supplementary LJ test applies force shifting with $r_c/L_*=1.6$ and scales
+$s=(0,0.5,1,1,0.5,1,1,1,1,1)$ to the ten lexicographically ordered nonperiodic pairs.
+Additional static checks skip an excluded coincident pair before evaluating LJ, evaluate
+the cutoff value and one-sided approach, and differentiate the LJ virial with strain increment
+$10^{-6}$. All fixtures and supplementary geometry examples are recorded in the JSON.
+
+From the manuscript directory, the execution command is
+\begin{quote}\ttfamily python reproducibility/verify\_equivalence.py\end{quote}
+The script also runs from other working directories because default input and output paths
+are resolved relative to its own file. It writes \texttt{verification\_results.json},
+\texttt{environment.json}, and \texttt{table\_rows.tex} into \texttt{reproducibility/}; it
+does not edit this manuscript. The optional \texttt{--output-dir} argument preserves the
+archived run while creating another, and \texttt{--check-manuscript} compares the marked
+table rows with the current run. Exact row matching is an editorial synchronization check,
+not a portable numerical acceptance criterion.
+
+The JSON records every finite-difference force array and residual; the environment file records
+Python, NumPy, platform and numerical-library information, the execution time, and SHA-256
+hashes of the script and configuration. The reference implementation deliberately constructs
+small incidence matrices; it is not a sparse backend for large systems. Reproduction is
+judged against the stated tolerances, and small last-digit changes across environments are
+expected. The README gives dependency installation and execution details.
 
 \end{document}
