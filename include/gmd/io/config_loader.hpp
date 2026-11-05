@@ -172,6 +172,38 @@ struct RunConfig {
 	std::uint64_t write_checkpoint_every = 0;
 	std::filesystem::path checkpoint_file;
 	std::filesystem::path restart_from;
+	// `checkpoint_step_suffix on`: every checkpoint goes to its own file,
+	// state.gmdchk -> state_step<12-digit step>.gmdchk, instead of overwriting
+	// one file.
+	bool checkpoint_step_suffix = false;
+
+	// --- External-controller integration (all optional, all default off) ----
+	//
+	// PATHS. Every relative path in a run file (model_path, checkpoint_file,
+	// restart_from, frame_file, stop_file, checkpoint_request_file,
+	// status_file) is resolved against the directory that CONTAINS THE RUN
+	// FILE, not the current working directory. Absolute paths are unchanged.
+	// load_run() returns the resolved paths.
+
+	// Free-form identifier recorded in checkpoints, frames and the status file.
+	// One token of [A-Za-z0-9._:@+-].
+	std::string run_id;
+	// `model_change allow|forbid` (default forbid): whether a restart may use
+	// a force field / ML model whose provenance differs from the checkpoint's.
+	bool allow_model_change = false;
+
+	// ASE-readable extended-XYZ frame output (`frame_file <path>`). Off when
+	// empty. frame_interval defaults to output_interval; 0 = every step.
+	std::filesystem::path frame_file;
+	std::optional<std::uint64_t> frame_interval;
+	bool frame_velocities = false;
+
+	// Cooperative control, polled every control_poll_interval steps (>= 1).
+	std::filesystem::path stop_file;
+	std::filesystem::path checkpoint_request_file;
+	std::uint64_t control_poll_interval = 1;
+	// Atomic JSON status file written at start-up and at exit.
+	std::filesystem::path status_file;
 };
 
 // ---------------------------------------------------------------------------

@@ -124,6 +124,8 @@ if(BUILD_TESTING)
     target_link_libraries(gmd_checkpoint_restart_tests PRIVATE gmd_core)
     add_executable(gmd_checkpoint_v3_tests tests/checkpoint_v3_tests.cpp)
     target_link_libraries(gmd_checkpoint_v3_tests PRIVATE gmd_core)
+    add_executable(gmd_run_directive_tests tests/run_directive_tests.cpp)
+    target_link_libraries(gmd_run_directive_tests PRIVATE gmd_core)
     add_executable(gmd_pme_mode_tests tests/pme_mode_tests.cpp)
     target_link_libraries(gmd_pme_mode_tests PRIVATE gmd_core)
     add_executable(gmd_degrees_of_freedom_tests tests/degrees_of_freedom_tests.cpp)
@@ -263,6 +265,9 @@ if(BUILD_TESTING)
     # atomic writes and SHA-256 vectors.
     add_test(NAME gmd_checkpoint_v3 COMMAND gmd_checkpoint_v3_tests)
     set_tests_properties(gmd_checkpoint_v3 PROPERTIES LABELS "unit;io;restart")
+    # Controller-integration directives and run-file-relative paths.
+    add_test(NAME gmd_run_directives COMMAND gmd_run_directive_tests)
+    set_tests_properties(gmd_run_directives PROPERTIES LABELS "unit;io")
     add_test(
         NAME gmd_restart_continuity_cli
         COMMAND Python3::Interpreter

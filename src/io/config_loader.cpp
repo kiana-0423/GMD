@@ -520,6 +520,46 @@ RunConfig ConfigLoader::load_run(const std::filesystem::path& run_path) const {
             config.checkpoint_file = tokens[1];
         } else if (tokens[0] == "restart_from") {
             config.restart_from = tokens[1];
+        } else if (tokens[0] == "checkpoint_step_suffix") {
+            config.checkpoint_step_suffix = parse_bool(tokens[1], "checkpoint_step_suffix");
+        // ---- External-controller integration ----
+        } else if (tokens[0] == "run_id") {
+            const auto valid_char = [](char c) {
+                return std::isalnum(static_cast<unsigned char>(c)) || c == '.' || c == '_' ||
+                       c == '-' || c == ':' || c == '@' || c == '+';
+            };
+            if (!std::all_of(tokens[1].begin(), tokens[1].end(), valid_char)) {
+                throw std::runtime_error(
+                    "run_id may contain only letters, digits and . _ - : @ +");
+            }
+            config.run_id = tokens[1];
+        } else if (tokens[0] == "model_change") {
+            if (tokens[1] != "allow" && tokens[1] != "forbid") {
+                throw std::runtime_error("model_change must be 'allow' or 'forbid'");
+            }
+            config.allow_model_change = tokens[1] == "allow";
+        } else if (tokens[0] == "frame_file") {
+            config.frame_file = tokens[1];
+        } else if (tokens[0] == "frame_interval") {
+            const int interval = parse_int(tokens[1], "frame_interval");
+            if (interval < 0) {
+                throw std::runtime_error("frame_interval must be non-negative");
+            }
+            config.frame_interval = static_cast<std::uint64_t>(interval);
+        } else if (tokens[0] == "frame_velocities") {
+            config.frame_velocities = parse_bool(tokens[1], "frame_velocities");
+        } else if (tokens[0] == "stop_file") {
+            config.stop_file = tokens[1];
+        } else if (tokens[0] == "checkpoint_request_file") {
+            config.checkpoint_request_file = tokens[1];
+        } else if (tokens[0] == "control_poll_interval") {
+            const int interval = parse_int(tokens[1], "control_poll_interval");
+            if (interval < 1) {
+                throw std::runtime_error("control_poll_interval must be at least 1");
+            }
+            config.control_poll_interval = static_cast<std::uint64_t>(interval);
+        } else if (tokens[0] == "status_file") {
+            config.status_file = tokens[1];
         } else if (tokens[0] == "constraints") {
             if (tokens[1] != "on" && tokens[1] != "off" &&
                 tokens[1] != "true" && tokens[1] != "false") {
@@ -723,6 +763,34 @@ RunConfig ConfigLoader::load_run(const std::filesystem::path& run_path) const {
             inline_ff.element_name_to_type["default"] = 0;
         }
         config.force_field = std::move(inline_ff);
+    }
+
+    // Relative paths in a run file name files next to the run file, wherever
+    // the process was started from. Absolute paths are left alone.
+    const std::filesystem::path run_directory = run_path.parent_path();
+    const auto resolve = [&run_directory](std::filesystem::path& path) {
+        if (!path.empty() && path.is_relative() && !run_directory.empty()) {
+            path = run_directory / path;
+        }
+    };
+    resolve(config.ml_model_path);
+    resolve(config.checkpoint_file);
+    resolve(config.restart_from);
+    resolve(config.frame_file);
+    resolve(config.stop_file);
+    resolve(config.checkpoint_request_file);
+    resolve(config.status_file);
+
+    if (config.frame_file.empty() &&
+        (config.frame_interval.has_value() || config.frame_velocities)) {
+        throw std::runtime_error("frame_interval and frame_velocities require frame_file");
+    }
+    if (!config.checkpoint_request_file.empty() && config.checkpoint_file.empty()) {
+        throw std::runtime_error(
+            "checkpoint_request_file requires checkpoint_file (where to write the checkpoint)");
+    }
+    if (config.checkpoint_step_suffix && config.checkpoint_file.empty()) {
+        throw std::runtime_error("checkpoint_step_suffix requires checkpoint_file");
     }
 
     return config;
