@@ -4,6 +4,107 @@ All notable user-facing changes in GMD are documented here.
 
 ## [Unreleased]
 
+### External-controller integration: checkpoint v3, frame file, cooperative control
+
+GMD can now be driven in segments by an external controller (e.g. an
+active-learning driver) that reads complete frames, requests checkpoints or a
+stop, and swaps ML models at segment boundaries. Everything new is opt-in; a
+run file without the new directives produces the same `output.xyz` and
+`output.log` bytes as before. See *External control* in the README.
+
+**Checkpoint format version 3.** Adds an `atomic_number` column per atom and a
+provenance block (`force_field_kind`, `force_field_sha256`, `model_path`,
+`model_sha256`, `run_id`). Previously the checkpoint stored no atomic numbers,
+so **an ML run restarted from a checkpoint fed species 0 to the model for
+every atom** and produced silently wrong energies and forces. The MPI
+checkpoint gather carries Z. Version 1/2 checkpoints are still read for
+classical force fields and **refused for ML** runs. ML runs are no longer
+labelled `default_lj` in `force_field_summary`.
+
+**Atomic checkpoints.** Checkpoints (and the new status file) are written to a
+temporary file in the same directory, `fsync`ed and renamed into place.
+`checkpoint_step_suffix on` writes `state_step<12-digit step>.gmdchk` files.
+
+**Restart validation.** A restart from a v3 checkpoint compares force-field
+kind and SHA-256 fingerprint (model file, force-field file, or parameter
+summary). A mismatch — a different model, a changed ε — was accepted silently
+before and is now an error unless `model_change allow` is given; the change is
+then recorded on stdout, in `output.log` (`# model_change ...`), in every frame
+(`model_changed_from=`) and in the status file.
+
+**Unknown species are refused for ML.** `MLForceProvider` throws, naming the
+atoms by tag, if any atom has Z = 0, before the model is called (so before the
+first step).
+
+**Frame file (`frame_file`, `frame_interval`, `frame_velocities`).**
+`gmd-frame-v1` extended XYZ readable by `ase.io.read(path, index=":")`:
+`Lattice`, `pbc="T T T"`, `Properties=id:I:1:species:S:1:pos:R:3:forces:R:3`
+(`[:vel:R:3]`, Å/fs), 0-based ids equal to GMD tags, `%.17g` reals, and
+`step time_fs energy potential_energy kinetic_energy temperature volume format
+units run_id force_field model_sha256` info keys.
+
+**Flushed output.** `output.xyz`, `output.log` and the frame file are written
+one complete frame per write and flushed at every frame boundary. Previously
+the trajectory was block-buffered (4 KiB) and never flushed, so tail readers
+saw torn frames and SIGTERM lost buffered frames.
+
+**Cooperative control (`stop_file`, `checkpoint_request_file`,
+`control_poll_interval` default 1).** Polled after each N-th step. A
+checkpoint request writes a checkpoint, updates the status file and deletes
+the request file. A stop — or **SIGTERM / SIGINT, which are now handled
+cooperatively** (a second signal still kills) — writes the final frame and
+checkpoint, logs `stopped by request at step N (...)` and exits 0. Stops take
+effect at the next poll boundary, not instantly.
+
+**Status file (`status_file`).** Atomic `gmd-status-v1` JSON: `state`
+(`running|completed|stopped|failed`), `step`, `start_step`, `time_fs`,
+`checkpoint`, `checkpoint_version`, `frame_file`, `frame_format`,
+`frames_written`, force-field/model provenance, `run_id`, `stop_reason`,
+`message`.
+
+**`run_id`, `model_change allow|forbid`, `ml_jit_optimize on|off`** directives.
+
+**Behaviour change — run-file-relative paths.** Relative paths in a run file
+(`model_path`, `checkpoint_file`, `restart_from`, and the new `frame_file`,
+`stop_file`, `checkpoint_request_file`, `status_file`) now resolve against the
+directory containing the run file instead of the working directory. Runs
+started from the run file's own directory (the common case, and every bundled
+test and validation case) are unaffected; absolute paths are unchanged.
+Command-line `.xyz`/`.ff`/`.top` paths are still CWD-relative.
+
+**Fix — stale periodic edge shifts in the ML path.** The Verlet list's image
+flags date from the last rebuild while positions are wrapped into the box
+every step, so after an atom crossed a box face its periodic edges pointed one
+box length off and the pair dropped out of the model until the next rebuild
+(measured: 1.3e-2 eV energy error on a water molecule straddling a face). The
+TorchScript adapter now corrects each flag by both atoms' wraps since the
+build.
+
+**Reproducible ML evaluation.** The adapter passes only pairs within the
+model's `local_cutoff` (as GMD_SGT's own neighbour search does) in a canonical
+order, so the model graph depends only on the geometry, not on when the list
+was built. With `ml_jit_optimize off` (default `on`, unchanged) TorchScript
+runs the same graph on every call; an ML run split across a checkpoint is then
+bitwise identical to the continuous run (verified over 1500 + 1500 steps).
+With the default, the split run agrees to float32 round-off (measured after
+40 + 40 steps: 9.1e-11 in positions/velocities, 7.5e-9 eV/Å in forces). ML
+numerics change at round-off level relative to earlier builds because of the
+cutoff filter and canonical edge order.
+
+**Tests.** `gmd_checkpoint_v3` (v3 round trip incl. Z and provenance, v1/v2
+compatibility, atomic writes, SHA-256 vectors, step suffix),
+`gmd_ml_species_guard` (Z = 0 refusal), `gmd_run_directives` (new directives,
+path resolution, invalid combinations), `gmd_controller_integration_cli`
+(classical: bitwise segmented restart, model-change rules, frame file vs an
+independent LJ evaluation and `ase.io.read`, relative paths, stop file,
+checkpoint request, SIGTERM/SIGINT, status file) and, with Torch and
+`GMD_SGT_ROOT`, `gmd_controller_integration_ml_cli` (the same for a GMD_SGT
+TorchScript model, plus v2 and Z = 0 refusal). Test-side checkpoint parsers
+accept the extended atoms header. The classical serial split run is bitwise
+while the neighbour-cell grid is a single cell; with several cells it agrees
+to round-off (Verlet-list order depends on build history), which the README
+guarantee table now states.
+
 ### Constraint-rank fallback and tie-breaking coverage
 
 Three review gaps closed. No production behaviour changed: these are tests, a

@@ -295,7 +295,7 @@ tags are not mistaken for duplicates.
 | np=1 vs np=2 vs np=4, and reversed local storage | identical **to 2.8e-17** |
 | The draws themselves | **bitwise** identical by tag |
 | Trajectory: serial vs np=1/2/4, 50 steps | **identical logs**; final state bitwise identical at np=1, within 8.9e-16 (~28 ulp) beyond |
-| Serial run split across a checkpoint | **bitwise** identical to the continuous run |
+| Serial run split across a checkpoint | **bitwise** identical to the continuous run while the neighbour-cell grid is a single cell; with several cells the classical Verlet list's visiting order depends on when it was built, and the split run agrees to round-off (3.6e-14 Å after 1500 + 1500 steps of 125 Ar at 600 K). ML runs: bitwise with `ml_jit_optimize off` — see [External control](#external-control-segmented-runs-and-frame-output) |
 | Changing the seed, or any atom's tag | changes that atom's draw |
 | Cross-platform | a few ulp, not bitwise — see below |
 
@@ -1317,6 +1317,8 @@ Implemented:
 - replicated-mesh PME under MPI; the `pme_mode distributed` path currently exercises an interface/prototype while still using the replicated numerical backend
 - SHAKE / RATTLE bond constraints; serial constraints are tested, and MPI constraints currently use a correctness-first global-gather projection rather than a scalable owner-based solver
 - checkpoint / restart through the CLI; restart continuity is tested by comparing continuous 100-step runs against 50-step + checkpoint + restart + 50-step runs in serial and MPI
+- checkpoint format v3 (atomic numbers + force-field/model provenance, atomic writes, restart validation with `model_change allow`)
+- external-controller integration: ASE-readable `gmd-frame-v1` frame file, per-frame flushing, `stop_file` / `checkpoint_request_file` / SIGTERM / SIGINT cooperative control, JSON status file (see *External control* below)
 - extended XYZ trajectory output and energy logging (rank-0 I/O with global coordinate gather in MPI mode)
 - inline `run.in` LJ force-field definitions
 - external `.ff` files (LJ and molecular; molecular runs apply topology special pairs by default)
@@ -1504,12 +1506,47 @@ write_checkpoint_every 1000
 checkpoint_file state.gmdchk
 ```
 
-The checkpoint starts with `GMD_CHECKPOINT 1` and stores the current step,
+The checkpoint starts with `GMD_CHECKPOINT 3` and stores the current step,
 simulation time, box, atom tags/types/molecule ids/masses/charges, positions,
-velocities, topology entries, force-field/topology file references, boundary
-summary, run/config summary, thermostat state, barostat state, and RNG state
-where the active module owns one. Neighbor lists, ghost atoms, PME grids,
+velocities, **atomic numbers**, topology entries, force-field/topology file
+references, boundary summary, run/config summary, thermostat state, barostat
+state, RNG state where the active module owns one, the virial/pressure state,
+and a **provenance block** (see below). Neighbor lists, ghost atoms, PME grids,
 forces, and domain decomposition are intentionally rebuilt after restart.
+
+Checkpoints are written **atomically**: the text goes to a temporary file in
+the same directory, is `fsync`ed and then `rename`d over the target, so a crash
+mid-write leaves the previous checkpoint intact. `checkpoint_step_suffix on`
+writes every checkpoint to its own file, `state.gmdchk` →
+`state_step000000001000.gmdchk` (12-digit zero-padded step, sorts by step),
+instead of overwriting one file.
+
+**Format version 3** (current). Relative to version 2 it adds, before
+`atom_count`,
+
+```text
+force_field_kind inline_lj|lj_file|molecular|default_lj|ml[+ewald|+pme]
+force_field_sha256 <hex>   # model file (ml), force-field file, or parameter summary
+model_path <path>          # ml only, else empty
+model_sha256 <hex>         # ml only, else empty
+run_id <id>                # from the run.in `run_id` directive, may be empty
+```
+
+and an `atomic_number` column at the end of each atom line
+(`atoms tag type molecule mass charge x y z vx vy vz atomic_number`).
+Versions 1 and 2 are still read: they carry no atomic numbers (every Z is 0)
+and no provenance. That is harmless for classical force fields, which never
+read Z; **an ML restart from a version 1/2 checkpoint is refused** with an
+error, because the model would be fed species 0 for every atom.
+
+**Restart validation.** Restarting from a version 3 checkpoint compares its
+`force_field_kind` and `force_field_sha256` with the current run. A mismatch
+(a different ML model, a changed LJ parameter, a different force-field file)
+is an error unless the run file says `model_change allow`; then the change
+`old sha → new sha` is printed, written as a `# model_change ...` line into
+`output.log`, recorded as `model_changed_from=<old sha>` in every frame-file
+frame of the segment and in the status file. Version 1/2 checkpoints have no
+provenance and are not validated.
 
 To continue from a checkpoint, use a run input containing:
 
@@ -1704,8 +1741,31 @@ ML force field (requires `GMD_ENABLE_TORCH=ON`):
 
 ```ini
 force_field ml
-model_path /path/to/model.pt
+model_path model.pt        # relative paths resolve against the run file's directory
+ml_jit_optimize on         # default; `off` makes evaluations history-independent
 ```
+
+Every atom must have a known species: an atom whose atomic number is 0 (an
+element symbol outside GMD's table, or an integer type with no element
+mapping) is refused with an error naming it, before the first step.
+
+The model sees only pairs closer than its `local_cutoff` (the same graph
+GMD_SGT's own neighbour search builds), in canonical order, with periodic
+shifts valid for the current coordinates. With `ml_jit_optimize on`
+TorchScript's profiling executor switches to a fused graph after its first
+calls, so an evaluation's float32 round-off depends on how many calls preceded
+it; `off` runs the same graph every time, which makes a run restarted from a
+checkpoint reproduce the uninterrupted run bit for bit.
+
+### Paths in `run.in`
+
+Relative paths in a run file — `model_path`, `checkpoint_file`,
+`restart_from`, `frame_file`, `stop_file`, `checkpoint_request_file`,
+`status_file` — resolve against the **directory containing the run file**,
+not the working directory. Absolute paths are used as given. (The input
+`.xyz`, `.ff` and `.top` paths on the command line are unchanged and remain
+relative to the working directory; `output.xyz`/`output.log` still go next to
+the input `.xyz`.)
 
 ### `molecule.ff` — molecular force field
 
@@ -1757,6 +1817,141 @@ dihedrals  9
 2 1 5 6  dihedral_type 1
 
 impropers  0
+```
+
+---
+
+## External control: segmented runs and frame output
+
+These directives let an external controller (for example an active-learning
+driver) run GMD in segments, read complete frames while it runs, request a
+checkpoint or a stop, and swap ML models at segment boundaries. All are
+optional and off by default; a run file without them behaves as before.
+
+| Directive | Default | Meaning |
+|---|---|---|
+| `run_id <id>` | none | Identifier (`[A-Za-z0-9._:@+-]`) recorded in checkpoints, frames and the status file |
+| `model_change allow\|forbid` | `forbid` | Whether a restart may use a force field / model whose provenance differs from the checkpoint's |
+| `frame_file <path>` | off | Write ASE-readable `gmd-frame-v1` frames to `<path>` (truncated at start) |
+| `frame_interval <N>` | `output_interval` | Frame cadence in steps; `0` = every step. Requires `frame_file` |
+| `frame_velocities on\|off` | `off` | Add a `vel` column [Å/fs]. Requires `frame_file` |
+| `stop_file <path>` | off | Stop cooperatively when this file exists |
+| `checkpoint_request_file <path>` | off | Write a checkpoint when this file exists, then delete it. Requires `checkpoint_file` |
+| `control_poll_interval <N>` | `1` | Poll the control files (and the signal flag) every N steps (N ≥ 1) |
+| `status_file <path>` | off | Atomic JSON status file |
+| `checkpoint_step_suffix on\|off` | `off` | Step-suffixed checkpoint names (see Checkpoint / Restart) |
+| `ml_jit_optimize on\|off` | `on` | TorchScript graph optimisation (see ML force field) |
+
+### Frame file (`gmd-frame-v1`)
+
+Extended XYZ, one frame per `frame_interval` steps plus the first frame of the
+segment (step 0, or the restart step) and the final one:
+
+```text
+27
+Lattice="18.0 0 0 0 18.0 0 0 0 18.0" Properties=id:I:1:species:S:1:pos:R:3:forces:R:3:vel:R:3 pbc="T T T" step=80 time_fs=160.0 energy=-0.3046... potential_energy=-0.3046... kinetic_energy=0.4048... temperature=120.48... volume=5832.0 format=gmd-frame-v1 units="energy:eV length:Angstrom force:eV/Angstrom velocity:Angstrom/fs time:fs temperature:K" run_id=al-r3 force_field=ml model_sha256=<hex|none> [model_changed_from=<hex>]
+0 Ar 1.0123... 0.9871... 1.0250... 1.2e-05 ... (x y z fx fy fz [vx vy vz])
+...
+```
+
+- `id` is the GMD atom tag: **0-based**, equal to the atom's 0-based line
+  index in the input `.xyz`, stable for the whole run and across restarts.
+  Atom lines are always in id order.
+- `species` is the element symbol from the atomic number; Z = 0 is written as
+  `X` (ASE's dummy element).
+- Positions are wrapped into the box [Å]; forces [eV/Å]; velocities [Å/fs].
+  Every real is written with 17 significant digits (`%.17g`), which round-trips
+  a double exactly, and always as a real (`20.0`, not `20`).
+- `energy` and `potential_energy` are the same value [eV]; `energy` is what
+  ASE attaches to its `SinglePointCalculator`, so
+  `ase.io.read(path, index=":")` gives `atoms.get_forces()` and
+  `atoms.get_potential_energy()` equal to GMD's. All per-frame values describe
+  the written geometry (under a barostat they can differ from `output.log`,
+  which reports the completed step before the cell rescale).
+- `model_changed_from` appears only after a `model_change allow` restart.
+- A restarted segment's first frame repeats the previous segment's last frame
+  (same step); deduplicate by `step`.
+
+### Flushing guarantee
+
+Every frame of `output.xyz`, `output.log` and the frame file is formatted in
+memory, handed to the file in one write and **flushed at the frame
+boundary**. Whenever GMD is between frames — and in particular after a stop,
+a signal-initiated stop, a failure or normal exit — every file ends on a
+complete frame (complete lines). A reader polling concurrently with a write
+may briefly see an incomplete trailing frame; use the atom-count line to
+ignore it. The bytes written to `output.xyz`/`output.log` are unchanged.
+
+### Control semantics
+
+- **Cadence.** After every global step that is a multiple of
+  `control_poll_interval` — once that step's frames and periodic checkpoint
+  are written — rank 0 checks the files and every rank checks its signal
+  flag; the results are OR-reduced over MPI ranks. **A request is acted on at
+  the next poll boundary, not instantly**: the latency is at most
+  `control_poll_interval` steps plus the step in progress.
+- **Checkpoint request.** GMD writes a checkpoint for the current step (to
+  `checkpoint_file`, step-suffixed if enabled), rewrites the status file with
+  `state: running` and the checkpoint path, then **deletes the request file**
+  as the acknowledgement, and continues.
+- **Stop.** When `stop_file` exists, or after SIGTERM/SIGINT, GMD leaves the
+  loop at that poll, writes the final frame (all outputs) and a final
+  checkpoint (if `checkpoint_file` is set), prints and appends to
+  `output.log` the line `stopped by request at step N (stop_file|SIGTERM|SIGINT)`,
+  writes the status file with `state: stopped`, and **exits 0**. The stop file
+  is *not* deleted (remove it before starting the next segment).
+- **Signals.** SIGTERM and SIGINT only set a `sig_atomic_t` flag, checked at
+  the same polls. The handler then restores the default action, so a
+  **second** signal terminates immediately.
+
+### Status file (`gmd-status-v1`)
+
+Written atomically (temp file + rename) at start-up (`running`), after every
+requested checkpoint (`running`), and at exit:
+
+```jsonc
+{
+  "format_version": "gmd-status-v1",
+  "state": "completed",              // running | completed | stopped | failed
+  "step": 80,                        // last completed step
+  "start_step": 40,                  // 0, or the restart step
+  "time_fs": 160.0,
+  "checkpoint": "/abs/path/state.gmdchk",   // last checkpoint written, or null
+  "checkpoint_version": 3,
+  "frame_file": "/abs/path/frames.extxyz",  // or null
+  "frame_format": "gmd-frame-v1",           // or null
+  "frames_written": 17,
+  "force_field_kind": "ml",
+  "force_field_sha256": "<hex>",
+  "model_sha256": "<hex>",                  // null for classical runs
+  "model_changed_from": null,               // <hex> after `model_change allow`
+  "run_id": "al-r3",
+  "stop_reason": null,                      // "stop_file" | "SIGTERM" | "SIGINT"
+  "message": null                           // the error for state "failed"
+}
+```
+
+(The comments are for this README only; the file is plain JSON.) A run that
+fails after its run file was read — bad input, unknown species, refused model
+change — exits 1 and writes `state: failed` with the error in `message`.
+
+### A segmented run
+
+```ini
+# segment k: restart from the previous segment's checkpoint, maybe a new model
+restart_from ../seg_k-1/state.gmdchk
+run 1000
+force_field ml
+model_path ../models/model_k.pt
+model_change allow          # only when the model really changes
+ml_jit_optimize off         # bitwise-reproducible segments
+checkpoint_file state.gmdchk
+frame_file frames.extxyz
+frame_interval 10
+stop_file STOP
+checkpoint_request_file CHECKPOINT
+status_file status.json
+run_id al-r3-seg-k
 ```
 
 ---
@@ -1820,6 +2015,15 @@ ctest --output-on-failure -L mpi
 # All tests
 ctest --output-on-failure
 ```
+
+The controller-integration test (`gmd_controller_integration_cli`,
+`tests/controller_integration.py`) runs with `GMD_TEST_PYTHON` (default: the
+CMake Python 3); its `ase.io.read` check runs when that interpreter can import
+ASE. With `-DGMD_ENABLE_TORCH=ON -DGMD_SGT_ROOT=/path/to/GMD_SGT` and a
+`GMD_TEST_PYTHON` that has torch and ASE, `gmd_controller_integration_ml_cli`
+additionally exports two small GMD_SGT models and checks bitwise segmented
+restart, model-swap refusal/recording, v2-checkpoint and Z = 0 refusal, and
+frame forces against a Python evaluation of the model.
 
 When `GMD_ENABLE_MPI=ON`, CTest additionally registers MPI smoke tests for LJ,
 Ewald, PME, and the minimal bonded molecular path, plus serial-vs-MPI LJ,
