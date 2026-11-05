@@ -1,6 +1,7 @@
 #include "gmd/force/ml_force_provider.hpp"
 
 #include <stdexcept>
+#include <string>
 #include <utility>
 
 #include "gmd/force/model_runtime_adapter.hpp"
@@ -76,6 +77,17 @@ void MLForceProvider::compute(const ForceRequest& request,
         initialize(runtime);
     }
 
+    // Refuse unknown species BEFORE the model sees them. The first force
+    // evaluation happens in Simulation::initialize(), so this fires before
+    // any MD step is taken.
+    if (request.system != nullptr) {
+        validate_species(request.system->atomic_numbers(),
+                         request.coordinates.size(),
+                         request.system->atom_tags());
+    } else {
+        validate_species({}, request.coordinates.size());
+    }
+
     ModelEvaluationRequest model_request{
         .model_path = model_path_,
         .model_format = model_format_,
@@ -91,6 +103,36 @@ void MLForceProvider::compute(const ForceRequest& request,
     result.success = model_result.success;
     result.potential_energy = model_result.total_energy;
     result.forces = std::move(model_result.forces);
+}
+
+void MLForceProvider::validate_species(std::span<const int> atomic_numbers,
+                                       std::size_t atom_count,
+                                       std::span<const int> tags) {
+    if (atomic_numbers.size() < atom_count) {
+        throw std::runtime_error(
+            "ML force field: atomic numbers are unavailable for " +
+            std::to_string(atom_count - atomic_numbers.size()) + " of " +
+            std::to_string(atom_count) +
+            " atom(s); the model needs the species of every atom");
+    }
+    std::size_t bad = 0;
+    std::string examples;
+    for (std::size_t i = 0; i < atom_count; ++i) {
+        if (atomic_numbers[i] > 0) continue;
+        if (bad < 5) {
+            const int id = (i < tags.size()) ? tags[i] : static_cast<int>(i);
+            examples += (bad == 0 ? "" : ", ") + std::string("tag ") + std::to_string(id) +
+                        " (Z=" + std::to_string(atomic_numbers[i]) + ")";
+        }
+        ++bad;
+    }
+    if (bad == 0) return;
+    throw std::runtime_error(
+        "ML force field: " + std::to_string(bad) + " of " + std::to_string(atom_count) +
+        " atom(s) have unknown species (atomic number 0): " + examples +
+        (bad > 5 ? ", ..." : "") +
+        ". Give every atom an element symbol GMD recognises in the xyz file (or a force "
+        "field type mapping to one), and restart ML runs only from version 3+ checkpoints.");
 }
 
 void MLForceProvider::finalize(RuntimeContext& runtime) {

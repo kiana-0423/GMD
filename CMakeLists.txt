@@ -169,6 +169,8 @@ if(BUILD_TESTING)
     target_link_libraries(gmd_pme_energy_force_tests PRIVATE gmd_core)
     add_executable(gmd_ml_virial_contract_tests tests/ml_virial_contract_tests.cpp)
     target_link_libraries(gmd_ml_virial_contract_tests PRIVATE gmd_core)
+    add_executable(gmd_ml_species_guard_tests tests/ml_species_guard_tests.cpp)
+    target_link_libraries(gmd_ml_species_guard_tests PRIVATE gmd_core)
 
     # The TorchScript edge_shift test observes the tensor from inside a real
     # scripted model, so it can only exist when LibTorch is available. It builds
@@ -397,6 +399,10 @@ if(BUILD_TESTING)
     # MLForceProvider reports no virial, and nothing downstream may consume one.
     add_test(NAME gmd_ml_virial_contract COMMAND gmd_ml_virial_contract_tests)
     set_tests_properties(gmd_ml_virial_contract PROPERTIES LABELS "unit;force")
+    # MLForceProvider refuses atoms of unknown species (Z = 0) before the
+    # model is called.
+    add_test(NAME gmd_ml_species_guard COMMAND gmd_ml_species_guard_tests)
+    set_tests_properties(gmd_ml_species_guard PROPERTIES LABELS "unit;force;ml")
 
     if(GMD_ENABLE_TORCH)
         # WORKING_DIRECTORY keeps the generated .pt fixtures in the build tree.

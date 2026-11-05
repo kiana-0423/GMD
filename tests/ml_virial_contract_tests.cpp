@@ -94,6 +94,9 @@ gmd::System make_system() {
     system.mutable_coordinates()[1] = {10.13, 9.47, 10.71};
     system.mutable_masses()[0] = 12.0;
     system.mutable_masses()[1] = 12.0;
+    // Carbon. MLForceProvider refuses atoms of unknown species (Z = 0).
+    system.mutable_atomic_numbers()[0] = 6;
+    system.mutable_atomic_numbers()[1] = 6;
     return system;
 }
 

@@ -100,6 +100,10 @@ public:
 		return atom_owners_[atom_index];
 	}
 
+	std::span<const int> atom_tags() const noexcept {
+		return atom_tags_;
+	}
+
 	std::span<int> mutable_atom_tags() noexcept {
 		return atom_tags_;
 	}
