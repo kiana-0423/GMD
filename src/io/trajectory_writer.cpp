@@ -2,6 +2,7 @@
 
 #include <iomanip>
 #include <limits>
+#include <sstream>
 #include <stdexcept>
 
 #include "gmd/core/physical_constants.hpp"
@@ -121,6 +122,7 @@ void TrajectoryWriter::write_log_header() {
             "together before any barostat rescale, so they are mutually "
             "consistent. Under a barostat the coordinates in the .xyz are the "
             "rescaled ones the next step starts from.\n";
+    log_.flush();
 }
 
 void TrajectoryWriter::write_frame(const System& system, std::uint64_t step, double time,
@@ -137,9 +139,15 @@ void TrajectoryWriter::write_frame(const System& system, std::uint64_t step, dou
     const double pressure_bar = frame.pressure_bar;
     const double volume = frame.volume;
 
+    // Each frame is formatted in memory and handed to the stream in one
+    // write, then both files are flushed: between frames, output.xyz and
+    // output.log always end on a complete frame / line (see the header).
+    std::ostringstream xyz;
+    std::ostringstream log;
+
     // --- XYZ frame ---
-    xyz_ << n << '\n';
-    xyz_ << std::fixed << std::setprecision(6)
+    xyz << n << '\n';
+    xyz << std::fixed << std::setprecision(6)
          << "step=" << step
          << " time=" << time
          << " PE=" << pe
@@ -156,10 +164,10 @@ void TrajectoryWriter::write_frame(const System& system, std::uint64_t step, dou
 
     const auto coords     = system.coordinates();
     const auto atom_types = system.atom_types();
-    xyz_ << std::fixed << std::setprecision(6);
+    xyz << std::fixed << std::setprecision(6);
     for (std::size_t i = 0; i < n; ++i) {
         const int type = (atom_types.size() == n) ? atom_types[i] : 0;
-        xyz_ << type
+        xyz << type
              << "  " << coords[i][0]
              << "  " << coords[i][1]
              << "  " << coords[i][2]
@@ -167,7 +175,7 @@ void TrajectoryWriter::write_frame(const System& system, std::uint64_t step, dou
     }
 
     // --- log line ---
-    log_ << std::fixed << std::setprecision(6)
+    log << std::fixed << std::setprecision(6)
          << step
          << "  " << time
          << "  " << pe
@@ -183,7 +191,24 @@ void TrajectoryWriter::write_frame(const System& system, std::uint64_t step, dou
          << "  " << (pressure_valid ? 1 : 0)
          << '\n';
 
+    const std::string xyz_text = xyz.str();
+    const std::string log_text = log.str();
+    xyz_.write(xyz_text.data(), static_cast<std::streamsize>(xyz_text.size()));
+    xyz_.flush();
+    log_.write(log_text.data(), static_cast<std::streamsize>(log_text.size()));
+    log_.flush();
+    if (!xyz_ || !log_) {
+        throw std::runtime_error("TrajectoryWriter: failed to write frame at step " +
+                                 std::to_string(step));
+    }
+
     ++frame_count_;
+}
+
+void TrajectoryWriter::write_log_comment(const std::string& text) {
+    if (!log_.is_open()) return;
+    log_ << "# " << text << '\n';
+    log_.flush();
 }
 
 void TrajectoryWriter::write_frame(const System& system, std::uint64_t step, double time,

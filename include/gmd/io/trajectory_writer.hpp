@@ -24,6 +24,13 @@ class System;
 //   writer.write_frame(system, step, time);
 //   writer.close();
 //
+// FLUSHING. Every frame is formatted in memory, handed to each stream in one
+// write, and both files are flushed before write_frame() returns. Whenever GMD
+// is between frames -- in particular after a stop request, a signal or exit --
+// output.xyz ends on a complete frame and output.log on a complete line. A
+// reader polling concurrently with a write may see an incomplete trailing frame
+// and should ignore it (the atom-count line says how long a frame is).
+//
 // If write_interval > 1, callers are responsible for calling write_frame only
 // on the appropriate steps, or use write_frame_if() for automatic filtering.
 class TrajectoryWriter {
@@ -53,6 +60,11 @@ public:
     // Writes a frame only when (step % interval == 0).
     void write_frame_if(const System& system, std::uint64_t step, double time,
                         std::size_t dof, std::uint64_t interval);
+
+    // Appends "# <text>" to the energy log and flushes it. Used for events a
+    // reader of the log should see in sequence (model change on restart,
+    // stop by request). Parsers already skip '#' lines.
+    void write_log_comment(const std::string& text);
 
     // Number of frames written so far.
     std::uint64_t frame_count() const noexcept { return frame_count_; }

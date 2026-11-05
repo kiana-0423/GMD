@@ -77,6 +77,7 @@ add_library(gmd_core STATIC
     src/io/checkpoint.cpp
     src/io/config_loader.cpp
     src/io/file_utils.cpp
+    src/io/frame_writer.cpp
     src/io/trajectory_writer.cpp
     src/parallel/domain_decomposition.cpp
     src/parallel/mpi_communicator.cpp

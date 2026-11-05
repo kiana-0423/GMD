@@ -1,6 +1,8 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <csignal>
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -26,6 +28,8 @@
 #include "gmd/integrator/thermostat.hpp"
 #include "gmd/io/checkpoint.hpp"
 #include "gmd/io/config_loader.hpp"
+#include "gmd/io/file_utils.hpp"
+#include "gmd/io/frame_writer.hpp"
 #include "gmd/io/trajectory_writer.hpp"
 #include "gmd/force/ml_force_provider.hpp"
 #include "gmd/system/verlet_neighbor_builder.hpp"
@@ -41,6 +45,118 @@
 #endif
 
 namespace {
+
+// --- Cooperative signal handling -------------------------------------------
+//
+// SIGTERM / SIGINT only record the signal; the MD loop acts on it at its next
+// control poll (every control_poll_interval steps) exactly as on a stop file:
+// final frame, final checkpoint, status file, exit 0. The handler then
+// restores the default action, so a SECOND signal terminates immediately.
+volatile std::sig_atomic_t g_stop_signal = 0;
+
+extern "C" void gmd_record_stop_signal(int signal_number) {
+    g_stop_signal = signal_number;
+    std::signal(signal_number, SIG_DFL);
+}
+
+std::string signal_name(int signal_number) {
+    if (signal_number == SIGTERM) return "SIGTERM";
+    if (signal_number == SIGINT) return "SIGINT";
+    return "signal " + std::to_string(signal_number);
+}
+
+// --- JSON status file --------------------------------------------------------
+std::string json_string(const std::string& value) {
+    std::string out = "\"";
+    for (const char c : value) {
+        switch (c) {
+            case '"': out += "\\\""; break;
+            case '\\': out += "\\\\"; break;
+            case '\n': out += "\\n"; break;
+            case '\r': out += "\\r"; break;
+            case '\t': out += "\\t"; break;
+            default:
+                if (static_cast<unsigned char>(c) < 0x20) {
+                    char buffer[8];
+                    std::snprintf(buffer, sizeof(buffer), "\\u%04x", c);
+                    out += buffer;
+                } else {
+                    out.push_back(c);
+                }
+        }
+    }
+    out.push_back('"');
+    return out;
+}
+
+std::string json_string_or_null(const std::string& value) {
+    return value.empty() ? std::string("null") : json_string(value);
+}
+
+std::string json_number(double value) {
+    if (!std::isfinite(value)) return "null";
+    char buffer[40];
+    std::snprintf(buffer, sizeof(buffer), "%.17g", value);
+    return buffer;
+}
+
+// Everything the status file reports. Filled in as the run progresses so the
+// failure path can still write what is known.
+struct RunStatus {
+    std::filesystem::path path;      // empty -> no status file
+    std::uint64_t start_step = 0;
+    std::uint64_t step = 0;
+    double time_step_fs = 0.0;
+    std::string checkpoint;          // last checkpoint written (absolute)
+    std::string frame_file;          // absolute, empty when off
+    std::uint64_t frames_written = 0;
+    std::string force_field_kind;
+    std::string force_field_sha256;
+    std::string model_sha256;
+    std::string model_changed_from;
+    std::string run_id;
+    std::string stop_reason;
+};
+
+inline constexpr const char* kStatusFormat = "gmd-status-v1";
+
+void write_status_file(const RunStatus& status, const std::string& state,
+                       const std::string& message = {}) {
+    if (status.path.empty()) return;
+    std::ostringstream out;
+    out << "{\n"
+        << "  \"format_version\": " << json_string(kStatusFormat) << ",\n"
+        << "  \"state\": " << json_string(state) << ",\n"
+        << "  \"step\": " << status.step << ",\n"
+        << "  \"start_step\": " << status.start_step << ",\n"
+        << "  \"time_fs\": "
+        << json_number(static_cast<double>(status.step) * status.time_step_fs) << ",\n"
+        << "  \"checkpoint\": " << json_string_or_null(status.checkpoint) << ",\n"
+        << "  \"checkpoint_version\": " << gmd::kCheckpointVersion << ",\n"
+        << "  \"frame_file\": " << json_string_or_null(status.frame_file) << ",\n"
+        << "  \"frame_format\": "
+        << (status.frame_file.empty() ? std::string("null") : json_string(gmd::kFrameFormat))
+        << ",\n"
+        << "  \"frames_written\": " << status.frames_written << ",\n"
+        << "  \"force_field_kind\": " << json_string_or_null(status.force_field_kind) << ",\n"
+        << "  \"force_field_sha256\": " << json_string_or_null(status.force_field_sha256)
+        << ",\n"
+        << "  \"model_sha256\": " << json_string_or_null(status.model_sha256) << ",\n"
+        << "  \"model_changed_from\": " << json_string_or_null(status.model_changed_from)
+        << ",\n"
+        << "  \"run_id\": " << json_string_or_null(status.run_id) << ",\n"
+        << "  \"stop_reason\": " << json_string_or_null(status.stop_reason) << ",\n"
+        << "  \"message\": " << json_string_or_null(message) << "\n"
+        << "}\n";
+    gmd::atomic_write_file(status.path, out.str());
+}
+
+std::string absolute_string(const std::filesystem::path& path) {
+    if (path.empty()) return {};
+    std::error_code ec;
+    const auto absolute = std::filesystem::absolute(path, ec);
+    return (ec ? path : absolute).lexically_normal().string();
+}
 
 enum class ForceFieldFileKind {
     LJ,
@@ -263,12 +379,23 @@ int main(int argc, char** argv)
     const std::filesystem::path output_stem =
         xyz_path.parent_path() / "output";
 
+    // Cooperative SIGTERM / SIGINT: acted on at the next control poll.
+    std::signal(SIGTERM, gmd_record_stop_signal);
+    std::signal(SIGINT, gmd_record_stop_signal);
+
+    RunStatus status;
+
     try {
         gmd::ConfigLoader loader;
         gmd::System system;
 
         // Load run config first so inline force field is available before the xyz file is parsed.
         const gmd::RunConfig run_config = loader.load_run(run_path);
+        if (is_root_rank) {
+            status.path = run_config.status_file;
+        }
+        status.run_id = run_config.run_id;
+        status.time_step_fs = run_config.time_step_fs;
         const std::uint64_t output_interval = run_config.output_interval;
         const bool is_restart = !run_config.restart_from.empty();
         std::optional<gmd::CheckpointMetadata> restart_metadata;
@@ -504,6 +631,111 @@ int main(int argc, char** argv)
             }
         }
 
+        // --- Force-field provenance -------------------------------------------
+        //
+        // What produced the forces, recorded in every checkpoint, frame and the
+        // status file, and compared on restart. The fingerprint is the SHA-256
+        // of the model file (ML), of the force-field file (file-based fields),
+        // or of the canonical parameter summary (inline / default LJ), with
+        // any Coulomb settings folded in.
+        std::string force_field_summary;
+        std::string force_field_kind;
+        std::string force_field_fingerprint;
+        std::string model_sha256;
+        if (run_config.force_field.has_value()) {
+            std::ostringstream ff_summary;
+            ff_summary.precision(17);
+            ff_summary << "inline_lj cutoff " << run_config.force_field->cutoff
+                       << " mixing_rule " << run_config.force_field->mixing_rule
+                       << " types " << run_config.force_field->elements.size();
+            for (std::size_t type_index = 0;
+                 type_index < run_config.force_field->elements.size();
+                 ++type_index) {
+                const auto& type = run_config.force_field->elements[type_index];
+                ff_summary << " type " << type_index
+                           << ' ' << type.element
+                           << " mass " << type.mass
+                           << " epsilon " << type.epsilon
+                           << " sigma " << type.sigma
+                           << " charge " << type.charge;
+            }
+            for (const auto& [pair, override_params] :
+                 run_config.force_field->pair_overrides) {
+                ff_summary << " pair " << pair.first << ' ' << pair.second
+                           << " epsilon " << override_params.epsilon
+                           << " sigma " << override_params.sigma;
+            }
+            force_field_summary = ff_summary.str();
+            force_field_kind = "inline_lj";
+            force_field_fingerprint = gmd::sha256_hex(force_field_summary);
+        } else if (molecular_ff.has_value() || external_lj_ff.has_value()) {
+            force_field_summary = "file " + ff_path->string();
+            force_field_kind = molecular_ff.has_value() ? "molecular" : "lj_file";
+            force_field_fingerprint = gmd::sha256_file_hex(*ff_path);
+        } else if (run_config.force_field_type == "ml") {
+            model_sha256 = gmd::sha256_file_hex(run_config.ml_model_path);
+            force_field_summary = "ml model " + run_config.ml_model_path.string();
+            force_field_kind = "ml";
+            force_field_fingerprint = model_sha256;
+        } else {
+            force_field_summary = "default_lj";
+            force_field_kind = "default_lj";
+            force_field_fingerprint = gmd::sha256_hex(force_field_summary);
+        }
+        if (run_config.coulomb.has_value()) {
+            const auto& cc = *run_config.coulomb;
+            std::ostringstream coulomb;
+            coulomb.precision(17);
+            coulomb << cc.method << " alpha " << cc.alpha << " real_cutoff " << cc.real_cutoff
+                    << " kmax " << cc.kmax << " order " << cc.pme_order << " grid "
+                    << cc.pme_grid[0] << ' ' << cc.pme_grid[1] << ' ' << cc.pme_grid[2];
+            force_field_kind += "+" + cc.method;
+            force_field_fingerprint =
+                gmd::sha256_hex(force_field_fingerprint + " coulomb " + coulomb.str());
+        }
+        status.force_field_kind = force_field_kind;
+        status.force_field_sha256 = force_field_fingerprint;
+        status.model_sha256 = model_sha256;
+        if (is_root_rank) {
+            std::cout << log_prefix << "Force field provenance: kind=" << force_field_kind
+                      << " sha256=" << force_field_fingerprint << "\n";
+        }
+
+        // --- Restart provenance check ------------------------------------------
+        std::string model_changed_from;
+        if (is_restart) {
+            const auto& md = *restart_metadata;
+            if (!md.has_atomic_numbers) {
+                if (is_root_rank) {
+                    std::cout << log_prefix << "Checkpoint version " << md.version
+                              << " records no force-field provenance; the force field "
+                                 "is not validated against it.\n";
+                }
+            } else if (md.force_field_kind != force_field_kind ||
+                       md.force_field_sha256 != force_field_fingerprint) {
+                const std::string old_id =
+                    md.force_field_kind + " sha256=" + md.force_field_sha256;
+                const std::string new_id =
+                    force_field_kind + " sha256=" + force_field_fingerprint;
+                if (!run_config.allow_model_change) {
+                    throw std::runtime_error(
+                        "Force field differs from the checkpoint " +
+                        run_config.restart_from.string() + ": checkpoint " + old_id +
+                        ", this run " + new_id +
+                        ". Add 'model_change allow' to the run file to restart with a "
+                        "different force field or model.");
+                }
+                model_changed_from = md.model_sha256.empty() ? md.force_field_sha256
+                                                             : md.model_sha256;
+                status.model_changed_from = model_changed_from;
+                if (is_root_rank) {
+                    std::cout << log_prefix << "Model change on restart at step " << md.step
+                              << " (allowed by 'model_change allow'): " << old_id << " -> "
+                              << new_id << "\n";
+                }
+            }
+        }
+
         // --- Neighbor builder (uses the largest active short-range cutoff, r_skin = 2.0 Å) ---
         constexpr double r_skin = 2.0;
         std::shared_ptr<gmd::VerletNeighborBuilder> neighbor_builder;
@@ -679,6 +911,35 @@ int main(int argc, char** argv)
             writer.open(output_stem);
             std::cout << log_prefix << "Writing trajectory to " << output_stem.string() << ".xyz"
                       << " and energy log to " << output_stem.string() << ".log\n";
+            if (!model_changed_from.empty()) {
+                writer.write_log_comment(
+                    "model_change at step " + std::to_string(restart_metadata->step) + ": " +
+                    restart_metadata->force_field_kind + " " + model_changed_from + " -> " +
+                    force_field_kind + " " +
+                    (model_sha256.empty() ? force_field_fingerprint : model_sha256));
+            }
+        }
+
+        // --- ASE-readable frame file (optional) ---
+        const bool frame_output_enabled = !run_config.frame_file.empty();
+        const std::uint64_t frame_interval =
+            run_config.frame_interval.value_or(output_interval);
+        gmd::FrameWriter frame_writer;
+        if (frame_output_enabled) {
+            status.frame_file = absolute_string(run_config.frame_file);
+            if (is_root_rank) {
+                frame_writer.open(run_config.frame_file, run_config.frame_velocities,
+                                  gmd::FrameProvenance{
+                                      .run_id = run_config.run_id,
+                                      .force_field_kind = force_field_kind,
+                                      .model_sha256 = model_sha256,
+                                      .model_changed_from = model_changed_from,
+                                  });
+                std::cout << log_prefix << "Writing " << gmd::kFrameFormat << " frames to "
+                          << run_config.frame_file.string() << " every "
+                          << frame_interval << " step(s)"
+                          << (run_config.frame_velocities ? " with velocities" : "") << "\n";
+            }
         }
 
         simulation.initialize(runtime);
@@ -766,45 +1027,80 @@ int main(int argc, char** argv)
             simulation.set_current_step(restart_metadata->step);
         }
 
-        auto write_global_frame = [&](std::uint64_t step, double time) {
+        // Writes the legacy trajectory frame (output.xyz/.log) and/or a frame-file
+        // frame for `step`. Collective under MPI: every rank must call it with
+        // the same flags, which are derived from the step and the run config.
+        std::optional<std::uint64_t> last_legacy_frame_step;
+        std::optional<std::uint64_t> last_frame_file_step;
+        auto write_global_frame = [&](std::uint64_t step, double time, bool legacy,
+                                      bool frame) {
+            if (!legacy && !frame) {
+                return;
+            }
             // compute_twice_ke already performs MPI_Allreduce internally to
             // return the global kinetic energy; do NOT double-wrap here.
             const double twice_ke = gmd::compute_twice_ke(system);
-            if (is_root_rank) {
-                if (nprocs == 1) {
-                    writer.write_frame(system, step, time, twice_ke, dof);
+            if (legacy) last_legacy_frame_step = step;
+            if (frame) last_frame_file_step = step;
+            if (nprocs == 1) {
+                if (is_root_rank) {
+                    if (legacy) writer.write_frame(system, step, time, twice_ke, dof);
+                    if (frame) {
+                        frame_writer.write_frame(system, step, time, twice_ke, dof);
+                        status.frames_written = frame_writer.frame_count();
+                    }
                 }
-            }
-
-            if (nprocs <= 1) {
                 return;
             }
 
-            std::vector<double> local_coordinates(global_atom_count * 3, 0.0);
+            // Coordinates always; forces and velocities only for a frame-file
+            // frame, which reports them.
+            const std::size_t fields_per_atom = frame ? 9 : 3;
+            std::vector<double> local_fields(global_atom_count * fields_per_atom, 0.0);
             const auto coordinates = system.coordinates();
+            const auto forces = system.forces();
+            const auto velocities = system.velocities();
             for (std::size_t atom_index = 0; atom_index < system.num_local_atoms(); ++atom_index) {
                 const int tag = system.atom_tag(atom_index);
                 if (tag < 0 || static_cast<std::size_t>(tag) >= global_atom_count) {
                     throw std::runtime_error("Local atom tag is outside the output coordinate map");
                 }
 
-                const std::size_t offset = static_cast<std::size_t>(tag) * 3;
-                local_coordinates[offset] = coordinates[atom_index][0];
-                local_coordinates[offset + 1] = coordinates[atom_index][1];
-                local_coordinates[offset + 2] = coordinates[atom_index][2];
+                const std::size_t offset = static_cast<std::size_t>(tag) * fields_per_atom;
+                for (int d = 0; d < 3; ++d) {
+                    local_fields[offset + d] = coordinates[atom_index][d];
+                    if (frame) {
+                        local_fields[offset + 3 + d] = forces[atom_index][d];
+                        local_fields[offset + 6 + d] = velocities[atom_index][d];
+                    }
+                }
             }
 
-            std::vector<double> global_coordinates;
-            mpi_comm->allreduce_vector(local_coordinates, global_coordinates);
+            std::vector<double> global_fields;
+            mpi_comm->allreduce_vector(local_fields, global_fields);
             if (is_root_rank) {
                 auto frame_coordinates = output_system.mutable_coordinates();
+                auto frame_forces = output_system.mutable_forces();
+                auto frame_velocities = output_system.mutable_velocities();
                 for (std::size_t atom_index = 0; atom_index < global_atom_count; ++atom_index) {
-                    const std::size_t offset = atom_index * 3;
+                    const std::size_t offset = atom_index * fields_per_atom;
                     frame_coordinates[atom_index] = {
-                        global_coordinates[offset],
-                        global_coordinates[offset + 1],
-                        global_coordinates[offset + 2]
+                        global_fields[offset],
+                        global_fields[offset + 1],
+                        global_fields[offset + 2]
                     };
+                    if (frame) {
+                        frame_forces[atom_index] = {
+                            global_fields[offset + 3],
+                            global_fields[offset + 4],
+                            global_fields[offset + 5]
+                        };
+                        frame_velocities[atom_index] = {
+                            global_fields[offset + 6],
+                            global_fields[offset + 7],
+                            global_fields[offset + 8]
+                        };
+                    }
                 }
                 // output_system holds only the gathered global coordinates; it
                 // takes part in no dynamics, so every non-atomic field the
@@ -821,7 +1117,11 @@ int main(int argc, char** argv)
                 // them; tests/mpi_constraint_virial.cpp asserts the identity
                 // across ranks rather than leaving it assumed.
                 output_system.copy_frame_state_from(system);
-                writer.write_frame(output_system, step, time, twice_ke, dof);
+                if (legacy) writer.write_frame(output_system, step, time, twice_ke, dof);
+                if (frame) {
+                    frame_writer.write_frame(output_system, step, time, twice_ke, dof);
+                    status.frames_written = frame_writer.frame_count();
+                }
             }
         };
 
@@ -897,18 +1197,32 @@ int main(int argc, char** argv)
             return checkpoint_system;
         };
 
+        auto checkpoint_path_for = [&](std::uint64_t step) {
+            return run_config.checkpoint_step_suffix
+                       ? gmd::step_suffixed_checkpoint_path(run_config.checkpoint_file, step)
+                       : run_config.checkpoint_file;
+        };
+
+        // Collective (the MPI gather). Returns true when a checkpoint was written.
+        std::optional<std::uint64_t> last_checkpoint_step;
         auto write_checkpoint_if_needed = [&](std::uint64_t step, bool force) {
             if (run_config.checkpoint_file.empty()) {
-                return;
+                return false;
             }
             if (!force &&
                 (run_config.write_checkpoint_every == 0 ||
                  step % run_config.write_checkpoint_every != 0)) {
-                return;
+                return false;
             }
+            if (last_checkpoint_step == step) {
+                return true;  // this exact state is already on disk
+            }
+            last_checkpoint_step = step;
             gmd::System checkpoint_system = gather_global_system();
+            const std::filesystem::path checkpoint_path = checkpoint_path_for(step);
+            status.checkpoint = absolute_string(checkpoint_path);
             if (!is_root_rank) {
-                return;
+                return true;
             }
 
             gmd::CheckpointMetadata metadata;
@@ -919,35 +1233,7 @@ int main(int argc, char** argv)
             metadata.force_field_file = ff_path.has_value() ? ff_path->string() : "";
             metadata.topology_file = top_path.has_value() ? top_path->string() : "";
             metadata.velocity_seed = run_config.velocity_seed;
-            if (run_config.force_field.has_value()) {
-                std::ostringstream ff_summary;
-                ff_summary.precision(17);
-                ff_summary << "inline_lj cutoff " << run_config.force_field->cutoff
-                           << " mixing_rule " << run_config.force_field->mixing_rule
-                           << " types " << run_config.force_field->elements.size();
-                for (std::size_t type_index = 0;
-                     type_index < run_config.force_field->elements.size();
-                     ++type_index) {
-                    const auto& type = run_config.force_field->elements[type_index];
-                    ff_summary << " type " << type_index
-                               << ' ' << type.element
-                               << " mass " << type.mass
-                               << " epsilon " << type.epsilon
-                               << " sigma " << type.sigma
-                               << " charge " << type.charge;
-                }
-                for (const auto& [pair, override_params] :
-                     run_config.force_field->pair_overrides) {
-                    ff_summary << " pair " << pair.first << ' ' << pair.second
-                               << " epsilon " << override_params.epsilon
-                               << " sigma " << override_params.sigma;
-                }
-                metadata.force_field_summary = ff_summary.str();
-            } else if (ff_path.has_value()) {
-                metadata.force_field_summary = "file " + ff_path->string();
-            } else {
-                metadata.force_field_summary = "default_lj";
-            }
+            metadata.force_field_summary = force_field_summary;
             metadata.config_summary =
                 "dt_fs=" + std::to_string(run_config.time_step_fs) +
                 " output_interval=" + std::to_string(run_config.output_interval) +
@@ -984,48 +1270,160 @@ int main(int argc, char** argv)
             metadata.step_pressure_twice_ke = completed.twice_kinetic_energy;
             metadata.step_pressure_volume = completed.volume;
             metadata.step_pressure_potential_energy = completed.potential_energy;
+            // Provenance (version 3).
+            metadata.force_field_kind = force_field_kind;
+            metadata.force_field_sha256 = force_field_fingerprint;
+            metadata.model_path = run_config.force_field_type == "ml"
+                                      ? run_config.ml_model_path.string()
+                                      : std::string();
+            metadata.model_sha256 = model_sha256;
+            metadata.run_id = run_config.run_id;
 
             gmd::CheckpointData checkpoint{
                 .metadata = metadata,
                 .system = &checkpoint_system,
                 .topology = topology.get(),
             };
-            gmd::write_checkpoint(run_config.checkpoint_file, checkpoint);
+            gmd::write_checkpoint(checkpoint_path, checkpoint);
+            return true;
         };
 
-        // Write t=0 frame.
+        auto output_due = [&](std::uint64_t step) {
+            return output_interval == 0 || step % output_interval == 0;
+        };
+        auto frame_due = [&](std::uint64_t step) {
+            return frame_output_enabled && (frame_interval == 0 || step % frame_interval == 0);
+        };
+
+        // Write the first frame (t=0, or the restart state).
         const std::uint64_t start_step = simulation.current_step();
-        write_global_frame(start_step, static_cast<double>(start_step) * run_config.time_step_fs);
+        status.start_step = start_step;
+        status.step = start_step;
+        write_global_frame(start_step, static_cast<double>(start_step) * run_config.time_step_fs,
+                           true, frame_output_enabled);
+        if (is_root_rank) {
+            write_status_file(status, "running");
+        }
 
         if (is_root_rank) {
             std::cout << log_prefix << "Running " << run_config.num_steps << " more steps with "
                       << global_atom_count << " atoms";
             if (!run_config.checkpoint_file.empty()) {
                 std::cout << "  checkpoint=" << run_config.checkpoint_file.string()
-                          << " every=" << run_config.write_checkpoint_every;
+                          << " every=" << run_config.write_checkpoint_every
+                          << (run_config.checkpoint_step_suffix ? " (step-suffixed)" : "");
             }
             std::cout << "...\n";
+            if (!run_config.stop_file.empty() || !run_config.checkpoint_request_file.empty()) {
+                std::cout << log_prefix << "Control: polling every "
+                          << run_config.control_poll_interval << " step(s)";
+                if (!run_config.stop_file.empty()) {
+                    std::cout << "  stop_file=" << run_config.stop_file.string();
+                }
+                if (!run_config.checkpoint_request_file.empty()) {
+                    std::cout << "  checkpoint_request_file="
+                              << run_config.checkpoint_request_file.string();
+                }
+                std::cout << "\n";
+            }
         }
 
+        // --- Cooperative control -------------------------------------------
+        //
+        // Polled after every control_poll_interval-th global step, once that
+        // step's frame and periodic checkpoint are written. Rank 0 checks the
+        // files; every rank checks its own signal flag; the decisions are
+        // OR-reduced so all ranks act identically.
+        struct ControlRequests {
+            bool stop_file = false;
+            bool signal = false;
+            bool checkpoint = false;
+        };
+        auto poll_control = [&]() {
+            ControlRequests requests;
+            if (is_root_rank) {
+                std::error_code ec;
+                requests.stop_file = !run_config.stop_file.empty() &&
+                                     std::filesystem::exists(run_config.stop_file, ec);
+                requests.checkpoint =
+                    !run_config.checkpoint_request_file.empty() &&
+                    std::filesystem::exists(run_config.checkpoint_request_file, ec);
+            }
+            requests.signal = g_stop_signal != 0;
+            if (nprocs > 1) {
+                requests.stop_file = mpi_comm->allreduce_logical_or(requests.stop_file);
+                requests.signal = mpi_comm->allreduce_logical_or(requests.signal);
+                requests.checkpoint = mpi_comm->allreduce_logical_or(requests.checkpoint);
+            }
+            return requests;
+        };
+        auto acknowledge_checkpoint_request = [&]() {
+            if (!is_root_rank || run_config.checkpoint_request_file.empty()) return;
+            std::error_code ec;
+            std::filesystem::remove(run_config.checkpoint_request_file, ec);
+        };
+
+        bool stopped = false;
         for (std::uint64_t s = 1; s <= run_config.num_steps; ++s) {
             simulation.step(runtime);
             const std::uint64_t global_step = simulation.current_step();
-            if (output_interval == 0 || global_step % output_interval == 0) {
-                write_global_frame(global_step, global_step * run_config.time_step_fs);
-            }
+            status.step = global_step;
+            write_global_frame(global_step, global_step * run_config.time_step_fs,
+                               output_due(global_step), frame_due(global_step));
             write_checkpoint_if_needed(global_step, false);
+
+            if (global_step % run_config.control_poll_interval != 0) {
+                continue;
+            }
+            const ControlRequests requests = poll_control();
+            if (requests.stop_file || requests.signal) {
+                if (requests.stop_file) {
+                    status.stop_reason = "stop_file";
+                } else {
+                    // The flag may be set on another rank only; name it there.
+                    status.stop_reason = g_stop_signal != 0 ? signal_name(g_stop_signal)
+                                                            : std::string("signal");
+                }
+                stopped = true;
+                break;
+            }
+            if (requests.checkpoint) {
+                write_checkpoint_if_needed(global_step, true);
+                if (is_root_rank) {
+                    std::cout << log_prefix << "Checkpoint written by request at step "
+                              << global_step << ": " << status.checkpoint << "\n";
+                    // Status first, then remove the request: once the request
+                    // file is gone, the status file already names the checkpoint.
+                    write_status_file(status, "running");
+                }
+                acknowledge_checkpoint_request();
+            }
         }
 
-        // Always write final frame.
+        // Always write the final frame (unless this step's is already out).
         const std::uint64_t final_step = simulation.current_step();
-        if (output_interval != 0 && final_step % output_interval != 0) {
-            write_global_frame(final_step,
-                               final_step * run_config.time_step_fs);
-        }
+        status.step = final_step;
+        write_global_frame(final_step, final_step * run_config.time_step_fs,
+                           last_legacy_frame_step != final_step,
+                           frame_output_enabled && last_frame_file_step != final_step);
         write_checkpoint_if_needed(final_step, true);
+        if (stopped) {
+            // A checkpoint request that arrived with the stop is satisfied by
+            // the final checkpoint just written.
+            acknowledge_checkpoint_request();
+        }
 
         if (is_root_rank) {
+            if (stopped) {
+                const std::string line = "stopped by request at step " +
+                                         std::to_string(final_step) + " (" +
+                                         status.stop_reason + ")";
+                writer.write_log_comment(line);
+                std::cout << log_prefix << "Run " << line << "\n";
+            }
             writer.close();
+            frame_writer.close();
+            write_status_file(status, stopped ? "stopped" : "completed");
 
             std::cout << log_prefix << "Done. " << writer.frame_count() << " frames written.\n"
                       << log_prefix << "Final PE = " << system.potential_energy() << " eV\n";
@@ -1033,6 +1431,14 @@ int main(int argc, char** argv)
 
     } catch (const std::exception& error) {
         std::cerr << log_prefix << "Error: " << error.what() << "\n";
+        if (!status.path.empty()) {
+            try {
+                write_status_file(status, "failed", error.what());
+            } catch (const std::exception& status_error) {
+                std::cerr << log_prefix << "Error: could not write status file: "
+                          << status_error.what() << "\n";
+            }
+        }
         return 1;
     }
 
