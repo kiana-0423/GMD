@@ -402,6 +402,44 @@ if(BUILD_TESTING)
     set_tests_properties(gmd_pme_energy_force
         PROPERTIES LABELS "unit;force;pme;validation")
 
+    # External-controller integration through the real CLI: segmented vs
+    # continuous restart, model-change refusal/recording, the gmd-frame-v1
+    # frame file, run-file-relative paths, stop/checkpoint-request files,
+    # SIGTERM/SIGINT and the status file. Standard library only; the
+    # ase.io.read check runs when GMD_TEST_PYTHON can import ASE.
+    set(GMD_TEST_PYTHON "${Python3_EXECUTABLE}" CACHE FILEPATH
+        "Python interpreter for the controller-integration tests (ASE optional; torch, ase and numpy for the ML part)")
+    set(GMD_SGT_ROOT "" CACHE PATH
+        "GMD_SGT checkout; with GMD_ENABLE_TORCH=ON registers the ML controller-integration test")
+    add_test(
+        NAME gmd_controller_integration_cli
+        COMMAND ${GMD_TEST_PYTHON} -B
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/controller_integration.py
+                --gmd $<TARGET_FILE:gmd>
+                --work-root ${CMAKE_CURRENT_BINARY_DIR}/tests/controller_integration
+    )
+    set_tests_properties(gmd_controller_integration_cli PROPERTIES
+        LABELS "integration;restart;io"
+        ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1"
+        TIMEOUT 600)
+    if(GMD_ENABLE_TORCH AND GMD_SGT_ROOT)
+        add_test(
+            NAME gmd_controller_integration_ml_cli
+            COMMAND ${GMD_TEST_PYTHON} -B
+                    ${CMAKE_CURRENT_SOURCE_DIR}/tests/controller_integration.py
+                    --gmd $<TARGET_FILE:gmd>
+                    --work-root ${CMAKE_CURRENT_BINARY_DIR}/tests/controller_integration_ml
+                    --ml --sgt-root ${GMD_SGT_ROOT} --skip-classical --require-ase
+        )
+        set_tests_properties(gmd_controller_integration_ml_cli PROPERTIES
+            LABELS "integration;restart;ml;torch"
+            ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1"
+            TIMEOUT 900)
+    elseif(GMD_ENABLE_TORCH)
+        message(STATUS
+            "GMD_SGT_ROOT is not set: gmd_controller_integration_ml_cli is NOT registered.")
+    endif()
+
     # MLForceProvider reports no virial, and nothing downstream may consume one.
     add_test(NAME gmd_ml_virial_contract COMMAND gmd_ml_virial_contract_tests)
     set_tests_properties(gmd_ml_virial_contract PROPERTIES LABELS "unit;force")
