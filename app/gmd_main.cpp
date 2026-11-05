@@ -284,6 +284,15 @@ int main(int argc, char** argv)
             restart_metadata = gmd::read_checkpoint(run_config.restart_from,
                                                     system,
                                                     checkpoint_topology.get());
+            if (run_config.force_field_type == "ml" && !restart_metadata->has_atomic_numbers) {
+                throw std::runtime_error(
+                    "Checkpoint " + run_config.restart_from.string() + " is version " +
+                    std::to_string(restart_metadata->version) +
+                    ", which does not store atomic numbers; an ML force field needs the "
+                    "species of every atom. Restart ML runs only from version " +
+                    std::to_string(gmd::kFirstCheckpointVersionWithAtomicNumbers) +
+                    "+ checkpoints (or start again from the xyz file).");
+            }
             if (!restart_metadata->force_field_file.empty() && !ff_path.has_value()) {
                 ff_path = restart_metadata->force_field_file;
             }
@@ -821,7 +830,9 @@ int main(int argc, char** argv)
                 return system;
             }
 
-            constexpr std::size_t fields_per_atom = 11;
+            // Atomic numbers travel with the rest of the per-atom state: a
+            // version 3 checkpoint stores them, and an ML restart needs them.
+            constexpr std::size_t fields_per_atom = 12;
             std::vector<double> local(global_atom_count * fields_per_atom, 0.0);
             const auto atom_types = system.atom_types();
             const auto molecule_ids = system.molecule_ids();
@@ -829,6 +840,7 @@ int main(int argc, char** argv)
             const auto charges = system.charges();
             const auto coordinates = system.coordinates();
             const auto velocities = system.velocities();
+            const auto atomic_numbers = system.atomic_numbers();
             for (std::size_t atom_index = 0; atom_index < system.num_local_atoms(); ++atom_index) {
                 const int tag = system.atom_tag(atom_index);
                 if (tag < 0 || static_cast<std::size_t>(tag) >= global_atom_count) {
@@ -846,6 +858,7 @@ int main(int argc, char** argv)
                 local[offset + 8] = velocities[atom_index][0];
                 local[offset + 9] = velocities[atom_index][1];
                 local[offset + 10] = velocities[atom_index][2];
+                local[offset + 11] = static_cast<double>(atomic_numbers[atom_index]);
             }
 
             std::vector<double> global;
@@ -860,6 +873,7 @@ int main(int argc, char** argv)
             auto out_coordinates = checkpoint_system.mutable_coordinates();
             auto out_velocities = checkpoint_system.mutable_velocities();
             auto out_tags = checkpoint_system.mutable_atom_tags();
+            auto out_atomic_numbers = checkpoint_system.mutable_atomic_numbers();
             for (std::size_t atom_index = 0; atom_index < global_atom_count; ++atom_index) {
                 const std::size_t offset = atom_index * fields_per_atom;
                 out_tags[atom_index] = static_cast<int>(global[offset]);
@@ -877,6 +891,7 @@ int main(int argc, char** argv)
                     global[offset + 9],
                     global[offset + 10]
                 };
+                out_atomic_numbers[atom_index] = static_cast<int>(global[offset + 11]);
             }
             checkpoint_system.set_potential_energy(system.potential_energy());
             return checkpoint_system;

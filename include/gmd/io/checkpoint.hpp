@@ -14,10 +14,25 @@ class System;
 // Version 2 adds the constraint virial. Version 1 files are still read: the
 // field is simply absent and the restarted run reports its first frame's
 // pressure without the constraint contribution, exactly as before.
-inline constexpr int kCheckpointVersion = 2;
+//
+// Version 3 adds the atomic number Z of every atom (an extra `atomic_number`
+// column) and a provenance block naming the force field that produced the
+// state: its kind, a SHA-256 fingerprint, the ML model path and the SHA-256 of
+// the model file, and an optional run id. Version 1 and 2 files are still read;
+// they carry no Z, so `has_atomic_numbers` is false and every Z is 0. That is
+// harmless for a classical force field, which never reads Z, and is refused by
+// the application for an ML force field, which would otherwise be fed species 0.
+inline constexpr int kCheckpointVersion = 3;
 inline constexpr int kMinReadableCheckpointVersion = 1;
+inline constexpr int kFirstCheckpointVersionWithAtomicNumbers = 3;
 
 struct CheckpointMetadata {
+    // Version the file was READ from. write_checkpoint always writes
+    // kCheckpointVersion and ignores this field.
+    int version = kCheckpointVersion;
+    // True when the file carried a per-atom atomic number column (version 3+).
+    bool has_atomic_numbers = true;
+
     std::uint64_t step = 0;
     double time_fs = 0.0;
     std::string boundary = "periodic periodic periodic";
@@ -73,6 +88,21 @@ struct CheckpointMetadata {
     double step_pressure_twice_ke = 0.0;
     double step_pressure_volume = 0.0;
     double step_pressure_potential_energy = 0.0;
+
+    // --- Provenance (version 3 and later; empty when read from older files) --
+    //
+    // force_field_kind is one of "inline_lj", "lj_file", "molecular",
+    // "default_lj" or "ml", optionally suffixed "+ewald" / "+pme".
+    // force_field_sha256 fingerprints the force field: for "ml" it is the
+    // SHA-256 of the model file, for a file-based field the SHA-256 of that
+    // file, and otherwise the SHA-256 of the canonical parameter summary. A
+    // restart compares it against the current run. Values never contain
+    // whitespace except run_id and model_path, which are stored to end of line.
+    std::string force_field_kind;
+    std::string force_field_sha256;
+    std::string model_path;
+    std::string model_sha256;
+    std::string run_id;
 };
 
 struct CheckpointData {
@@ -81,8 +111,19 @@ struct CheckpointData {
     const Topology* topology = nullptr;
 };
 
+// Serialises the checkpoint to text (always kCheckpointVersion).
+std::string format_checkpoint(const CheckpointData& checkpoint);
+
+// Writes the checkpoint ATOMICALLY: the text goes to a temporary file in the
+// same directory, is fsync'ed and then renamed over `path` (see
+// atomic_write_file). A crash mid-write leaves the previous checkpoint intact.
 void write_checkpoint(const std::filesystem::path& path,
                       const CheckpointData& checkpoint);
+
+// `state.gmdchk` -> `state_step000000001000.gmdchk`: the step, zero-padded to
+// 12 digits so names sort in step order, inserted before the extension.
+std::filesystem::path step_suffixed_checkpoint_path(const std::filesystem::path& path,
+                                                    std::uint64_t step);
 
 CheckpointMetadata read_checkpoint(const std::filesystem::path& path,
                                    System& system,

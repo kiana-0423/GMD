@@ -1,10 +1,12 @@
 #include "gmd/io/checkpoint.hpp"
 
+#include <cstdio>
 #include <fstream>
 #include <iomanip>
 #include <sstream>
 #include <stdexcept>
 
+#include "gmd/io/file_utils.hpp"
 #include "gmd/system/system.hpp"
 
 namespace gmd {
@@ -135,16 +137,12 @@ void read_topology_section(std::istream& input, Topology* topology) {
 
 }  // namespace
 
-void write_checkpoint(const std::filesystem::path& path,
-                      const CheckpointData& checkpoint) {
+std::string format_checkpoint(const CheckpointData& checkpoint) {
     if (checkpoint.system == nullptr) {
         throw std::runtime_error("write_checkpoint requires a System");
     }
 
-    std::ofstream out(path);
-    if (!out.is_open()) {
-        throw std::runtime_error("Failed to open checkpoint for writing: " + path.string());
-    }
+    std::ostringstream out;
     out << std::setprecision(17);
 
     const System& system = *checkpoint.system;
@@ -188,8 +186,14 @@ void write_checkpoint(const std::filesystem::path& path,
         out << ' ' << component;
     }
     out << '\n';
+    // Provenance (version 3).
+    out << "force_field_kind " << md.force_field_kind << '\n';
+    out << "force_field_sha256 " << md.force_field_sha256 << '\n';
+    out << "model_path " << md.model_path << '\n';
+    out << "model_sha256 " << md.model_sha256 << '\n';
+    out << "run_id " << md.run_id << '\n';
     out << "atom_count " << system.atom_count() << '\n';
-    out << "atoms tag type molecule mass charge x y z vx vy vz\n";
+    out << "atoms tag type molecule mass charge x y z vx vy vz atomic_number\n";
 
     const auto atom_types = system.atom_types();
     const auto molecules = system.molecule_ids();
@@ -197,6 +201,7 @@ void write_checkpoint(const std::filesystem::path& path,
     const auto charges = system.charges();
     const auto coordinates = system.coordinates();
     const auto velocities = system.velocities();
+    const auto atomic_numbers = system.atomic_numbers();
     for (std::size_t atom_index = 0; atom_index < system.atom_count(); ++atom_index) {
         out << system.atom_tag(atom_index) << ' '
             << atom_types[atom_index] << ' '
@@ -208,11 +213,29 @@ void write_checkpoint(const std::filesystem::path& path,
             << coordinates[atom_index][2] << ' '
             << velocities[atom_index][0] << ' '
             << velocities[atom_index][1] << ' '
-            << velocities[atom_index][2] << '\n';
+            << velocities[atom_index][2] << ' '
+            << (atom_index < atomic_numbers.size() ? atomic_numbers[atom_index] : 0) << '\n';
     }
 
     write_topology_section(out, checkpoint.topology);
     out << "end\n";
+    return out.str();
+}
+
+void write_checkpoint(const std::filesystem::path& path,
+                      const CheckpointData& checkpoint) {
+    const std::string text = format_checkpoint(checkpoint);
+    atomic_write_file(path, text);
+}
+
+std::filesystem::path step_suffixed_checkpoint_path(const std::filesystem::path& path,
+                                                    std::uint64_t step) {
+    char digits[32];
+    std::snprintf(digits, sizeof(digits), "%012llu", static_cast<unsigned long long>(step));
+    std::filesystem::path result = path;
+    result.replace_filename(path.stem().string() + "_step" + digits +
+                            path.extension().string());
+    return result;
 }
 
 CheckpointMetadata read_checkpoint(const std::filesystem::path& path,
@@ -237,6 +260,8 @@ CheckpointMetadata read_checkpoint(const std::filesystem::path& path,
     }
 
     CheckpointMetadata md;
+    md.version = version;
+    md.has_atomic_numbers = version >= kFirstCheckpointVersionWithAtomicNumbers;
     require_key(input, "step");
     input >> md.step;
     require_key(input, "time_fs");
@@ -320,16 +345,34 @@ CheckpointMetadata read_checkpoint(const std::filesystem::path& path,
         md.step_pressure_valid = pressure_flag != 0;
     }
 
+    if (md.has_atomic_numbers) {
+        require_key(input, "force_field_kind");
+        md.force_field_kind = read_rest_of_line(input);
+        require_key(input, "force_field_sha256");
+        md.force_field_sha256 = read_rest_of_line(input);
+        require_key(input, "model_path");
+        md.model_path = read_rest_of_line(input);
+        require_key(input, "model_sha256");
+        md.model_sha256 = read_rest_of_line(input);
+        require_key(input, "run_id");
+        md.run_id = read_rest_of_line(input);
+    }
+
     std::size_t atom_count = 0;
     require_key(input, "atom_count");
     if (!(input >> atom_count)) {
         throw std::runtime_error("Invalid checkpoint atom_count");
     }
+    const char* expected_header =
+        md.has_atomic_numbers
+            ? "atoms tag type molecule mass charge x y z vx vy vz atomic_number"
+            : "atoms tag type molecule mass charge x y z vx vy vz";
     std::string header;
     std::getline(input, header);
-    if (!std::getline(input, header) ||
-        header != "atoms tag type molecule mass charge x y z vx vy vz") {
-        throw std::runtime_error("Invalid checkpoint atoms header");
+    if (!std::getline(input, header) || header != expected_header) {
+        throw std::runtime_error("Invalid checkpoint atoms header (version " +
+                                 std::to_string(version) + " expects '" +
+                                 expected_header + "')");
     }
 
     system.resize(atom_count);
@@ -342,6 +385,7 @@ CheckpointMetadata read_checkpoint(const std::filesystem::path& path,
     auto velocities = system.mutable_velocities();
     auto tags = system.mutable_atom_tags();
     auto owners = system.mutable_atom_owners();
+    auto atomic_numbers = system.mutable_atomic_numbers();
     for (std::size_t atom_index = 0; atom_index < atom_count; ++atom_index) {
         if (!(input >> tags[atom_index]
               >> atom_types[atom_index]
@@ -355,6 +399,13 @@ CheckpointMetadata read_checkpoint(const std::filesystem::path& path,
               >> velocities[atom_index][1]
               >> velocities[atom_index][2])) {
             throw std::runtime_error("Invalid atom entry in checkpoint");
+        }
+        if (md.has_atomic_numbers) {
+            if (!(input >> atomic_numbers[atom_index]) || atomic_numbers[atom_index] < 0) {
+                throw std::runtime_error("Invalid atomic_number in checkpoint atom entry");
+            }
+        } else {
+            atomic_numbers[atom_index] = 0;
         }
         owners[atom_index] = 0;
     }

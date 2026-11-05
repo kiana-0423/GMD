@@ -142,7 +142,9 @@ def read_checkpoint(path: Path) -> dict:
     index = 1
     while index < len(lines):
         line = lines[index]
-        if line == "atoms tag type molecule mass charge x y z vx vy vz":
+        # Version 3 appends an atomic_number column; the leading columns are
+        # unchanged, so both headers are read the same way.
+        if line.startswith("atoms tag type molecule mass charge x y z vx vy vz"):
             count = int(data["atom_count"])
             for atom_line in lines[index + 1 : index + 1 + count]:
                 fields = atom_line.split()

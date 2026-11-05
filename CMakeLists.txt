@@ -76,6 +76,7 @@ add_library(gmd_core STATIC
     src/integrator/velocity_verlet_integrator.cpp
     src/io/checkpoint.cpp
     src/io/config_loader.cpp
+    src/io/file_utils.cpp
     src/io/trajectory_writer.cpp
     src/parallel/domain_decomposition.cpp
     src/parallel/mpi_communicator.cpp
@@ -121,6 +122,8 @@ if(BUILD_TESTING)
     target_link_libraries(gmd_constraint_solver_tests PRIVATE gmd_core)
     add_executable(gmd_checkpoint_restart_tests tests/checkpoint_restart_tests.cpp)
     target_link_libraries(gmd_checkpoint_restart_tests PRIVATE gmd_core)
+    add_executable(gmd_checkpoint_v3_tests tests/checkpoint_v3_tests.cpp)
+    target_link_libraries(gmd_checkpoint_v3_tests PRIVATE gmd_core)
     add_executable(gmd_pme_mode_tests tests/pme_mode_tests.cpp)
     target_link_libraries(gmd_pme_mode_tests PRIVATE gmd_core)
     add_executable(gmd_degrees_of_freedom_tests tests/degrees_of_freedom_tests.cpp)
@@ -254,6 +257,10 @@ if(BUILD_TESTING)
     set_tests_properties(gmd_constraint_solver PROPERTIES LABELS "unit;integrator")
     add_test(NAME gmd_checkpoint_restart COMMAND gmd_checkpoint_restart_tests)
     set_tests_properties(gmd_checkpoint_restart PROPERTIES LABELS "unit;io;restart")
+    # Checkpoint v3 (atomic numbers + provenance), v1/v2 compatibility,
+    # atomic writes and SHA-256 vectors.
+    add_test(NAME gmd_checkpoint_v3 COMMAND gmd_checkpoint_v3_tests)
+    set_tests_properties(gmd_checkpoint_v3 PROPERTIES LABELS "unit;io;restart")
     add_test(
         NAME gmd_restart_continuity_cli
         COMMAND Python3::Interpreter
