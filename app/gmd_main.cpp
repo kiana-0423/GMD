@@ -555,6 +555,7 @@ int main(int argc, char** argv)
                     "force_field ml requires a 'model_path' directive in the run file");
             }
             auto ts_adapter = std::make_shared<gmd::TorchScriptModelRuntimeAdapter>();
+            ts_adapter->set_graph_optimization(run_config.ml_jit_optimize);
             auto ml_provider = std::make_shared<gmd::MLForceProvider>(
                 run_config.ml_model_path, ts_adapter);
             // Load the model now so cutoff() is available before NeighborBuilder is set up.

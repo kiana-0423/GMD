@@ -2,12 +2,16 @@
 
 #include "gmd/force/torchscript_adapter.hpp"
 
+#include <algorithm>
+#include <array>
+#include <cmath>
 #include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include <torch/script.h>
+#include <torch/csrc/jit/runtime/graph_executor.h>
 
 #include "gmd/core/runtime_context.hpp"
 #include "gmd/system/system.hpp"
@@ -21,6 +25,7 @@ struct TorchScriptModelRuntimeAdapter::Impl {
     torch::jit::script::Module module;
     torch::Device device{torch::kCPU};
     float cutoff{0.0f};
+    bool graph_optimization{true};
     bool loaded{false};
 };
 
@@ -38,6 +43,10 @@ std::string_view TorchScriptModelRuntimeAdapter::name() const noexcept {
 
 float TorchScriptModelRuntimeAdapter::cutoff() const noexcept {
     return impl_->cutoff;
+}
+
+void TorchScriptModelRuntimeAdapter::set_graph_optimization(bool enabled) noexcept {
+    impl_->graph_optimization = enabled;
 }
 
 void TorchScriptModelRuntimeAdapter::load_model(
@@ -119,6 +128,15 @@ void TorchScriptModelRuntimeAdapter::evaluate(
     // -----------------------------------------------------------------------
     // 2. Build edge_index [2, 2E] and edge_shift [2E, 3] from NeighborList
     //    Half-pairs (j > i) are expanded to a directed full graph.
+    //
+    //    Only pairs closer than the model's local_cutoff become edges. The
+    //    Verlet list also holds pairs out to cutoff + skin, and WHICH of those
+    //    it holds depends on when it was last rebuilt. A model's cutoff
+    //    envelope gives them zero weight, but they still change the float32
+    //    accumulation inside the model, so a run restarted from a checkpoint
+    //    (fresh list) drifted from the uninterrupted run at round-off level.
+    //    Filtering makes the graph a function of the geometry alone -- the
+    //    same graph GMD_SGT's own neighbour search (dist < cutoff) builds.
     // -----------------------------------------------------------------------
     const NeighborList* nl = request.neighbor_list;
 
@@ -130,6 +148,8 @@ void TorchScriptModelRuntimeAdapter::evaluate(
         const std::size_t E_full = 2 * E_half;
 
         const double* Lx = request.box ? &request.box->lengths[0] : nullptr;
+        const double model_cutoff = static_cast<double>(impl_->cutoff);
+        const double cutoff_sq = model_cutoff * model_cutoff;
 
         // Collect all directed edges in plain vectors first.
         std::vector<int64_t> ei_src, ei_dst;
@@ -138,13 +158,64 @@ void TorchScriptModelRuntimeAdapter::evaluate(
         ei_dst.reserve(E_full);
         es_data.reserve(E_full * 3);
 
+        // Edges of atom i, kept in a canonical order (see below).
+        std::vector<std::pair<int, std::array<int, 3>>> kept;
         for (std::size_t i = 0; i < N; ++i) {
             const int offset = nl->offsets[i];
+            kept.clear();
             for (int k = 0; k < nl->counts[i]; ++k) {
                 const int j = nl->neighbors[static_cast<std::size_t>(offset + k)];
-                const std::array<int, 3>& S =
+                // The stored image flag belongs to the geometry the list was
+                // BUILT from. The integrator wraps positions into the box every
+                // step, so an atom that has crossed a face since then sits one
+                // box length away from where the flag assumes, and the edge
+                // would point at the wrong image (the pair silently dropped out
+                // of the model until the next rebuild). Real motion since the
+                // build is bounded by the skin, far below half a box length, so
+                // round((r - r_ref) / L) counts exactly the wraps of each atom;
+                // correcting by them gives the flag for the CURRENT coordinates.
+                std::array<int, 3> S =
                     nl->image_flags[static_cast<std::size_t>(offset + k)];
+                if (Lx != nullptr) {
+                    const auto j_index = static_cast<std::size_t>(j);
+                    if (i < nl->ref_coordinates.size() &&
+                        j_index < nl->ref_coordinates.size()) {
+                        for (int d = 0; d < 3; ++d) {
+                            const auto wraps = [&](std::size_t atom) {
+                                return static_cast<int>(std::lround(
+                                    (request.coordinates[atom][d] -
+                                     nl->ref_coordinates[atom][d]) / Lx[d]));
+                            };
+                            S[d] += wraps(i) - wraps(j_index);
+                        }
+                    }
+                }
 
+                if (cutoff_sq > 0.0) {
+                    double r_sq = 0.0;
+                    for (int d = 0; d < 3; ++d) {
+                        const double shift =
+                            Lx ? static_cast<double>(S[d]) * Lx[d] : 0.0;
+                        const double delta = request.coordinates[static_cast<std::size_t>(j)][d] +
+                                             shift - request.coordinates[i][d];
+                        r_sq += delta * delta;
+                    }
+                    if (!(r_sq < cutoff_sq)) {
+                        continue;
+                    }
+                }
+
+                kept.emplace_back(j, S);
+            }
+
+            // CANONICAL ORDER. The cell-list walk visits neighbours in an order
+            // that depends on which cell each atom occupied when the list was
+            // built, i.e. on the run's history. The model's float32 sums depend
+            // on edge order, so the same geometry evaluated after a restart
+            // (fresh list) differed at round-off from the uninterrupted run.
+            // Sorting by (j, S) makes the graph a function of the geometry.
+            std::sort(kept.begin(), kept.end());
+            for (const auto& [j, S] : kept) {
                 // Edge i → j
                 ei_src.push_back(static_cast<int64_t>(i));
                 ei_dst.push_back(static_cast<int64_t>(j));
@@ -173,7 +244,13 @@ void TorchScriptModelRuntimeAdapter::evaluate(
             }
         }
 
-        const long E = static_cast<long>(E_full);
+        const long E = static_cast<long>(ei_src.size());
+        if (E == 0) {
+            // Every listed pair lies beyond the model cutoff.
+            ei_src.push_back(0);
+            ei_dst.push_back(0);
+            es_data.assign(3, 0.0f);
+        }
 
         // Stack src/dst into [2, E]
         auto src_t = torch::from_blob(ei_src.data(), {E},
@@ -204,6 +281,8 @@ void TorchScriptModelRuntimeAdapter::evaluate(
     // -----------------------------------------------------------------------
     c10::IValue output;
     try {
+        const torch::jit::GraphOptimizerEnabledGuard optimizer_guard(
+            impl_->graph_optimization);
         output = impl_->module.forward({species_t, pos_t, edge_index_t, edge_shift_t});
     } catch (const c10::Error& e) {
         throw std::runtime_error(

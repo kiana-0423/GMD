@@ -51,6 +51,17 @@ public:
 
     void unload_model(RuntimeContext& runtime) override;
 
+    // TorchScript graph-executor optimisation for forward() (default on).
+    //
+    // With it on, the profiling executor runs the first calls unoptimised and
+    // then switches to a specialised, fused graph, whose float32 round-off
+    // differs. The result of an evaluation therefore depends on how many calls
+    // preceded it: a run restarted from a checkpoint (call 1 at step N) and
+    // the uninterrupted run (call N+1) differ at round-off level. With it off,
+    // every call runs the same graph and evaluations are a pure function of
+    // their inputs, so segmented runs reproduce continuous ones bit for bit.
+    void set_graph_optimization(bool enabled) noexcept;
+
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;

@@ -640,6 +640,8 @@ RunConfig ConfigLoader::load_run(const std::filesystem::path& run_path) const {
             }
         } else if (tokens[0] == "model_path") {
             config.ml_model_path = tokens[1];
+        } else if (tokens[0] == "ml_jit_optimize") {
+            config.ml_jit_optimize = parse_bool(tokens[1], "ml_jit_optimize");
         } else if (tokens[0] == "cutoff") {
             inline_ff.cutoff = parse_double(tokens[1], "cutoff");
             if (inline_ff.cutoff <= 0.0) throw std::runtime_error("cutoff must be positive");

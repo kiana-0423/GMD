@@ -53,6 +53,7 @@ void test_defaults(const std::filesystem::path& dir) {
     check(config.control_poll_interval == 1, "control_poll_interval should default to 1");
     check(!config.checkpoint_step_suffix, "checkpoint_step_suffix should default to off");
     check(config.checkpoint_file.empty(), "checkpoint_file should default to empty");
+    check(config.ml_jit_optimize, "ml_jit_optimize should default to on");
 }
 
 void test_all_directives(const std::filesystem::path& dir) {
@@ -72,7 +73,8 @@ void test_all_directives(const std::filesystem::path& dir) {
                              "checkpoint_step_suffix on\n"
                              "restart_from ../previous/state.gmdchk\n"
                              "force_field ml\n"
-                             "model_path model.pt\n");
+                             "model_path model.pt\n"
+                             "ml_jit_optimize off\n");
     check(config.run_id == "al-r3.seg_7", "run_id not parsed");
     check(config.allow_model_change, "model_change allow not parsed");
     check(config.frame_file == dir / "frames/out.extxyz", "frame_file not resolved: " +
@@ -87,6 +89,7 @@ void test_all_directives(const std::filesystem::path& dir) {
     check(config.checkpoint_file == dir / "state.gmdchk", "checkpoint_file not resolved");
     check(config.checkpoint_step_suffix, "checkpoint_step_suffix not parsed");
     check(config.restart_from == dir / "../previous/state.gmdchk", "restart_from not resolved");
+    check(!config.ml_jit_optimize, "ml_jit_optimize off not parsed");
     check(config.ml_model_path == dir / "model.pt", "model_path not resolved against run dir: " +
                                                     config.ml_model_path.string());
 }

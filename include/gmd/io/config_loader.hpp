@@ -126,6 +126,11 @@ struct RunConfig {
 	std::string force_field_type;
 	// Path to a TorchScript model file; populated when force_field_type == "ml".
 	std::filesystem::path ml_model_path;
+	// `ml_jit_optimize on|off` (default on): TorchScript graph-executor
+	// optimisation. Off makes every model evaluation a pure function of its
+	// inputs, so a segmented (restarted) ML run reproduces the continuous run
+	// bit for bit; see TorchScriptModelRuntimeAdapter::set_graph_optimization.
+	bool ml_jit_optimize = true;
 	// Molecular non-bonded LJ may be disabled with "none"; "special" applies
 	// topology-generated exclusions/scaling. "lj_unsafe" is retained as a
 	// backwards-compatible alias for "special".
